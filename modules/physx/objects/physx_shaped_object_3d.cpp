@@ -1,0 +1,433 @@
+#include "physx_shaped_object_3d.h"
+
+// --- Includes ---
+#include "physx_server.h"
+#include "../physx_conversions.h"
+#include "../spaces/physx_filter_shader.h"
+#include "core/config/project_settings.h"
+
+PhysXShapedObject3D::PhysXShapedObject3D(ObjectType p_type) : PhysXObject3D(p_type){
+}
+
+PhysXShapedObject3D::~PhysXShapedObject3D() {
+	// Clean up all shapes securely
+	while (shapes.size() > 0) {
+		remove_shape(0);
+	}
+	// Release the per-object material if one was created (bodies only).
+	if (px_material) {
+		px_material->release();
+		px_material = nullptr;
+	}
+}
+
+physx::PxMaterial *PhysXShapedObject3D::_get_shape_material() {
+	// Areas use the shared server default material.
+	return PhysXServer3D::get_singleton()->get_default_material();
+}
+
+physx::PxTransform PhysXShapedObject3D::to_physx_transform(const Transform3D &p_transform) {
+	// Shared module conversion (physx_conversions.h): clamps degenerate/NaN
+	// transforms to identity rotation instead of passing them into PhysX.
+	return physx_to_px(p_transform);
+}
+
+Vector3 PhysXShapedObject3D::_shape_geometry_scale(const Transform3D &p_shape_transform) const {
+	// Per-shape transform scale (mirrored scales are absorbed with abs() -
+	// PhysX geometries do not support negative scales) composed with the
+	// object's body scale.
+	const Vector3 shape_scale = p_shape_transform.basis.get_scale_abs();
+	return Vector3(
+			body_scale.x * shape_scale.x,
+			body_scale.y * shape_scale.y,
+			body_scale.z * shape_scale.z);
+}
+
+/**
+ * @brief Called by PhysXShape3D destructor to nullify the shape pointer.
+ *
+ * Prevents use-after-free when the body is destroyed after the shape,
+ * because the body's destructor would call remove_owner() on the freed pointer.
+ */
+void PhysXShapedObject3D::nullify_shape(PhysXShape3D *p_shape) {
+	for (AttachedShape &record : shapes) {
+		if (record.shareable_shape == p_shape) {
+			record.shareable_shape = nullptr;
+		}
+	}
+}
+
+void PhysXShapedObject3D::detach_shape(PhysXShape3D *p_shape) {
+	for (int i = shapes.size() - 1; i >= 0; i--) {
+		AttachedShape &record = shapes[i];
+		if (record.shareable_shape == p_shape && (record.px_shape || record.detection_shape)) {
+			// Detach from the actor (destroying the PxShape instance(s)).
+			if (px_actor) {
+				physx::PxRigidActor *rigid_actor = px_actor->is<physx::PxRigidActor>();
+				if (rigid_actor) {
+					if (record.px_shape) {
+						rigid_actor->detachShape(*record.px_shape);
+					}
+					if (record.detection_shape) {
+						rigid_actor->detachShape(*record.detection_shape);
+					}
+				}
+			}
+			record.px_shape = nullptr;
+			record.detection_shape = nullptr;
+			record.shareable_shape = nullptr;
+		}
+	}
+}
+
+/**
+ * @brief Called by PhysXShape3D when its geometry changes (e.g. user resizes
+ * a box in the editor).
+ *
+ * Finds all attached instances of the changed shape resource and updates
+ * their PxGeometry in place. PxShape::setGeometry() is mutable, so no
+ * detach/re-attach is needed. Dynamic bodies are woken up since the inertia
+ * tensor may have changed.
+ */
+void PhysXShapedObject3D::shape_changed(PhysXShape3D *p_shape) {
+    for (AttachedShape &record : shapes) {
+        if (record.shareable_shape == p_shape && (record.px_shape || record.detection_shape)) {
+            // Rebuild the geometry with the current body scale AND the
+            // per-shape transform scale, and refresh the contact offset (the
+            // margin is stored per PxShape, not per blueprint).
+            physx::PxGeometryHolder holder;
+            const Vector3 geom_scale = _shape_geometry_scale(record.relative_transform);
+            physx::PxVec3 scale(geom_scale.x, geom_scale.y, geom_scale.z);
+            if (p_shape->get_physx_geometry(holder, scale)) {
+                if (record.px_shape) {
+                    record.px_shape->setGeometry(holder.any());
+                }
+                if (record.detection_shape) {
+                    record.detection_shape->setGeometry(holder.any());
+                }
+            }
+            if (record.px_shape) {
+                record.px_shape->setContactOffset(p_shape->get_margin());
+            }
+            if (record.detection_shape) {
+                record.detection_shape->setContactOffset(p_shape->get_margin());
+            }
+        }
+    }
+
+    // Notify derived classes (e.g. PhysXBody3D) that a shape's geometry changed,
+    // so they can update their inertia tensors if needed.
+    _on_shape_geometry_changed();
+
+    // Wake dynamic bodies — the inertia tensor may need recomputing.
+    // Kinematic dynamics never sleep and reject wakeUp() ("Body must be
+    // non-kinematic!"), so they are skipped.
+    if (px_actor) {
+        if (physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>()) {
+            if (!(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
+                dyn->wakeUp();
+            }
+        }
+    }
+}
+
+/**
+ * @brief Attaches a shape resource to this object, creating a PxShape instance.
+ *
+ * The shape's geometry is created with the body's current scale applied. The
+ * resulting PxShape is positioned via its local pose, attached to the actor,
+ * and then our local reference is released — the actor owns the shape from
+ * this point (refcount drops from 2 to 1).
+ */
+void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_transform, bool p_disabled) {
+    AttachedShape record;
+    record.shareable_shape = p_shape;
+    record.relative_transform = p_transform;
+    record.disabled = p_disabled;
+
+    if (!p_shape) {
+        shapes.push_back(record);
+        return;
+    }
+
+    // Register as an observer so shape_changed() fires when the resource is edited.
+    p_shape->add_owner(this);
+
+    if (px_actor) {
+        // Create a per-actor PxShape from the shared shape resource.
+        // The body scale AND the per-shape transform scale are baked into the
+        // geometry (e.g. a 1x1 trimesh quad whose shape offset scales it
+        // (50,1,50) into a floor - the standard Godot idiom).
+        const Vector3 geom_scale = _shape_geometry_scale(p_transform);
+        physx::PxVec3 total_scale(geom_scale.x, geom_scale.y, geom_scale.z);
+        physx::PxPhysics &physics = PhysXServer3D::get_singleton()->get_physics();
+
+        // Determine if this is a concave shape being attached to a non-kinematic
+        // dynamic body. PhysX forbids attaching triangle meshes, heightfields,
+        // and planes to dynamic actors — attachShape() will fail and leave the
+        // actor in an inconsistent state (subsequent server calls that dereference
+        // the half-attached shape segfault). For such combinations, we create the
+        // shape with eSCENE_QUERY_SHAPE only (no simulation) so the shape still
+        // participates in raycasts/overlaps but never collides (REG-0014).
+        bool concave_on_dynamic = false;
+        physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
+
+        // Check: is the shape concave? (triangle mesh / heightfield / plane)
+        if (!p_shape->is_convex()) {
+            // Check: is the actor a non-kinematic dynamic body?
+            physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>();
+            if (dyn && !(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
+                concave_on_dynamic = true;
+                shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
+            }
+        }
+
+        record.px_shape = p_shape->create_shape(physics, total_scale, _get_shape_material(), shape_flags);
+
+        if (record.px_shape) {
+            // Set the shape's local pose (placement * shape alignment).
+            // The placement is this shape's body-relative transform; the alignment
+            // is the shape's intrinsic axis rotation (e.g. capsule Z-90° to map
+            // PhysX's X-axis to Godot's Y-axis). create_shape() already applied
+            // the alignment once; we compose both so neither is lost.
+            const physx::PxTransform composed = to_physx_transform(p_transform) * p_shape->get_local_pose();
+            record.px_shape->setLocalPose(composed);
+
+            // Apply the owner's collision filter (layer/mask/contact-notify) to this
+            // shape BEFORE attaching. PxShape::createShape() leaves the filter data
+            // zeroed (layer=0, mask=0), which the simulation filter shader treats as
+            // "collides with nothing" — so without this, bodies fall through everything.
+            physx::PxFilterData filter_data;
+            filter_data.word0 = collision_layer;
+            filter_data.word1 = collision_mask;
+            filter_data.word3 = shape_filter_flags();
+            record.px_shape->setSimulationFilterData(filter_data);
+            record.px_shape->setQueryFilterData(filter_data);
+
+            // Attach to the actor. After this, the actor holds a reference.
+            // For concave-on-dynamic, attachShape may still succeed (it returns
+            // void, not a status), but the shape will be silently ignored by
+            // the simulation. We still attach it so it remains consistent with
+            // the actor's shape list (no dangling reference).
+            if (physx::PxRigidActor *rigid_actor = px_actor->is<physx::PxRigidActor>()) {
+                rigid_actor->attachShape(*record.px_shape);
+            }
+
+            // Drop our local reference — the actor now owns the shape.
+            record.px_shape->release();
+        }
+    }
+    shapes.push_back(record);
+
+    // Notify derived classes (e.g. PhysXBody3D) that a shape was added,
+    // so they can update their inertia tensors if needed.
+    _on_shape_added();
+}
+
+
+void PhysXShapedObject3D::remove_shape(int p_index) {
+    ERR_FAIL_INDEX(p_index, (int)shapes.size());
+
+	AttachedShape &record = shapes[p_index];
+
+	// Notify Godot wrapper we are done
+	// If shareable_shape is null, the shape was already freed and its
+	// destructor nullified this pointer to prevent use-after-free.
+	if (record.shareable_shape) {
+		record.shareable_shape->remove_owner(this);
+	}
+
+	// Detach from PhysX Actor
+	// Note: detaching automatically decrements the reference count.
+	// Since we called release() after attaching, this will destroy the PxShape.
+	if (px_actor && (record.px_shape || record.detection_shape)) {
+		physx::PxRigidActor *rigid_actor = px_actor->is<physx::PxRigidActor>();
+		if (rigid_actor) {
+			if (record.px_shape) {
+				rigid_actor->detachShape(*record.px_shape);
+			}
+			if (record.detection_shape) {
+				rigid_actor->detachShape(*record.detection_shape);
+			}
+		}
+	}
+
+	// Remove from vector
+	shapes.remove_at(p_index);
+
+	// Notify derived classes (e.g. PhysXBody3D) that a shape was removed,
+	// so they can update their inertia tensors if needed.
+	_on_shape_removed();
+}
+
+void PhysXShapedObject3D::remove_shape(PhysXShape3D *p_shape) {
+    // Find indices backwards to avoid invalidating iterators while removing
+	for (int i = shapes.size() - 1; i >= 0; i--) {
+		if (shapes[i].shareable_shape == p_shape) {
+			remove_shape(i);
+		}
+	}
+}
+
+void PhysXShapedObject3D::set_shape_transform(int p_index, const Transform3D &p_transform) {
+    ERR_FAIL_INDEX(p_index, (int)shapes.size());
+
+	AttachedShape &record = shapes[p_index];
+
+	// A scale change must be re-baked into the geometry (PxShape::setGeometry);
+	// a pure pose change only needs setLocalPose.
+	const Vector3 old_geom_scale = _shape_geometry_scale(record.relative_transform);
+	const Vector3 new_geom_scale = _shape_geometry_scale(p_transform);
+	const bool scale_changed = old_geom_scale != new_geom_scale;
+
+	record.relative_transform = p_transform;
+
+	if ((record.px_shape || record.detection_shape) && record.shareable_shape) {
+		// Apply body scale to the new offset
+		Transform3D final_tr = p_transform;
+		final_tr.origin *= body_scale;
+
+		// Compose placement with the shape's intrinsic alignment pose
+		// (e.g. capsule Z-90°) so it isn't clobbered.
+		const physx::PxTransform composed = to_physx_transform(final_tr) * record.shareable_shape->get_local_pose();
+
+		if (scale_changed) {
+			physx::PxGeometryHolder holder;
+			physx::PxVec3 total_scale(new_geom_scale.x, new_geom_scale.y, new_geom_scale.z);
+			if (record.shareable_shape->get_physx_geometry(holder, total_scale)) {
+				if (record.px_shape) {
+					record.px_shape->setGeometry(holder.any());
+				}
+				if (record.detection_shape) {
+					record.detection_shape->setGeometry(holder.any());
+				}
+			}
+		}
+
+		if (record.px_shape) {
+			record.px_shape->setLocalPose(composed);
+		}
+		if (record.detection_shape) {
+			record.detection_shape->setLocalPose(composed);
+		}
+	}
+
+	// Notify derived classes (e.g. PhysXBody3D) that a shape's transform changed,
+	// so they can update their inertia tensors if needed.
+	_on_shape_transform_changed();
+}
+
+RID PhysXShapedObject3D::get_shape_rid(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, (int)shapes.size(), RID());
+	return shapes[p_index].shareable_shape ? shapes[p_index].shareable_shape->get_rid() : RID();
+}
+
+Transform3D PhysXShapedObject3D::get_shape_transform(int p_index) const {
+    ERR_FAIL_INDEX_V(p_index, (int)shapes.size(), Transform3D());
+    return shapes[p_index].relative_transform;
+}
+
+int PhysXShapedObject3D::find_shape_index(const physx::PxShape *p_px_shape) const {
+    // Linear scan; shape counts per body are small. PxShape::userData points at
+    // the shared PhysXShape3D* blueprint, not a per-instance struct.
+    // Areas may report their non-trigger detection shape in trigger events —
+    // it maps to the same logical shape index as the trigger shape.
+    for (int i = 0; i < (int)shapes.size(); i++) {
+        if (shapes[i].px_shape == p_px_shape || shapes[i].detection_shape == p_px_shape) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void PhysXShapedObject3D::rebuild_shapes() {
+	if (!px_actor) {
+		return;
+	}
+
+	physx::PxRigidActor *rigid_actor = px_actor->is<physx::PxRigidActor>();
+	if (!rigid_actor) {
+		return;
+	}
+
+	physx::PxPhysics &physics = PhysXServer3D::get_singleton()->get_physics();
+	physx::PxMaterial *material = _get_shape_material();
+
+	// Determine if this is a non-kinematic dynamic body — same logic as add_shape()
+	// so concave shapes get the correct flags during rebuild after a mode switch.
+	bool concave_on_dynamic = false;
+	physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
+	physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>();
+	if (dyn && !(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
+		concave_on_dynamic = true;
+		shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
+	}
+
+	for (AttachedShape &record : shapes) {
+		// The old px_shape was released when the previous PxActor was released.
+		record.px_shape = nullptr;
+		if (!record.shareable_shape) {
+			continue;
+		}
+
+		// Body scale + per-shape transform scale, per record (each attached
+		// shape can carry its own offset scale).
+		const Vector3 geom_scale = _shape_geometry_scale(record.relative_transform);
+		physx::PxVec3 total_scale(geom_scale.x, geom_scale.y, geom_scale.z);
+		record.px_shape = record.shareable_shape->create_shape(physics, total_scale, material, shape_flags);
+		if (!record.px_shape) {
+			continue;
+		}
+
+		// Restore local pose (placement * intrinsic alignment).
+		Transform3D final_tr = record.relative_transform;
+		final_tr.origin *= body_scale;
+		record.px_shape->setLocalPose(to_physx_transform(final_tr) * record.shareable_shape->get_local_pose());
+
+		// Attach to the new actor (refcount -> 2, then release drops to 1).
+		rigid_actor->attachShape(*record.px_shape);
+		record.px_shape->release();
+	}
+
+	// Re-apply collision filter data on the fresh shapes.
+	update_shapes_collision_filter();
+
+	// Notify derived classes (e.g. PhysXBody3D) that shapes were rebuilt,
+	// so they can update their inertia tensors if needed.
+	_on_shape_added();
+}
+
+uint32_t PhysXShapedObject3D::shape_filter_flags() const {
+	uint32_t flags = 0;
+	if (contact_notify) {
+		flags |= PHYSX_FILTER_FLAG_CONTACT_NOTIFY;
+	}
+	// Areas must never generate solver contacts: the simulation filter shader
+	// kills any non-trigger pair involving an area shape (REG-0011).
+	if (type == OBJECT_TYPE_AREA) {
+		flags |= PHYSX_FILTER_FLAG_IS_AREA;
+	}
+	return flags;
+}
+
+void PhysXShapedObject3D::update_shapes_collision_filter() {
+	physx::PxFilterData filter_data;
+	filter_data.word0 = collision_layer; // "I belong to this layer"
+	filter_data.word1 = collision_mask;  // "I collide with these layers"
+	filter_data.word3 = shape_filter_flags();
+
+	for (const AttachedShape &record : shapes) {
+		if (record.px_shape) {
+			record.px_shape->setSimulationFilterData(filter_data);
+			record.px_shape->setQueryFilterData(filter_data);
+		}
+		if (record.detection_shape) {
+			record.detection_shape->setSimulationFilterData(filter_data);
+		}
+	}
+}
+
+void PhysXShapedObject3D::_on_shape_added() {}
+void PhysXShapedObject3D::_on_shape_removed() {}
+void PhysXShapedObject3D::_on_shape_geometry_changed() {}
+void PhysXShapedObject3D::_on_shape_transform_changed() {}

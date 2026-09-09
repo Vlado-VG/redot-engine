@@ -1,0 +1,144 @@
+#!/usr/bin/env python
+import json
+import os
+import time
+
+Import("env")
+Import("env_modules")
+
+# Create a clone for the module environment
+env_physx = env_modules.Clone()
+
+# GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
+# which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /
+# eGPU-broadphase scene path. The CUDA-enabled PhysX SDK is required at build
+# time and PhysXGpu_64.dll next to the binary at run time; without a usable CUDA
+# device the server logs a warning and simulates on the CPU. Opt out with
+# `physx_gpu=no` — GODOT_PHYSX_GPU is then not defined, so the server never
+# touches CUDA (the GPU fluid object still compiles but stays inert, and the
+# cloth node falls back to its CPU solver).
+physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False")
+
+# 1. PhysX Defines
+# Ensure these match the way you compiled the static libs. NOTE: unlike the
+# SDK's DISABLE_CUDA_PHYSX switch (which compiles GPU support out of the PhysX
+# headers entirely), we keep the SDK's GPU headers available unconditionally —
+# the GPU fluid/cloth object code needs them to compile. GODOT_PHYSX_GPU only
+# gates whether OUR code creates a CUDA context.
+physx_defines = [
+    "PX_PHYSX_STATIC_LIB",
+]
+
+if physx_gpu:
+    physx_defines.append("GODOT_PHYSX_GPU")
+
+env_physx.Append(CPPDEFINES=physx_defines)
+
+if env["target"] == "debug":
+    env_physx.Append(CPPDEFINES=[
+        "PX_DEBUG=1",
+        "PX_CHECKED=1",
+        "PX_SUPPORT_PVD=1",
+    ])
+
+elif env["target"] == "release_debug":
+    env_physx.Append(CPPDEFINES=[
+        "PX_DEBUG=0",
+        "PX_CHECKED=1",
+        "PX_SUPPORT_PVD=1",
+    ])
+
+else:
+    env_physx.Append(CPPDEFINES=[
+        "PX_DEBUG=0",
+        "PX_CHECKED=0",
+        "PX_SUPPORT_PVD=0",
+    ])
+# 2. Paths
+# The PhysX SDK lives in thirdparty/physx with the vendor layout:
+#   include/                                headers
+#   lib/<platform>/<arch>/<config>/*.lib    static import libs (config: checked | release)
+#   bin/<platform>/<arch>/<config>/*.dll    runtime DLLs (GPU dynamics, PVD runtime)
+#
+# `physx_config` selects the SDK configuration (default "checked", matching the
+# editor's PX_CHECKED=1 debug behavior). When packaging a release build,
+# extract the PhysX release zip over the SDK and pass `physx_config=release`
+# so the linked libs and the runtime DLLs come from the same configuration.
+physx_config = ARGUMENTS.get("physx_config", "checked")
+
+module_path = Dir("#modules/physx")
+thirdparty_dir = Dir("#thirdparty/physx")
+
+physx_include_path = thirdparty_dir.Dir("include")
+if env["platform"] == "windows":
+    physx_lib_path = thirdparty_dir.Dir("lib/windows/x86_64/" + physx_config)
+elif env["platform"] == "macos":
+    physx_lib_path = thirdparty_dir.Dir("lib/macos/universal/" + physx_config)
+elif env["platform"] in ("linux", "linuxbsd"):
+    physx_lib_path = thirdparty_dir.Dir("lib/linux/x86_64/" + physx_config)
+elif env["platform"] == "android":
+    physx_lib_path = thirdparty_dir.Dir("lib/android/" + env["arch"] + "/" + physx_config)
+else:
+    physx_lib_path = thirdparty_dir.Dir("lib")
+
+env_physx.PrependUnique(CPPPATH=[
+    module_path,
+    physx_include_path,
+])
+
+env.PrependUnique(LIBPATH=[physx_lib_path.abspath])
+
+physx_libs = [
+    "PhysX_static_64",
+    "PhysXArticulationGpu_static_64",
+    "PhysXBroadphaseGpu_static_64",
+    "PhysXCharacterKinematic_static_64",
+    "PhysXCommon_static_64",
+    "PhysXCommonGpu_static_64",
+    "PhysXCooking_static_64",
+    "PhysXCudaContextManager_static_64",
+    "PhysXExtensions_static_64",
+    "PhysXFoundation_static_64",
+    "PhysXGpu_64",
+    "PhysXNarrowphaseGpu_static_64",
+    "PhysXPvdSDK_static_64",
+    "PhysXSimulationControllerGpu_static_64",
+    "PhysXSolverGpu_static_64",
+    "PhysXVehicle_static_64",
+    "PVDRuntime_64",
+]
+
+# Prebuilt PhysX libraries use plain ".lib" names. On Windows, SCons would
+# otherwise append $LIBSUFFIX (e.g. ".windows.editor.x86_64.lib") to env.LIBS
+# entries, producing names like "PhysX_static_64.lib.windows.editor.x86_64.lib".
+if env["platform"] == "windows":
+    env.Append(LINKFLAGS=[lib + ".lib" for lib in physx_libs])
+else:
+    env.Append(LIBS=physx_libs)
+
+# Copy the SDK's runtime DLLs next to the built engine binary so the runtime
+# DLL version always matches the linked SDK configuration (GPU dynamics and
+# PVD runtime are dynamically loaded at runtime).
+if env["platform"] == "windows":
+    dll_src_dir = thirdparty_dir.Dir("bin/windows/x86_64/" + physx_config)
+    for dll_name in ["PhysXGpu_64.dll", "PVDRuntime_64.dll"]:
+        env.Command(
+            File("#bin/" + dll_name),
+            dll_src_dir.File(dll_name),
+            Copy("$TARGET", "$SOURCE"),
+        )
+
+# 4. Godot/Redot Source Files
+# We only compile the "wrapper" code that bridges Godot to PhysX
+env_physx.add_source_files(env.modules_sources, "*.cpp")
+env_physx.add_source_files(env.modules_sources, "cloth/*.cpp")
+env_physx.add_source_files(env.modules_sources, "joints/*.cpp")
+env_physx.add_source_files(env.modules_sources, "nodes/*.cpp")
+env_physx.add_source_files(env.modules_sources, "shapes/*.cpp")
+env_physx.add_source_files(env.modules_sources, "objects/*.cpp")
+env_physx.add_source_files(env.modules_sources, "spaces/*.cpp")
+env_physx.add_source_files(env.modules_sources, "vehicles/*.cpp")
+
+# Editor-only: viewport gizmos for the module's scene nodes.
+if env.editor_build:
+    env_physx.add_source_files(env.modules_sources, "editor/*.cpp")

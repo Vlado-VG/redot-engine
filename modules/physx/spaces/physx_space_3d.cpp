@@ -1,0 +1,545 @@
+/**
+ * @file physx_space_3d.cpp
+ * @brief Implementation of PhysXSpace3D — the physics world.
+ */
+
+#include "physx_space_3d.h"
+#include "../physx_server.h"
+#include "../physx_project_settings.h"
+#include "../objects/physx_object_3d.h"
+#include "../objects/physx_area_3d.h"
+#include "../objects/physx_body_3d.h"
+#include "../objects/physx_shaped_object_3d.h"
+#include "../objects/physx_soft_body_3d.h"
+#include "../joints/physx_joint_3d.h"
+#include "physx_direct_space_state_3d.h"
+#include "physx_filter_shader.h"
+#include "physx_pair_filter_callback.h"
+#include "physx_simulation_event_callback.h"
+#include "physx_contact_modify_callback.h"
+#include "physx_vehicle_scene_context.h"
+#include "../vehicles/physx_vehicle_3d.h"
+#include "../objects/physx_gpu_cloth_3d.h"
+#include "../objects/physx_gpu_particle_fluid_3d.h"
+
+#include "PxPhysicsAPI.h"                // PhysX SDK
+#include "extensions/PxDefaultCpuDispatcher.h"
+
+#include "core/config/project_settings.h"
+#include "core/os/os.h"
+
+// Refcount of spaces currently recording debug contacts. The simulation filter
+// shader is stateless, so it reads a module-global flag; we keep it accurate by
+// counting how many spaces have a non-empty debug buffer.
+static int s_debug_spaces_refcount = 0;
+
+PhysXSpace3D::PhysXSpace3D() {
+    pair_filter_callback = new PhysXPairFilterCallback();
+    contact_modify_callback = new PhysXContactModifyCallback();
+    event_callback = memnew(PhysXSimulationEventCallback(this));
+    _initialize_scene();
+    // Only build the query wrapper if the scene was created successfully;
+    // otherwise direct_state stays null and queries safely early-out.
+    if (px_scene) {
+        direct_state = memnew(PhysXDirectSpaceState3D(this));
+    }
+}
+
+PhysXSpace3D::~PhysXSpace3D() {
+    if (direct_state) {
+        memdelete(direct_state);
+    }
+    _terminate_scene();
+    if (event_callback) {
+        memdelete(event_callback);
+        event_callback = nullptr;
+    }
+    if (pair_filter_callback) {
+        // Allocated with plain `new` in the ctor (see :34), so free with
+        // `delete` — not memdelete (CR-06: new must pair with delete).
+        delete pair_filter_callback;
+        pair_filter_callback = nullptr;
+    }
+    if (contact_modify_callback) {
+        delete contact_modify_callback;
+        contact_modify_callback = nullptr;
+    }
+    // Drop any deferred monitor events; their area/body pointers may be gone
+    // by the time anyone could flush them.
+    pending_trigger_events.clear();
+
+    // Release this space's claim on the global debug-contacts flag.
+    if (!debug_contacts_buffer.is_empty()) {
+        debug_contacts_buffer.clear();
+        if (--s_debug_spaces_refcount == 0) {
+            g_physx_debug_contacts_enabled.store(false, std::memory_order_relaxed);
+        }
+    }
+}
+
+void PhysXSpace3D::_initialize_scene() {
+    PhysXServer3D *server = PhysXServer3D::get_singleton();
+    physx::PxPhysics *physics = server ? server->try_get_physics() : nullptr;
+    ERR_FAIL_NULL_MSG(physics, "PhysX: server not initialized before space creation");
+
+    // One CPU dispatcher is shared by every space (owned by the server, sized
+    // once at init() from physics/physx_3d/simulation/cpu_worker_threads).
+    px_dispatcher = server->get_cpu_dispatcher();
+    ERR_FAIL_NULL_MSG(px_dispatcher, "PhysX: no shared CPU dispatcher (server init() failed?)");
+
+    physx::PxSceneDesc scene_desc(physics->getTolerancesScale());
+
+    // Gravity comes from project settings: a magnitude (physics/3d/default_gravity,
+    // default 9.8) times a direction (physics/3d/default_gravity_vector, default
+    // (0,-1,0)). Their product is the actual world gravity vector, which must
+    // match the space's default-area gravity so that PhysX's native scene gravity
+    // equals the resolved default gravity (PhysXBody3D::on_pre_step applies only
+    // the area-override delta on top of it — zero in the default case).
+    const real_t g = GLOBAL_GET("physics/3d/default_gravity");
+    const Vector3 g_dir = GLOBAL_GET("physics/3d/default_gravity_vector");
+    scene_desc.gravity = physx::PxVec3(
+            (float)(g_dir.x * g),
+            (float)(g_dir.y * g),
+            (float)(g_dir.z * g));
+
+    scene_desc.cpuDispatcher = px_dispatcher;
+
+    // Simulation event callback (contacts, triggers, wake/sleep).
+    scene_desc.simulationEventCallback = event_callback;
+
+    // Custom filter shader: wraps PxDefaultSimulationFilterShader (which
+    // implements Godot's layer/mask test) and additionally requests contact-
+    // point notifications for shape pairs where either side has the
+    // PHYSX_FILTER_FLAG_CONTACT_NOTIFY marker (set when a body has
+    // max_contacts_reported > 0).
+    // Returns eNOTIFY for simulation pairs so the filter callback gets invoked
+    // to check collision exceptions.
+    scene_desc.filterShader = physx_simulation_filter_shader;
+
+    // Pair filter callback: enforces collision exceptions between bodies.
+    // Runs after the filter shader; has access to both actors' userData.
+    scene_desc.filterCallback = pair_filter_callback;
+
+    // Contact modify callback: implements Godot's material combiner (absorbent /
+    // rough) per-pair. Runs on worker threads during simulate(); reads only the
+    // pre-step bounce/friction cached in each actor's userData.
+    scene_desc.contactModifyCallback = contact_modify_callback;
+
+    // Solver: PGS (PhysX's classic) by default; TGS is opt-in via
+    // physics/physx_3d/simulation/solver_type — it holds joint chains steadier
+    // under sustained external forces like wind, at some joint looseness cost
+    // in large mixed piles.
+    scene_desc.solverType = PhysXProjectSettings::solver_type == 1
+            ? physx::PxSolverType::eTGS
+            : physx::PxSolverType::ePGS;
+
+    // Scene flags required for correct Godot integration:
+    //   eENABLE_ACTIVE_ACTORS  - efficient body transform sync back to nodes
+    //   eENABLE_CCD            - per-body continuous collision detection
+    scene_desc.flags |= physx::PxSceneFlag::eENABLE_ACTIVE_ACTORS;
+    scene_desc.flags |= physx::PxSceneFlag::eENABLE_CCD;
+
+    if (PhysXProjectSettings::enhanced_determinism) {
+        // Same-binary/same-platform determinism, independent of worker count
+        // and API call order (not cross-platform). GPU dynamics is disabled
+        // entirely in this mode (see PhysXServer3D::init()).
+        scene_desc.flags |= physx::PxSceneFlag::eENABLE_ENHANCED_DETERMINISM;
+    }
+
+    // eENABLE_STABILIZATION is CPU-path only; PhysX rejects it alongside GPU
+    // dynamics. See physx_project_settings.h for why it defaults to off here.
+    if (PhysXProjectSettings::stabilization && !server->is_gpu_dynamics_enabled()) {
+        scene_desc.flags |= physx::PxSceneFlag::eENABLE_STABILIZATION;
+    }
+
+    // GPU dynamics (GODOT_PHYSX_GPU build + usable CUDA device): the whole
+    // scene simulates on the GPU. Buffer capacities sized for tens of
+    // thousands of colliding rigid bodies plus a particle-contact budget;
+    // PhysX grows some of these on demand but warns when the initial
+    // capacity is exceeded.
+    if (server->is_gpu_dynamics_enabled()) {
+        physx::PxCudaContextManager *cuda = server->get_cuda_context();
+        if (cuda) {
+            scene_desc.cudaContextManager = cuda;
+            scene_desc.flags |= physx::PxSceneFlag::eENABLE_GPU_DYNAMICS;
+            scene_desc.broadPhaseType = physx::PxBroadPhaseType::eGPU;
+            scene_desc.gpuMaxNumPartitions = 8;
+            scene_desc.gpuDynamicsConfig.tempBufferCapacity = 64 * 1024 * 1024;
+            scene_desc.gpuDynamicsConfig.maxRigidContactCount = 4 * 1024 * 1024;
+            scene_desc.gpuDynamicsConfig.maxRigidPatchCount = 1024 * 1024;
+            scene_desc.gpuDynamicsConfig.heapCapacity = 256 * 1024 * 1024;
+            scene_desc.gpuDynamicsConfig.foundLostPairsCapacity = 4 * 1024 * 1024;
+            scene_desc.gpuDynamicsConfig.collisionStackSize = 256 * 1024 * 1024;
+            scene_desc.gpuDynamicsConfig.maxParticleContacts = 1 * 1024 * 1024;
+        }
+    }
+
+    px_scene = physics->createScene(scene_desc);
+    ERR_FAIL_NULL_MSG(px_scene, "PhysX: createScene failed");
+
+    // Vehicle scene context — created after the scene so it can reference the scene.
+    vehicle_scene_context = memnew(PhysXVehicleSceneContext);
+}
+
+void PhysXSpace3D::_terminate_scene() {
+    if (vehicle_scene_context) {
+        memdelete(vehicle_scene_context);
+        vehicle_scene_context = nullptr;
+    }
+    if (px_scene) {
+        px_scene->release();
+        px_scene = nullptr;
+    }
+    // NOTE: px_dispatcher is shared and owned by PhysXServer3D (released in
+    // finish()); it is only borrowed here and must not be released per-space.
+    px_dispatcher = nullptr;
+}
+
+void PhysXSpace3D::set_debug_contacts(int p_amount) {
+    const bool was_debugging = !debug_contacts_buffer.is_empty();
+    debug_contacts_buffer.resize(p_amount);
+    const bool is_debugging = !debug_contacts_buffer.is_empty();
+
+    // Keep the global refcount in sync so the filter shader requests contact
+    // notifications exactly while at least one space is debugging.
+    if (!was_debugging && is_debugging) {
+        if (++s_debug_spaces_refcount == 1) {
+            g_physx_debug_contacts_enabled.store(true, std::memory_order_relaxed);
+        }
+    } else if (was_debugging && !is_debugging) {
+        if (--s_debug_spaces_refcount == 0) {
+            g_physx_debug_contacts_enabled.store(false, std::memory_order_relaxed);
+        }
+    }
+}
+
+void PhysXSpace3D::step(float p_step) {
+    if (!active || !px_scene) {
+        return;
+    }
+    // PhysX forbids calling simulate() while a previous step is in flight.
+    if (stepping) {
+        ERR_FAIL_MSG("PhysX: step() called while a previous step is still in flight");
+    }
+
+    stepping = true;
+    last_step = p_step;
+
+    // Reset the debug-contact buffer for this step (onContact refills it).
+    debug_contacts_count = 0;
+
+    // Pre-step: apply constant forces, clear contact buffers, resolve area
+    // gravity/damp overrides, and run custom integrators. Iterate the space's
+    // own body registration list (maintained by register_body/unregister_body)
+    // rather than querying the scene — this avoids the per-step getActors()
+    // round-trip, has no 1024-actor cap, and skips the userData round-trip
+    // since we already hold the typed wrapper.
+    for (PhysXBody3D *body : bodies) {
+        body->on_pre_step(p_step);
+    }
+
+    // Vehicle update (pre-step): read state from PhysX actor, apply commands,
+    // write state back. This runs before simulate so the vehicle2 state is
+    // consistent during the physics step.
+    for (PhysXVehicle3D *vehicle : vehicles) {
+        vehicle->update(p_step);
+    }
+
+    // Synchronous mode: simulate + block. When async support lands, move
+    // fetchResults() into sync()/flush_queries() so the worker can run
+    // concurrently with the simulation.
+    px_scene->simulate(p_step);
+    px_scene->fetchResults(true);
+
+    // GPU fluid/cloth read-back: copy particle/vertex positions GPU -> host so
+    // the nodes can render them. Must run while the scene is still valid
+    // (after fetchResults, before the next simulate).
+    for (PhysXGPUParticleFluid3D *fluid : fluids) {
+        fluid->read_back();
+    }
+    for (PhysXGPUCloth3D *cloth : cloths) {
+        cloth->read_back();
+    }
+
+    // Post-step: derive kinematic velocities and fire state-sync callbacks so
+    // Godot nodes read the new transforms.
+    for (PhysXBody3D *body : bodies) {
+        body->on_post_step(p_step);
+    }
+
+    // Vehicle post-step (post-step): sync the PhysX actor pose/velocity from
+    // vehicle2 state after the simulation step is complete.
+    for (PhysXVehicle3D *vehicle : vehicles) {
+        vehicle->post_step(p_step);
+    }
+
+    stepping = false;
+}
+
+void PhysXSpace3D::set_active(bool p_active) { active = p_active; }
+
+void PhysXSpace3D::add_actor(physx::PxActor *p_actor) {
+    ERR_FAIL_NULL(p_actor);
+    ERR_FAIL_NULL(px_scene);
+    // TODO: once step() is async, defer to a pending queue when stepping.
+    px_scene->addActor(*p_actor);
+}
+
+void PhysXSpace3D::remove_actor(physx::PxActor *p_actor) {
+    ERR_FAIL_NULL(p_actor);
+    // Tolerate a null scene silently: during teardown a body/area destructor
+    // may run after the space's PxScene was already released (e.g. the World3D
+    // is freed before the body nodes). There's nothing to remove in that case.
+    if (!px_scene) {
+        return;
+    }
+    px_scene->removeActor(*p_actor);
+}
+
+void PhysXSpace3D::set_param(PhysicsServer3D::SpaceParameter p_param, double p_value) {
+    if (!px_scene) {
+        return;
+    }
+
+    switch (p_param) {
+        case PhysicsServer3D::SPACE_PARAM_SOLVER_ITERATIONS: {
+            solver_iteration_count = (int)p_value;
+            for (PhysXBody3D *body : bodies) {
+                physx::PxRigidActor *actor = body->get_px_actor();
+                if (actor && actor->is<physx::PxRigidDynamic>()) {
+                    physx::PxRigidDynamic *dyn = static_cast<physx::PxRigidDynamic *>(actor);
+                    dyn->setSolverIterationCounts(solver_iteration_count, solver_iteration_count);
+                }
+            }
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_BODY_LINEAR_VELOCITY_SLEEP_THRESHOLD: {
+            sleep_threshold_linear = p_value;
+            _refresh_body_sleep_policies();
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_BODY_ANGULAR_VELOCITY_SLEEP_THRESHOLD: {
+            sleep_threshold_angular = p_value;
+            _refresh_body_sleep_policies();
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_BODY_TIME_TO_SLEEP: {
+            time_before_sleep = p_value;
+            _refresh_body_sleep_policies();
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_RECYCLE_RADIUS:
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_SEPARATION:
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_DEFAULT_BIAS: {
+            WARN_PRINT_ONCE("PhysX: this SpaceParameter is not mapped yet and will be ignored.");
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_ALLOWED_PENETRATION: {
+            // In PhysX, this is handled via contact offsets / bias coefficients.
+            // TODO: map to PxSceneDesc or per-shape settings.
+        } break;
+        default: {
+            WARN_PRINT_ONCE("PhysX: unknown SpaceParameter, ignored.");
+        } break;
+    }
+}
+
+double PhysXSpace3D::get_param(PhysicsServer3D::SpaceParameter p_param) const {
+    switch (p_param) {
+        case PhysicsServer3D::SPACE_PARAM_SOLVER_ITERATIONS:
+            return static_cast<double>(solver_iteration_count);
+        case PhysicsServer3D::SPACE_PARAM_BODY_LINEAR_VELOCITY_SLEEP_THRESHOLD:
+            return sleep_threshold_linear;
+        case PhysicsServer3D::SPACE_PARAM_BODY_ANGULAR_VELOCITY_SLEEP_THRESHOLD:
+            return sleep_threshold_angular;
+        case PhysicsServer3D::SPACE_PARAM_BODY_TIME_TO_SLEEP:
+            return time_before_sleep;
+        default:
+            // TODO: return cached values once the setter stores them.
+            return 0.0;
+    }
+}
+
+void PhysXSpace3D::_refresh_body_sleep_policies() {
+    for (PhysXBody3D *body : bodies) {
+        body->refresh_sleep_policy();
+    }
+}
+
+// --------------------------------------------------------------------
+// Body / Area registration
+// --------------------------------------------------------------------
+
+void PhysXSpace3D::register_body(PhysXBody3D *p_body) {
+    ERR_FAIL_NULL(p_body);
+
+    if (bodies.find(p_body) != -1) {
+        return;
+    }
+
+    bodies.push_back(p_body);
+
+    // Apply cached solver iterations to newly registered bodies.
+    physx::PxRigidActor *actor = p_body->get_px_actor();
+    if (actor && actor->is<physx::PxRigidDynamic>()) {
+        physx::PxRigidDynamic *dyn = static_cast<physx::PxRigidDynamic *>(actor);
+        dyn->setSolverIterationCounts(solver_iteration_count, solver_iteration_count);
+    }
+    // Adopt this space's sleep policy (thresholds may differ from the previous
+    // space, and the body was created before it had one).
+    p_body->refresh_sleep_policy();
+}
+
+void PhysXSpace3D::unregister_body(PhysXBody3D *p_body) {
+    ERR_FAIL_NULL(p_body);
+
+    for (unsigned int i = 0; i < bodies.size(); i++) {
+        if (bodies[i] == p_body) {
+            bodies.remove_at(i);
+            return;
+        }
+    }
+}
+
+void PhysXSpace3D::register_area(PhysXArea3D *p_area) {
+    ERR_FAIL_NULL(p_area);
+
+    if (areas.find(p_area) != -1) {
+        return;
+    }
+
+    areas.push_back(p_area);
+}
+
+void PhysXSpace3D::unregister_area(PhysXArea3D *p_area) {
+    ERR_FAIL_NULL(p_area);
+
+    for (unsigned int i = 0; i < areas.size(); i++) {
+        if (areas[i] == p_area) {
+            areas.remove_at(i);
+            return;
+        }
+    }
+}
+
+// --------------------------------------------------------------------
+// Vehicle registration
+// --------------------------------------------------------------------
+
+void PhysXSpace3D::register_vehicle(PhysXVehicle3D *p_vehicle) {
+    ERR_FAIL_NULL(p_vehicle);
+
+    if (vehicles.find(p_vehicle) != -1) {
+        return;
+    }
+
+    vehicles.push_back(p_vehicle);
+}
+
+void PhysXSpace3D::unregister_vehicle(PhysXVehicle3D *p_vehicle) {
+    ERR_FAIL_NULL(p_vehicle);
+
+    for (unsigned int i = 0; i < vehicles.size(); i++) {
+        if (vehicles[i] == p_vehicle) {
+            vehicles.remove_at(i);
+            return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GPU fluid / cloth registration
+// ---------------------------------------------------------------------------
+
+void PhysXSpace3D::register_fluid(PhysXGPUParticleFluid3D *p_fluid) {
+    ERR_FAIL_NULL(p_fluid);
+    if (fluids.find(p_fluid) != -1) {
+        return;
+    }
+    fluids.push_back(p_fluid);
+}
+
+void PhysXSpace3D::unregister_fluid(PhysXGPUParticleFluid3D *p_fluid) {
+    ERR_FAIL_NULL(p_fluid);
+    for (unsigned int i = 0; i < fluids.size(); i++) {
+        if (fluids[i] == p_fluid) {
+            fluids.remove_at(i);
+            return;
+        }
+    }
+}
+
+void PhysXSpace3D::register_cloth(PhysXGPUCloth3D *p_cloth) {
+    ERR_FAIL_NULL(p_cloth);
+    if (cloths.find(p_cloth) != -1) {
+        return;
+    }
+    cloths.push_back(p_cloth);
+}
+
+void PhysXSpace3D::unregister_cloth(PhysXGPUCloth3D *p_cloth) {
+    ERR_FAIL_NULL(p_cloth);
+    for (unsigned int i = 0; i < cloths.size(); i++) {
+        if (cloths[i] == p_cloth) {
+            cloths.remove_at(i);
+            return;
+        }
+    }
+}
+
+physx::PxPhysics *PhysXSpace3D::get_px_physics() const {
+    PhysXServer3D *server = PhysXServer3D::get_singleton();
+    return server ? server->try_get_physics() : nullptr;
+}
+
+physx::PxCudaContextManager *PhysXSpace3D::get_px_cuda() const {
+    PhysXServer3D *server = PhysXServer3D::get_singleton();
+    return server ? server->get_cuda_context() : nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Deferred monitor/event dispatch.
+//
+// onTrigger/onContact run inside fetchResults() during step(), i.e. on the
+// physics thread and outside Godot's unlocked callback window. Area3D monitor
+// callbacks (body_entered/area_entered/...) must fire during flush_queries()
+// instead, so onTrigger records a TriggerEvent here and flush_queries()
+// dispatches it. The overlap-list bookkeeping (add_overlapping_body/area) still
+// happens during onTrigger because that state is needed for the next step's
+// gravity/damp resolution — only the *Godot callbacks* are deferred.
+// ---------------------------------------------------------------------------
+
+void PhysXSpace3D::queue_trigger(const TriggerEvent &p_event) {
+    pending_trigger_events.push_back(p_event);
+}
+
+void PhysXSpace3D::flush_pending_callbacks() {
+    // Dispatch the trigger events queued during the last step. Reentrancy guard:
+    // a monitor callback could in theory mutate the world, but it cannot re-enter
+    // flush_queries() (it runs on the main thread, single-threaded server).
+    flushing_callbacks = true;
+
+    for (unsigned int i = 0; i < pending_trigger_events.size(); i++) {
+        const TriggerEvent &ev = pending_trigger_events[i];
+        // Skip events whose dispatching area was freed between step() and now.
+        // The body/area identity is cached in the event, so nothing else is
+        // dereferenced here — removal events MUST still dispatch after the
+        // body/area has been freed (Godot emits body_exited on removal).
+        if (!ev.area || areas.find(ev.area) == -1) {
+            continue;
+        }
+        if (ev.is_area_vs_area) {
+            ev.area->dispatch_area_monitor(
+                    ev.status,
+                    ev.other_area_rid,
+                    ev.other_area_id,
+                    ev.other_shape,
+                    ev.area_shape);
+        } else {
+            ev.area->dispatch_body_monitor(
+                    ev.status,
+                    ev.body_rid,
+                    ev.body_id,
+                    ev.other_shape,
+                    ev.area_shape);
+        }
+    }
+
+    pending_trigger_events.clear();
+    flushing_callbacks = false;
+}
