@@ -6,7 +6,7 @@
 #include "core/object/object_id.h"
 #include "core/variant/variant.h"
 #include "core/templates/hash_set.h"
-#include "servers/physics_server_3d.h"
+#include "servers/physics_3d/physics_server_3d.h"
 
 #include "physx_object_3d.h"
 #include "../shapes/physx_user_data.h"

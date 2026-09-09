@@ -41,7 +41,7 @@
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/3d/world_3d.h"
 #include "scene/resources/material.h"
-#include "servers/rendering_server.h"
+#include "servers/rendering/rendering_server.h"
 
 void PhysXParticleFluid3D::_make_fluid() {
 	if (fluid.is_valid()) {

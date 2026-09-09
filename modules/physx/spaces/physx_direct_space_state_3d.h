@@ -18,7 +18,7 @@
 #ifndef PHYSX_DIRECT_SPACE_STATE_3D_H
 #define PHYSX_DIRECT_SPACE_STATE_3D_H
 
-#include "servers/physics_server_3d.h"
+#include "servers/physics_3d/physics_server_3d.h"
 #include "physx_space_3d.h"
 #include "core/templates/local_vector.h"
 

@@ -11,8 +11,8 @@
 #include "core/object/class_db.h"
 #include "core/os/time.h"
 #include "scene/resources/3d/world_3d.h"
-#include "servers/physics_server_3d.h"
-#include "servers/rendering_server.h"
+#include "servers/physics_3d/physics_server_3d.h"
+#include "servers/rendering/rendering_server.h"
 
 void PhysXChunkEmitter3D::_apply_chunk_mesh() {
 	if (!multimesh.is_valid()) {

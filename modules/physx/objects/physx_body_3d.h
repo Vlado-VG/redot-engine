@@ -16,7 +16,7 @@
 #define PHYSX_BODY_3D_H
 #include "physx_shaped_object_3d.h"
 #include "../shapes/physx_user_data.h"
-#include "servers/physics_server_3d.h"
+#include "servers/physics_3d/physics_server_3d.h"
 
 #include "core/templates/hash_set.h"
 #include "core/templates/local_vector.h"

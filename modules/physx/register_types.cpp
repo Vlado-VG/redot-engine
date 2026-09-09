@@ -15,7 +15,7 @@
 
 #include "physx_server.h"
 #include "physx_project_settings.h"
-#include "servers/physics_server_3d_wrap_mt.h"
+#include "servers/physics_3d/physics_server_3d_wrap_mt.h"
 #include "objects/physx_direct_body_state_3d.h"
 #include "nodes/physx_chunk_emitter_3d.h"
 #include "nodes/physx_cloth_3d.h"

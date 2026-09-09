@@ -37,8 +37,8 @@
 #include "core/object/class_db.h"
 #include "scene/3d/physics/area_3d.h"
 #include "scene/resources/3d/world_3d.h"
-#include "servers/physics_server_3d.h"
-#include "servers/rendering_server.h"
+#include "servers/physics_3d/physics_server_3d.h"
+#include "servers/rendering/rendering_server.h"
 
 // Map a friendly 0..1 stiffness to XPBD compliance (m/N). 1 -> rigid, 0 -> slack.
 static float _stiffness_to_compliance(float p_stiffness, float p_max_compliance) {

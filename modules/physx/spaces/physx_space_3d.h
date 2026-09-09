@@ -15,7 +15,7 @@
 
 #ifndef PHYSX_SPACE_3D_H
 #define PHYSX_SPACE_3D_H
-#include "servers/physics_server_3d.h"
+#include "servers/physics_3d/physics_server_3d.h"
 #include "core/templates/local_vector.h"
 #include "core/math/math_funcs.h"
 // Forward declarations of PhysX types to keep the header clean
