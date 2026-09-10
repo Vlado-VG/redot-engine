@@ -107,8 +107,8 @@ public:
     bool has_wind() const { return wind_force_magnitude != 0.0f; }
     /// Wind force contribution at a world position: wind_direction scaled by
     /// wind_force_magnitude, attenuated over downwind distance from
-    /// wind_source by wind_attenuation_factor. (Ported from the reference
-    /// module; zero unless the wind params are set.)
+    /// wind_source by wind_attenuation_factor (zero unless the wind params
+    /// are set).
     Vector3 wind_at(const Vector3 &p_position) const;
 
 	/// Returns true if this area has any area override enabled.

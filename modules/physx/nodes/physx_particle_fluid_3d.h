@@ -30,19 +30,85 @@
 
 #pragma once
 
+#include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
+#include "core/variant/typed_array.h"
 #include "scene/3d/visual_instance_3d.h"
 #include "scene/resources/mesh.h"
 
-// A GPU PBD fluid volume simulated by the PhysX backend (PhysX 5
-// PxPBDParticleSystem). It only does anything when the active 3D physics engine
-// is "PhysX" and the engine was built with GPU support (physx_gpu=yes) on a
-// machine with a CUDA device; otherwise it is inert.
+class MPMFluidSolver;
+
+// A GPU fluid volume. Two backends:
+//   * PBD  -- PhysX 5 PxPBDParticleSystem, GPU (CUDA) only. Foam and a GPU
+//             isosurface mesh are available on this path. Inert unless the 3D
+//             physics engine is "PhysX", the build has GPU support
+//             (physx_gpu=yes) and a CUDA device is present.
+//   * MPM  -- a weakly-compressible MLS-MPM solver on plain compute shaders
+//             (RenderingDevice, no CUDA), so it runs on any Vulkan/Metal/D3D12
+//             device and needs no physics engine. Emission, analytic colliders
+//             (mpm_colliders) and a GPU-marched isosurface; no foam yet.
+// "Solver" picks one; Auto uses PBD when a CUDA device is available, else MPM.
 class PhysXParticleFluid3D : public GeometryInstance3D {
 	GDCLASS(PhysXParticleFluid3D, GeometryInstance3D);
 
+public:
+	enum SolverBackend {
+		SOLVER_AUTO,
+		SOLVER_PBD,
+		SOLVER_MPM,
+	};
+
+protected:
+	// PhysXGranular3D overrides these to run the material as Drucker-Prager
+	// grains instead of a liquid. Everything else -- emission, colliders,
+	// domain, rendering, the RID lifecycle -- is shared.
+	virtual bool _is_granular() const { return false; }
+	virtual float _granular_friction_deg() const { return 35.0f; }
+	virtual float _granular_hardness() const { return 150000.0f; }
+	virtual float _granular_cohesion() const { return 0.0f; }
+	virtual float _granular_density() const { return 1000.0f; }
+
+private:
 	RID fluid; // PhysXServer3D particle-fluid RID
 	RID multimesh;
+
+	SolverBackend solver = SOLVER_AUTO;
+	MPMFluidSolver *mpm = nullptr;
+
+	// MPM-only tuning (ignored on the PBD path).
+	Vector3 mpm_domain_size = Vector3(3, 3, 3);
+	int mpm_grid_resolution = 0; // 0 = auto from particle_size (~2 cells per particle)
+	int mpm_substeps = 5;
+	float mpm_stiffness = 6000.0;
+	// PhysicsBody3D nodes coupled to the MPM fluid as analytic shapes: they push
+	// the fluid, and RigidBody3D entries get the reaction impulse back. Up to 32
+	// total (see MAX_COLLIDERS), shared with auto-collected bodies and debris.
+	TypedArray<NodePath> mpm_colliders;
+	// When set, also collides against every non-static PhysicsBody3D overlapping
+	// the domain each step -- so the fluid reacts to the player, thrown objects
+	// etc. without listing them, the way the CUDA path does automatically.
+	bool mpm_auto_colliders = false;
+	RID _mpm_query_shape; // box shape reused for the auto-collider overlap query
+	HashMap<ObjectID, Vector3> _mpm_prev_pos; // last frame's position, for velocity of non-rigid colliders
+
+	uint32_t _mpm_surface_tick = 0; // isosurface is re-marched + read back every Nth step, not every step
+	double _mpm_accum = 0.0; // frame-delta accumulator so the MPM solve is capped at ~60 Hz
+
+	SolverBackend _resolved_solver() const;
+
+protected:
+	bool _mpm_configured = false;
+	bool _mpm_emit_mode = false;
+	bool spawned = false;
+	bool _mpm_path() const { return _resolved_solver() == SOLVER_MPM; }
+	void _mpm_configure(bool p_prefill = true);
+
+private:
+	void _mpm_step(double p_delta);
+	void _mpm_emit_step(double p_delta);
+	int _mpm_resolved_grid_res() const;
+	void _mpm_surface_params(float &r_iso, float &r_kernel, float &r_boost) const;
+	void _mpm_apply_surface_params();
 	Ref<Mesh> particle_mesh;
 
 	// Foam/spray/bubble particles, drawn in their own MultiMesh + RS instance.
@@ -89,7 +155,6 @@ class PhysXParticleFluid3D : public GeometryInstance3D {
 	float foam_size = 0.0; // froth clump scale; 0 = follow particle_size
 	float _effective_foam_size() const { return foam_size > 0.0f ? foam_size : particle_size; }
 
-	bool spawned = false;
 	double emit_accum = 0.0;
 
 	// Editor-only: a cheap CPU particle animation (spawn -> gravity -> recycle)
@@ -119,6 +184,21 @@ protected:
 	static void _bind_methods();
 
 public:
+	void set_solver(SolverBackend p_solver);
+	SolverBackend get_solver() const { return solver; }
+	void set_mpm_domain_size(const Vector3 &p_size);
+	Vector3 get_mpm_domain_size() const { return mpm_domain_size; }
+	void set_mpm_grid_resolution(int p_res);
+	int get_mpm_grid_resolution() const { return mpm_grid_resolution; }
+	void set_mpm_substeps(int p_substeps);
+	int get_mpm_substeps() const { return mpm_substeps; }
+	void set_mpm_stiffness(float p_stiffness);
+	float get_mpm_stiffness() const { return mpm_stiffness; }
+	void set_mpm_colliders(const TypedArray<NodePath> &p_colliders);
+	TypedArray<NodePath> get_mpm_colliders() const { return mpm_colliders; }
+	void set_mpm_auto_colliders(bool p_enabled) { mpm_auto_colliders = p_enabled; }
+	bool is_mpm_auto_colliders() const { return mpm_auto_colliders; }
+
 	void set_particle_count(int p_count);
 	int get_particle_count() const { return particle_count; }
 	void set_particle_size(float p_size);
@@ -169,6 +249,8 @@ public:
 	// Remove all particles.
 	void clear();
 	int get_live_particle_count() const;
+	// GPU cost of the last MPM solver step (submit+sync), ms. 0 on the PBD path.
+	double get_mpm_step_msec() const;
 
 	PackedVector3Array get_particle_positions() const;
 
@@ -181,3 +263,5 @@ public:
 	PhysXParticleFluid3D();
 	~PhysXParticleFluid3D();
 };
+
+VARIANT_ENUM_CAST(PhysXParticleFluid3D::SolverBackend);

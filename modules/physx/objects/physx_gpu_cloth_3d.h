@@ -2,7 +2,6 @@
  * @file physx_gpu_cloth_3d.h
  * @brief GPU cloth: a PhysX 5 PxDeformableSurface (FEM/XPBD, runs on CUDA).
  *
- * Ported from the reference godot_physx module (there: GodotPhysXCloth3D).
  * GPU-only; PhysXCloth3D falls back to its built-in CPU XPBD solver when this
  * cannot be built (no GPU build, no CUDA device, or the active engine is not
  * PhysX). The surface simulates in world space; positions are read back to

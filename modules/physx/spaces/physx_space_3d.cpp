@@ -46,6 +46,13 @@ PhysXSpace3D::PhysXSpace3D() {
 }
 
 PhysXSpace3D::~PhysXSpace3D() {
+    // Detach soft bodies while this space (and its PxScene) is still valid --
+    // they may outlive it if their RID is never explicitly freed. Runs before
+    // _terminate_scene() so a GPU soft volume can still leave the scene.
+    for (PhysXSoftBody3D *sb : soft_bodies) {
+        sb->notify_space_destroyed();
+    }
+    soft_bodies.clear();
     if (direct_state) {
         memdelete(direct_state);
     }
@@ -170,6 +177,12 @@ void PhysXSpace3D::_initialize_scene() {
             scene_desc.gpuDynamicsConfig.heapCapacity = 256 * 1024 * 1024;
             scene_desc.gpuDynamicsConfig.foundLostPairsCapacity = 4 * 1024 * 1024;
             scene_desc.gpuDynamicsConfig.collisionStackSize = 256 * 1024 * 1024;
+            // Non-zero so PxDeformableSurface (cloth) / PxDeformableVolume (GPU
+            // soft bodies) can generate contacts; either touching anything with
+            // its budget at 0 silently drops the contacts and the deformable
+            // falls through the world.
+            scene_desc.gpuDynamicsConfig.maxDeformableSurfaceContacts = 512 * 1024;
+            scene_desc.gpuDynamicsConfig.maxDeformableVolumeContacts = 1024 * 1024;
             scene_desc.gpuDynamicsConfig.maxParticleContacts = 1 * 1024 * 1024;
         }
     }
@@ -259,6 +272,15 @@ void PhysXSpace3D::step(float p_step) {
     }
     for (PhysXGPUCloth3D *cloth : cloths) {
         cloth->read_back();
+    }
+    // GPU soft bodies (PxDeformableVolume) simulated inside px_scene -- pull
+    // their deformed state off the device. CPU soft bodies advance here, after
+    // the rigid solve, so their per-vertex world query sees this step's final
+    // rigid poses.
+    for (PhysXSoftBody3D *sb : soft_bodies) {
+        sb->read_back();
+        const physx::PxVec3 g = px_scene->getGravity();
+        sb->step(p_step, Vector3(g.x, g.y, g.z));
     }
 
     // Post-step: derive kinematic velocities and fire state-sync callbacks so

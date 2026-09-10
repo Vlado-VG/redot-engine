@@ -66,7 +66,7 @@ public:
 
     // --------------------------------------------------------------------
     // Sleep policy (Godot SpaceParameters, mapped onto PhysX's energy-based
-    // sleep threshold + wake counter — same mapping as the reference module).
+    // sleep threshold + wake counter).
     // Godot expresses sleep as separate linear/angular velocity thresholds
     // (m/s and rad/s) plus a time-to-sleep; PhysX takes a mass-normalized
     // kinetic-energy threshold below which a body may sleep, plus a wake
@@ -191,6 +191,22 @@ public:
         return cloths;
     }
 
+    // --------------------------------------------------------------------
+    // Soft body registration (PhysXSoftBody3D — the soft_body_* server API).
+    // --------------------------------------------------------------------
+
+    void register_soft_body(PhysXSoftBody3D *p_sb) {
+        if (soft_bodies.find(p_sb) == -1) {
+            soft_bodies.push_back(p_sb);
+        }
+    }
+    void unregister_soft_body(PhysXSoftBody3D *p_sb) {
+        int idx = soft_bodies.find(p_sb);
+        if (idx != -1) {
+            soft_bodies.remove_at(idx);
+        }
+    }
+
     // Convenience accessors for the GPU object types (resolve via the server).
     physx::PxPhysics *get_px_physics() const;
     physx::PxCudaContextManager *get_px_cuda() const;
@@ -241,6 +257,7 @@ private:
     LocalVector<PhysXVehicle3D *> vehicles;
     LocalVector<PhysXGPUParticleFluid3D *> fluids;
     LocalVector<PhysXGPUCloth3D *> cloths;
+    LocalVector<PhysXSoftBody3D *> soft_bodies;
 
     // Deferred monitor events (filled during step, drained in flush_queries).
     LocalVector<TriggerEvent> pending_trigger_events;

@@ -1,4 +1,4 @@
-﻿/**************************************************************************/
+/**************************************************************************/
 /*  physx_gpu_particle_fluid_3d.cpp                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
@@ -75,6 +75,7 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 	LocalVector<PxVec4> host_positions; // scratch for outlier clamping
 	float clamp_reach = 3.5f; // max meters a particle may sit from the fluid's median before it is pinned
 	uint32_t frame = 0; // isosurface is re-extracted every other solve to halve the cost
+	bool surface_clip_warned = false;
 	// Extractions are kicked async on the stream and their results read one
 	// 30 Hz tick later, so the GPU is never stalled waiting on marching cubes.
 	bool surface_pending = false;
@@ -100,13 +101,19 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		PxPhysicsGpu *gpu = PxGetPhysicsGpu();
 		ERR_FAIL_NULL(gpu);
 
-		smoothing = gpu->createSmoothedPositionGenerator(cuda, p_max_particles, 0.5f);
+		// Moderately higher smoothing strength (default 0.5): the isosurface
+		// follows a neighbour-averaged position field so a disturbed pool's edge
+		// particles do not boil the surface. Too high and a thin spreading sheet
+		// of fluid gets averaged away instead of pooling out.
+		smoothing = gpu->createSmoothedPositionGenerator(cuda, p_max_particles, 0.65f);
 		dev_smoothed = PX_EXT_DEVICE_MEMORY_ALLOC(PxVec4, *cuda, p_max_particles);
 		smoothing->setResultBufferDevice(dev_smoothed);
 
 		// min 1.0 keeps every ellipsoid at least a grid cell wide (smaller ones
-		// flicker); max 1.6 is well below PhysX's default 2.0 to limit needling.
-		anisotropy = gpu->createAnisotropyGenerator(cuda, p_max_particles, 5.0f, 1.0f, 1.6f);
+		// flicker); max 1.4 is well below PhysX's default 2.0 -- a lone particle
+		// at a stirred pool's rim otherwise stretches into a needle and the
+		// surface crawls with tendrils.
+		anisotropy = gpu->createAnisotropyGenerator(cuda, p_max_particles, 5.0f, 1.0f, 1.4f);
 		dev_aniso1 = PX_EXT_DEVICE_MEMORY_ALLOC(PxVec4, *cuda, p_max_particles);
 		dev_aniso2 = PX_EXT_DEVICE_MEMORY_ALLOC(PxVec4, *cuda, p_max_particles);
 		dev_aniso3 = PX_EXT_DEVICE_MEMORY_ALLOC(PxVec4, *cuda, p_max_particles);
@@ -125,16 +132,29 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		sgp.subgridSizeZ = 16;
 		sgp.haloSize = 0;
 		sgp.maxNumSubgrids = 2048;
-		// Grid cell ~= 1.5x the particle diameter. Finer than this multiplies the
-		// marching-cubes cost (and can crater the frame rate for a fluid spread
-		// over a wide area) with little visible gain once mesh smoothing runs.
+		// Grid cell ~= 1.75x the particle diameter. Finer multiplies the
+		// marching-cubes cost (and the subgrid / triangle budget) for a wide
+		// spread of fluid with little visible gain once mesh smoothing runs.
 		sgp.gridSpacing = 3.5f * rest_offset;
 
 		PxIsosurfaceParams ip;
-		ip.particleCenterToIsosurfaceDistance = 2.4f * rest_offset;
+		// Well past the default 2x radius: a thin spreading pool is barely one
+		// particle deep at its rim, so a tight iso distance breaks it into
+		// wriggling isolated blobs. A wide reach fuses that rim into one
+		// connected sheet (the bulk just renders a touch fat, which reads as
+		// water anyway).
+		ip.particleCenterToIsosurfaceDistance = 3.4f * rest_offset;
+		// One Gaussian pass over the density field -- no GROW (it inflates the
+		// falling stream into a slab and halves the frame rate) and no SHRINK
+		// (it erodes thin sheets). The blur lifts the speckled rim of a stirred
+		// pool above the iso level as one continuous surface instead of a mat of
+		// wriggling tendrils; mesh smoothing then relaxes the remaining wobble.
+		// Costs ~15 fps on a wide pool, which is the price of a calm edge.
 		ip.clearFilteringPasses();
-		ip.numMeshSmoothingPasses = 6;
-		ip.numMeshNormalSmoothingPasses = 4;
+		ip.gridSmoothingRadius = sgp.gridSpacing;
+		ip.addGridFilteringPass(PxIsosurfaceGridFilteringType::eSMOOTH);
+		ip.numMeshSmoothingPasses = 9;
+		ip.numMeshNormalSmoothingPasses = 5;
 
 		extractor = gpu->createSparseGridIsosurfaceExtractor(cuda, sgp, ip, p_max_particles, max_vertices, max_triangles);
 		if (extractor) {
@@ -288,6 +308,10 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 	void publish_surface() {
 		uint32_t nv = MIN(extractor->getNumVertices(), max_vertices);
 		uint32_t nt = MIN(extractor->getNumTriangles(), max_triangles);
+		if (!surface_clip_warned && (extractor->getNumVertices() > max_vertices || extractor->getNumTriangles() > max_triangles)) {
+			surface_clip_warned = true;
+			WARN_PRINT("PhysXParticleFluid3D: isosurface mesh exceeded the buffer budget and was clipped -- part of the fluid will not be drawn. Reduce spawn_region_size / particle_count or coarsen the surface.");
+		}
 		for (uint32_t i = 0; i < nt * 3; i++) {
 			if (host_indices[i] >= nv) {
 				nt = 0;
@@ -536,17 +560,25 @@ void PhysXGPUParticleFluid3D::_ensure_system() {
 	ERR_FAIL_NULL(scene);
 
 	px_material = physics->createPBDMaterial(
-			0.05f, // friction
+			granular ? CLAMP((PxReal)granular_friction, 0.0f, 2.0f) : 0.05f, // friction
 			0.0f, // damping
-			(PxReal)adhesion,
-			(PxReal)viscosity,
-			(PxReal)vorticity,
-			(PxReal)surface_tension,
-			(PxReal)cohesion,
+			granular ? 0.0f : (PxReal)adhesion,
+			granular ? 0.0f : (PxReal)viscosity,
+			granular ? 0.0f : (PxReal)vorticity,
+			granular ? 0.0f : (PxReal)surface_tension,
+			granular ? 0.0f : (PxReal)cohesion,
 			0.0f, // lift (deprecated)
 			0.0f); // drag (deprecated)
 	ERR_FAIL_NULL(px_material);
 	px_material->setGravityScale((PxReal)gravity_scale);
+	if (granular) {
+		// Grain-on-grain friction is a separate scale from the base coefficient;
+		// PBD particle friction is weak for piling, so crank it hard (the range
+		// is [0, inf)).
+		px_material->setParticleFrictionScale(8.0f);
+		px_material->setParticleAdhesionScale(0.0f);
+		px_material->setDamping(0.5f);
+	}
 
 	px_system = physics->createPBDParticleSystem(*cuda, 96);
 	ERR_FAIL_NULL_MSG(px_system, "PhysX: createPBDParticleSystem failed.");
@@ -561,13 +593,26 @@ void PhysXGPUParticleFluid3D::_ensure_system() {
 	px_system->setParticleContactOffset(fluid_rest_offset / 0.6f);
 	px_system->setSolidRestOffset(rest_offset);
 	px_system->setFluidRestOffset(fluid_rest_offset);
-	px_system->setMaxVelocity(rest_offset * 100.0f);
+	px_system->setMaxLinearVelocity(rest_offset * 100.0f);
+	if (granular) {
+		// PBD friction only converges to a real angle of repose with many
+		// position iterations; the fluid default is far too few for a pile.
+		px_system->setSolverIterationCounts(16, 1);
+		px_system->setMaxDepenetrationVelocity(rest_offset * 20.0f);
+	}
 	// Without this, speculative contacts let dense bodies rest on the fluid
 	// surface instead of sinking through it (PhysX's PBF snippet also disables it).
-	px_system->setParticleFlag(PxParticleFlag::eENABLE_SPECULATIVE_CCD, false);
+	// Granular keeps CCD -- a solid pile benefits from it and there is no surface
+	// for a body to falsely rest on.
+	px_system->setParticleFlag(PxParticleFlag::eENABLE_SPECULATIVE_CCD, granular);
 
+	// Fluid phase gets the density/cohesion constraints; granular drops the fluid
+	// flag so the particles are solid grains that pile and hold a slope, keeping
+	// only self-collision.
 	fluid_phase = px_system->createPhase(px_material,
-			PxParticlePhaseFlags(PxParticlePhaseFlag::eParticlePhaseFluid | PxParticlePhaseFlag::eParticlePhaseSelfCollide));
+			granular
+					? PxParticlePhaseFlags(PxParticlePhaseFlag::eParticlePhaseSelfCollide)
+					: PxParticlePhaseFlags(PxParticlePhaseFlag::eParticlePhaseFluid | PxParticlePhaseFlag::eParticlePhaseSelfCollide));
 
 	// Our scene filter shader suppresses any pair whose layer/mask cross-check is
 	// zero; a particle system's filter data defaults to all-zero, so give it
@@ -582,11 +627,20 @@ void PhysXGPUParticleFluid3D::_apply_material() {
 	if (!px_material || !dirty_material) {
 		return;
 	}
-	px_material->setViscosity((PxReal)viscosity);
-	px_material->setSurfaceTension((PxReal)surface_tension);
-	px_material->setCohesion((PxReal)cohesion);
-	px_material->setAdhesion((PxReal)adhesion);
-	px_material->setVorticityConfinement((PxReal)vorticity);
+	if (granular) {
+		px_material->setFriction(CLAMP((PxReal)granular_friction, 0.0f, 2.0f));
+		px_material->setViscosity(0.0f);
+		px_material->setSurfaceTension(0.0f);
+		px_material->setCohesion(0.0f);
+		px_material->setAdhesion(0.0f);
+		px_material->setVorticityConfinement(0.0f);
+	} else {
+		px_material->setViscosity((PxReal)viscosity);
+		px_material->setSurfaceTension((PxReal)surface_tension);
+		px_material->setCohesion((PxReal)cohesion);
+		px_material->setAdhesion((PxReal)adhesion);
+		px_material->setVorticityConfinement((PxReal)vorticity);
+	}
 	px_material->setGravityScale((PxReal)gravity_scale);
 	dirty_material = false;
 }
@@ -649,6 +703,22 @@ real_t PhysXGPUParticleFluid3D::get_param(Param p_param) const {
 		default:
 			return 0.0;
 	}
+}
+
+void PhysXGPUParticleFluid3D::set_granular(bool p_enabled, real_t p_friction) {
+	granular_friction = p_friction;
+	if (granular == p_enabled) {
+		dirty_material = true;
+		_apply_material();
+		return;
+	}
+	granular = p_enabled;
+	// The phase (fluid vs granular) is baked into the particle system at
+	// creation; rebuild it. The node clears and re-seeds particles after this.
+	if (px_system) {
+		_destroy();
+	}
+	dirty_material = true;
 }
 
 void PhysXGPUParticleFluid3D::set_capacity(uint32_t p_capacity) {
@@ -751,17 +821,7 @@ void PhysXGPUParticleFluid3D::_ensure_buffer() {
 	desc.velocities = &seed_vel;
 	desc.phases = &seed_phase;
 	desc.maxDiffuseParticles = max_diffuse;
-	// NOTE: the ACTIVE diffuse allocation (maxActiveDiffuseParticles) must stay
-	// zero. On PhysX 5.8 AND 5.10 (re-checked on 5.10.0, CUDA 12.8.2), setting
-	// it — via the desc, right after creation, or deferred until after the
-	// buffer has simulated — corrupts GPU state: every host<->device upload on
-	// the buffer then fails with CUDA error 700 and PhysX aborts GPU
-	// simulation for the scene (found and bisected by the GPU smoke test; the
-	// cloth path is unaffected). The practical consequence: the solver has no
-	// diffuse-particle budget, so foam does not spawn. Everything else (fluid
-	// sim, emission, isosurface rendering, submersion) works with this
-	// configuration. Re-test when the SDK is next upgraded.
-	desc.maxActiveDiffuseParticles = 0u;
+	desc.maxActiveDiffuseParticles = max_diffuse;
 	desc.diffuseParams = _diffuse_params((float)foam_lifetime, (float)foam_threshold, (float)foam_buoyancy);
 
 	px_buffer = ExtGpu::PxCreateAndPopulateParticleAndDiffuseBuffer(desc, cuda);
@@ -908,4 +968,3 @@ real_t PhysXGPUParticleFluid3D::get_submersion(const AABB &p_world_aabb) const {
 	const real_t filled = (real_t)inside * s * s * s;
 	return CLAMP(filled / box_vol, (real_t)0.0, (real_t)1.0);
 }
-

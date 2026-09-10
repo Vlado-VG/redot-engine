@@ -13,6 +13,7 @@ def get_doc_classes():
         "PhysXChunkEmitter3D",
         "PhysXCloth3D",
         "PhysXParticleFluid3D",
+        "PhysXGranular3D",
     ]
 
 

@@ -1,185 +1,162 @@
+/**
+ * @file physx_soft_body_3d.h
+ * @brief Soft body backing the stock SoftBody3D node (PhysicsServer3D
+ * soft_body_* API).
+ *
+ * Each soft body resolves independently to one of two paths:
+ *  - GPU: a PhysX PxDeformableVolume (tetrahedral FEM on CUDA, see
+ *    physx_soft_volume_3d.h), when the mesh tetrahedralizes and a CUDA device
+ *    is available. Volumes also collide with each other.
+ *  - CPU: the module's XPBD solver (cloth/xpbd_cloth_solver.h) over the welded
+ *    render mesh — edge constraints hold the shape, an optional volume
+ *    constraint (pressure) keeps it from collapsing, and a per-vertex scene
+ *    query pushes it out of rigid bodies.
+ *
+ * The path is chosen per body: the physics/physx_3d/soft_body/mode project
+ * setting (Auto/CPU/GPU), overridden per node by the "physx_soft_mode"
+ * metadata ("cpu" / "gpu"). Auto prefers GPU whenever it can build.
+ */
+
 #ifndef PHYSX_SOFT_BODY_3D_H
 #define PHYSX_SOFT_BODY_3D_H
 
+#include "../cloth/xpbd_cloth_solver.h"
+#include "physx_object_3d.h"
+#include "physx_soft_volume_3d.h"
+
 #include "core/math/aabb.h"
 #include "core/math/transform_3d.h"
-#include "core/object/object_id.h"
-#include "core/variant/variant.h"
+#include "core/templates/hash_map.h"
 #include "core/templates/hash_set.h"
-#include "servers/physics_3d/physics_server_3d.h"
+#include "core/templates/local_vector.h"
+#include "core/templates/rid.h"
 
-#include "physx_object_3d.h"
-#include "../shapes/physx_user_data.h"
+class PhysicsServer3DRenderingServerHandler;
 
-// Forward declarations. PhysX 5's soft body is PxDeformableVolume; the
-// PxSoftBody name survives only as a deprecated typedef.
-namespace physx {
-class PxActor;
-class PxDeformableVolume;
-class PxCudaContextManager;
-}
-
-/**
- * @brief Skeleton for the soft-body implementation (Godot SoftBody3D).
- *
- * STATUS: skeleton. The Godot-side lifecycle is complete and safe — RID
- * registration, space membership (works for any PxActor once one exists),
- * collision layer/mask, collision exceptions, parameter storage and
- * round-trip getters. No PhysX actor is created and nothing is simulated yet;
- * the unimplemented entry points are marked below.
- *
- * Wiring it up (API names verified against thirdparty/physx 5.8 headers):
- *
- *  1. PxDeformableVolume is GPU-ONLY (see PxDeformableVolume.h): the scene
- *     needs PxSceneFlag::eENABLE_GPU_DYNAMICS and PxBroadPhaseType::eGPU.
- *     Add both to PhysXSpace3D::_initialize_scene() behind a project setting.
- *  2. soft_body_set_mesh(): cook the mesh into a tetrahedral
- *     PxDeformableVolumeMesh (PxCooking), then load it via
- *     PxPhysics::createDeformableVolumeMesh(PxInputStream&).
- *  3. Create the actor and attach its collision shape via
- *     PxDeformableBody::attachShape, then store it as px_actor — set_space()
- *     below already adds/removes a non-null actor from the PxScene.
- *  4. Rendering sync / kinematic targets: per-step read
- *     PxDeformableVolume::getSimPositionInvMassBufferD() and write
- *     setKinematicTargetBufferD() (device buffers; a PxCudaContextManager
- *     is required, threaded through the space like the vehicle context).
- *  5. Map the stored params onto PxDeformableVolumeMaterial /
- *     solver iteration counts; implement pinned points with
- *     PxDeformableAttachment (pinned_indices below is the Godot-side set).
- *
- * Related future features (same GPU pipeline): PxDeformableSurface (cloth),
- * PxParticleBuffer (particles), PxArticulationReducedCoordinate
- * (articulations) — all follow this same wrapper pattern.
- */
 class PhysXSoftBody3D : public PhysXObject3D {
 public:
-	PhysXSoftBody3D();
+	PhysXSoftBody3D() :
+			PhysXObject3D(OBJECT_TYPE_SOFT_BODY) {}
 	~PhysXSoftBody3D() override;
 
 	// --- Space Management (overrides PhysXObject3D pure virtual) ---
 	virtual void set_space(PhysXSpace3D *p_space) override;
+	/// Called by the space's destructor for every still-registered soft body.
+	/// Detaches without calling back into the (dying) space and drops the GPU
+	/// volume while the PxScene is still alive.
+	void notify_space_destroyed();
 
-	// --- Transform & Bounds ---
+	// --- Mesh / readiness / bounds ---
+	void set_mesh(RID p_mesh);
+	RID get_mesh() const { return mesh; }
+	bool is_ready() const { return mesh_ready; }
+	AABB get_bounds() const { return bounds; }
+
+	// --- Transform ---
 	void set_transform(const Transform3D &p_transform);
-	Transform3D get_transform() const;
 
-	void set_bounds(const AABB &p_bounds);
-	AABB get_bounds() const;
-
-	// --- Collision Filtering (inherited set_collision_layer/set_collision_mask) ---
-	// _update_shapes() override handles propagation to PhysX.
-
-	// --- Ray Pickable ---
-	void set_ray_pickable(bool p_enable);
-	bool is_ray_pickable() const;
-
-	// --- Collision Exceptions ---
-	void add_collision_exception(const RID &p_excepted_body);
-	void remove_collision_exception(const RID &p_excepted_body);
+	// --- Collision exceptions (layer/mask live on PhysXObject3D) ---
+	void add_collision_exception(const RID &p_excepted_body) { collision_exceptions.insert(p_excepted_body); }
+	void remove_collision_exception(const RID &p_excepted_body) { collision_exceptions.erase(p_excepted_body); }
 	void get_collision_exceptions(List<RID> *p_exceptions) const;
-	const HashSet<RID> &get_collision_exception_set() const;
+	const HashSet<RID> &get_collision_exception_set() const { return collision_exceptions; }
 
-	// --- State ---
+	// --- Ray pickable ---
+	void set_ray_pickable(bool p_enable) { ray_pickable = p_enable; }
+	bool is_ray_pickable() const { return ray_pickable; }
+
+	// --- State (transform round-trip; velocity/sleep have no meaning here) ---
 	void set_state(PhysicsServer3D::BodyState p_state, const Variant &p_variant);
 	Variant get_state(PhysicsServer3D::BodyState p_state) const;
 
-	// --- Soft Body Parameters (stored; TODO: apply to the deformable) ---
-	void set_mass(real_t p_mass);
-	real_t get_mass() const;
-
-	void set_linear_stiffness(real_t p_stiffness);
-	real_t get_linear_stiffness() const;
-
-	void set_pressure_coefficient(real_t p_pressure);
-	real_t get_pressure_coefficient() const;
-
-	void set_damping_coefficient(real_t p_damping);
-	real_t get_damping_coefficient() const;
-
-	void set_drag_coefficient(real_t p_drag);
-	real_t get_drag_coefficient() const;
-
+	// --- Stock SoftBody3D parameters, mapped onto the active solver ---
 	void set_simulation_precision(int p_precision);
-	int get_simulation_precision() const;
+	int get_simulation_precision() const { return simulation_precision; }
+	void set_total_mass(real_t p_mass);
+	real_t get_total_mass() const { return total_mass; }
+	void set_linear_stiffness(real_t p_stiffness);
+	real_t get_linear_stiffness() const { return linear_stiffness; }
+	void set_shrinking_factor(real_t p_factor);
+	real_t get_shrinking_factor() const { return shrinking_factor; }
+	void set_pressure_coefficient(real_t p_pressure);
+	real_t get_pressure_coefficient() const { return pressure_coefficient; }
+	void set_damping_coefficient(real_t p_damping);
+	real_t get_damping_coefficient() const { return damping_coefficient; }
+	void set_drag_coefficient(real_t p_drag);
+	real_t get_drag_coefficient() const { return drag_coefficient; }
 
-	// --- PhysX Access ---
-	physx::PxActor *get_px_actor() const;
-	physx::PxDeformableVolume *get_px_deformable() const;
-
-	/// Re-syncs actor_user_data with the soft body's current RID/ObjectID.
-	void refresh_user_data();
-
-	/// Visual mesh RID (assigned via soft_body_set_mesh; TODO: cook from it).
-	void set_mesh_rid(RID p_mesh) { mesh_rid = p_mesh; }
-	RID get_mesh_rid() const { return mesh_rid; }
-
-	/// Point indices pinned via soft_body_pin_point (TODO: PxDeformableAttachment).
+	// --- Point / pin operations, indexed by *render* vertex ---
+	void move_point(int p_point_index, const Vector3 &p_global_position);
+	Vector3 get_point_global_position(int p_point_index) const;
 	void pin_point(int p_point_index, bool p_pin);
-	bool is_point_pinned(int p_point_index) const { return pinned_indices.has(p_point_index); }
-	void clear_pinned_points() { pinned_indices.clear(); }
+	bool is_point_pinned(int p_point_index) const;
+	void unpin_all();
+	void apply_point_impulse(int p_point_index, const Vector3 &p_impulse);
+	void apply_point_force(int p_point_index, const Vector3 &p_force, double p_delta);
+	void apply_central_impulse(const Vector3 &p_impulse);
+	void apply_central_force(const Vector3 &p_force, double p_delta);
 
-	// ------------------------------------------------------------------
-	// FEM SKELETON (PhysX 5.10). A first, honest slice of the deformable-
-	// volume pipeline built on PxDeformableVolumeExt:
-	//
-	//   build_fem_box(size, voxels): voxelizes an axis-aligned box through
-	//     PxDeformableVolumeExt::createDeformableVolumeBox, attaches the
-	//     actor to the current space (GPU dynamics required) and allocates
-	//     pinned host mirrors for the simulation positions/velocities.
-	//   get_fem_positions(): on-demand GPU -> host readback of the collision
-	//     positions (the points that match the render surface).
-	//
-	// Not wired yet (TODO, in rough order): parameter mapping (the stored
-	// mass/stiffness/damping values belong on PxDeformableVolumeMaterial and
-	// the solver iteration counts), PxDeformableAttachment for pinned
-	// points, kinematic targets, a proper tet-mesh path for arbitrary
-	// meshes (createDeformableVolumeMesh), and per-step automatic readback
-	// (readback is currently pull-based for the lab).
-	// ------------------------------------------------------------------
-	bool build_fem_box(const Vector3 &p_size, int p_voxels = 10);
-	bool is_fem_built() const { return px_actor != nullptr; }
-	int get_fem_point_count() const { return fem_point_count; }
-	/// On-demand GPU -> host readback of the current collision positions.
-	Vector<Vector3> get_fem_positions();
+	bool is_gpu() const { return using_gpu; }
+
+	// Driven by the space each step: step() advances the CPU path (no-op on
+	// GPU); read_back() pulls the GPU volume's deformed state after
+	// fetchResults() (no-op on CPU).
+	void step(double p_delta, const Vector3 &p_gravity);
+	void read_back();
+	// Feed deformed positions/normals to the render mesh.
+	void update_rendering_server(PhysicsServer3DRenderingServerHandler *p_handler);
 
 protected:
 	virtual void _update_shapes() override;
 
 private:
-	/// Bridges PxActor->userData back to this object's RID/ObjectID/type.
-	PhysXActorUserData actor_user_data;
+	XPBDClothSolver solver;
+	PhysXSoftVolume3D *volume = nullptr; // non-null == GPU path
+	bool using_gpu = false;
 
-	physx::PxActor *px_actor = nullptr;
-
-	// FEM skeleton state (valid after build_fem_box).
-	physx::PxCudaContextManager *fem_cuda = nullptr;
-	void *fem_sim_pos_pinned = nullptr;  // PxVec4* pinned host mirror (sim pos/inv-mass)
-	void *fem_sim_vel_pinned = nullptr;  // PxVec4* pinned host mirror (sim velocity)
-	void *fem_coll_pos_pinned = nullptr; // PxVec4* pinned host mirror (collision pos/inv-mass)
-	void *fem_rest_pinned = nullptr;     // PxVec4* pinned host mirror (rest positions)
-	int fem_point_count = 0;
-	bool fem_simulated_once = false;
-
-	Transform3D transform;
+	RID mesh;
+	LocalVector<uint32_t> map_visual_to_physics; // render vertex -> solver vertex
+	uint32_t visual_vertex_count = 0;
+	HashSet<int> pinned_render_points; // survives set_mesh, like the other backends
+	HashMap<int, Vector3> pin_targets; // render index -> world hold pos (or NaN.x)
+	LocalVector<Vector3> normals; // per solver vertex, world space
 	AABB bounds;
+	bool mesh_ready = false;
 
-	// Visual mesh (cooked into a PxDeformableVolumeMesh in a future phase).
-	RID mesh_rid;
+	Transform3D transform; // initial placement; sim then runs in world space
+	bool placed = false; // set once the node hands us its world transform
 
-	/// Godot 4 SoftBody properties
-	real_t mass = 1.0;
+	HashSet<RID> collision_exceptions;
+	bool ray_pickable = true;
+
+	// Stock SoftBody3D properties, kept as given and mapped onto the solver.
+	int simulation_precision = 5;
+	real_t total_mass = 1.0;
 	real_t linear_stiffness = 0.5;
+	real_t shrinking_factor = 0.0;
 	real_t pressure_coefficient = 0.0;
 	real_t damping_coefficient = 0.01;
 	real_t drag_coefficient = 0.0;
-	int simulation_precision = 5;
 
-	bool ray_pickable = false;
+	RID collision_sphere; // lazily created shape for the per-vertex query
+	// Per-vertex world-contact cache, refreshed once per frame and re-projected
+	// against every substep (anti-tunnelling).
+	LocalVector<Vector3> contact_n;
+	LocalVector<Vector3> contact_p;
+	LocalVector<uint8_t> contact_hit;
+	int contact_count = 0; // penetrating vertices at the last refresh
 
-	/// Pinned point indices (applied via PxDeformableAttachment later).
-	HashSet<int> pinned_indices;
-
-	/// Collision exceptions (consulted by query filter callback).
-	HashSet<RID> collision_exceptions;
+	void _apply_solver_settings();
+	// p_keep_state carries the live CPU sim over when only the mesh handle
+	// changed (the node's private-duplicate swap); false re-seeds from rest at
+	// the current transform (initial build, placement, teleport, space change).
+	void _rebuild_from_mesh(bool p_keep_state = false);
+	bool _try_build_gpu(const PackedVector3Array &p_welded, const PackedInt32Array &p_indices);
+	PhysXSoftVolume3D::Params _gpu_params() const;
+	void _sync_gpu_pins(); // push pinned_render_points / pin_targets to the volume
+	void _refresh_contacts();
+	void _resolve_contacts();
+	void _damp_rigid_drift();
+	void _update_normals_and_bounds();
 };
 #endif // PHYSX_SOFT_BODY_3D_H

@@ -218,36 +218,64 @@ void PhysXJoint3D::release() {
 // Joint configuration — set actors and local poses
 // ---------------------------------------------------------------------------
 void PhysXJoint3D::set_body_a(physx::PxRigidActor *p_actor, const physx::PxTransform &p_local_a) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	body_a = p_actor;
 	// PhysX allows nullptr actors (joint attached to world frame).
 	px_joint->setLocalPose(physx::PxJointActorIndex::eACTOR0, p_local_a);
 }
 
 void PhysXJoint3D::set_body_b(physx::PxRigidActor *p_actor, const physx::PxTransform &p_local_b) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	body_b = p_actor;
 	// PhysX allows nullptr actors (joint attached to world frame).
 	px_joint->setLocalPose(physx::PxJointActorIndex::eACTOR1, p_local_b);
 }
 
 void PhysXJoint3D::set_local_a(const physx::PxTransform &p_transform) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	px_joint->setLocalPose(physx::PxJointActorIndex::eACTOR0, p_transform);
 }
 
 void PhysXJoint3D::set_local_b(const physx::PxTransform &p_transform) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	px_joint->setLocalPose(physx::PxJointActorIndex::eACTOR1, p_transform);
 }
 
 physx::PxTransform PhysXJoint3D::get_local_a_transform() const {
-	ERR_FAIL_NULL_V_MSG(px_joint, physx::PxTransform(), "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return physx::PxTransform();
+	}
 	return px_joint->getLocalPose(physx::PxJointActorIndex::eACTOR0);
 }
 
 physx::PxTransform PhysXJoint3D::get_local_b_transform() const {
-	ERR_FAIL_NULL_V_MSG(px_joint, physx::PxTransform(), "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return physx::PxTransform();
+	}
 	return px_joint->getLocalPose(physx::PxJointActorIndex::eACTOR1);
 }
 
@@ -267,7 +295,12 @@ int PhysXJoint3D::get_solver_priority() const {
 // Collision between bodies — PxConstraintFlag::eCOLLISION_ENABLED
 // ---------------------------------------------------------------------------
 void PhysXJoint3D::set_disable_collisions(bool p_disable) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	physx::PxConstraint *constraint = px_joint->getConstraint();
 	if (constraint) {
 		constraint->setFlag(physx::PxConstraintFlag::eCOLLISION_ENABLED, !p_disable);
@@ -275,7 +308,11 @@ void PhysXJoint3D::set_disable_collisions(bool p_disable) {
 }
 
 bool PhysXJoint3D::is_disabled_collisions() const {
-	ERR_FAIL_NULL_V_MSG(px_joint, false, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return false;
+	}
 	physx::PxConstraint *constraint = px_joint->getConstraint();
 	if (constraint) {
 		return !constraint->getFlags().isSet(physx::PxConstraintFlag::eCOLLISION_ENABLED);
@@ -287,27 +324,45 @@ bool PhysXJoint3D::is_disabled_collisions() const {
 // Pin joint — local frames, params
 // ---------------------------------------------------------------------------
 void PhysXJoint3D::set_local_a(const Vector3 &p_local_a) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	physx::PxTransform local_a = get_local_a_transform();
 	local_a.p = physx::PxVec3(p_local_a.x, p_local_a.y, p_local_a.z);
 	px_joint->setLocalPose(physx::PxJointActorIndex::eACTOR0, local_a);
 }
 
 Vector3 PhysXJoint3D::get_local_a() const {
-	ERR_FAIL_NULL_V_MSG(px_joint, Vector3(), "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return Vector3();
+	}
 	physx::PxTransform local_a = px_joint->getLocalPose(physx::PxJointActorIndex::eACTOR0);
 	return to_godot_vec3(local_a.p);
 }
 
 void PhysXJoint3D::set_local_b(const Vector3 &p_local_b) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	physx::PxTransform local_b = get_local_b_transform();
 	local_b.p = physx::PxVec3(p_local_b.x, p_local_b.y, p_local_b.z);
 	px_joint->setLocalPose(physx::PxJointActorIndex::eACTOR1, local_b);
 }
 
 Vector3 PhysXJoint3D::get_local_b() const {
-	ERR_FAIL_NULL_V_MSG(px_joint, Vector3(), "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return Vector3();
+	}
 	physx::PxTransform local_b = px_joint->getLocalPose(physx::PxJointActorIndex::eACTOR1);
 	return to_godot_vec3(local_b.p);
 }
@@ -362,7 +417,12 @@ void PhysXJoint3D::_apply_hinge_limit() {
 }
 
 void PhysXJoint3D::set_hinge_param(PhysicsServer3D::HingeJointParam p_param, real_t p_value) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_HINGE); // unchecked static_cast below
 
 	switch (p_param) {
@@ -416,7 +476,11 @@ void PhysXJoint3D::set_hinge_param(PhysicsServer3D::HingeJointParam p_param, rea
 }
 
 real_t PhysXJoint3D::get_hinge_param(PhysicsServer3D::HingeJointParam p_param) const {
-	ERR_FAIL_NULL_V_MSG(px_joint, 0.0f, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return 0.0f;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_HINGE); // unchecked static_cast below
 	const physx::PxRevoluteJoint *revolute = static_cast<const physx::PxRevoluteJoint *>(px_joint);
 
@@ -443,7 +507,12 @@ real_t PhysXJoint3D::get_hinge_param(PhysicsServer3D::HingeJointParam p_param) c
 }
 
 	void PhysXJoint3D::set_hinge_flag(PhysicsServer3D::HingeJointFlag p_flag, bool p_enabled) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_HINGE); // unchecked static_cast below
 	physx::PxRevoluteJoint *revolute = static_cast<physx::PxRevoluteJoint *>(px_joint);
 
@@ -475,7 +544,11 @@ real_t PhysXJoint3D::get_hinge_param(PhysicsServer3D::HingeJointParam p_param) c
 }
 
 bool PhysXJoint3D::get_hinge_flag(PhysicsServer3D::HingeJointFlag p_flag) const {
-	ERR_FAIL_NULL_V_MSG(px_joint, false, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return false;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_HINGE); // unchecked static_cast below
 	const physx::PxRevoluteJoint *revolute = static_cast<const physx::PxRevoluteJoint *>(px_joint);
 
@@ -493,7 +566,12 @@ bool PhysXJoint3D::get_hinge_flag(PhysicsServer3D::HingeJointFlag p_flag) const 
 // Slider joint — params
 // ---------------------------------------------------------------------------
 void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, real_t p_value) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_SLIDER); // unchecked static_cast below
 	physx::PxPrismaticJoint *prismatic = static_cast<physx::PxPrismaticJoint *>(px_joint);
 
@@ -664,7 +742,11 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 }
 
 real_t PhysXJoint3D::get_slider_param(PhysicsServer3D::SliderJointParam p_param) const {
-	ERR_FAIL_NULL_V_MSG(px_joint, 0.0f, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return 0.0f;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_SLIDER); // unchecked static_cast below
 	const physx::PxPrismaticJoint *prismatic = static_cast<const physx::PxPrismaticJoint *>(px_joint);
 
@@ -731,13 +813,19 @@ void PhysXJoint3D::_apply_cone_twist_limits() {
 	}
 	physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(px_joint);
 
-	physx::PxJointLimitCone swing_limit(cone_twist_params.swing_span, cone_twist_params.swing_span);
+	// PhysX validates cone/pair limits strictly (angles must lie in (0, PI],
+	// pair min < pair max). Godot allows degenerate values (a 0 span is a
+	// locked joint; the stock 0/0 g6dof ranges), so clamp into the valid range
+	// — a hair-thin limit reads as locked, which is the Godot semantic.
+	const real_t swing = CLAMP(cone_twist_params.swing_span, 1.0e-4, (real_t)Math::PI);
+	physx::PxJointLimitCone swing_limit(swing, swing);
 	swing_limit.stiffness = cone_twist_params.softness;
 	swing_limit.damping = cone_twist_params.relaxation;
 	swing_limit.restitution = cone_twist_params.bias;
 	d6->setSwingLimit(swing_limit);
 
-	physx::PxJointAngularLimitPair twist_limit(-cone_twist_params.twist_span, cone_twist_params.twist_span);
+	const real_t twist = CLAMP(cone_twist_params.twist_span, 1.0e-4, (real_t)Math::PI);
+	physx::PxJointAngularLimitPair twist_limit(-twist, twist);
 	twist_limit.stiffness = cone_twist_params.softness;
 	twist_limit.damping = cone_twist_params.relaxation;
 	twist_limit.bounceThreshold = cone_twist_params.bias;
@@ -745,7 +833,12 @@ void PhysXJoint3D::_apply_cone_twist_limits() {
 }
 
 void PhysXJoint3D::set_cone_twist_param(PhysicsServer3D::ConeTwistJointParam p_param, real_t p_value) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_CONE_TWIST); // unchecked static_cast below
 
 	switch (p_param) {
@@ -775,7 +868,11 @@ void PhysXJoint3D::set_cone_twist_param(PhysicsServer3D::ConeTwistJointParam p_p
 }
 
 real_t PhysXJoint3D::get_cone_twist_param(PhysicsServer3D::ConeTwistJointParam p_param) const {
-	ERR_FAIL_NULL_V_MSG(px_joint, 0.0f, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return 0.0f;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_CONE_TWIST); // unchecked static_cast below
 	const physx::PxD6Joint *d6 = static_cast<const physx::PxD6Joint *>(px_joint);
 
@@ -812,18 +909,27 @@ void PhysXJoint3D::_apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::A
 	const G6DOFJointAxisParams &params = g6dof_params[p_axis];
 
 	if (p_axis == Vector3::AXIS_X) {
-		// Twist: angular limit pair.
-		physx::PxJointAngularLimitPair limit(params.angular_lower_limit, params.angular_upper_limit);
+		// Twist: angular limit pair. PhysX requires lower < upper; a degenerate
+		// Godot range (the stock 0/0 defaults on an axis whose limit is off) is
+		// nudged open so setTwistLimit stays valid. Whether the axis actually
+		// constrains is governed separately by setMotion.
+		float lo = (float)params.angular_lower_limit;
+		float hi = (float)params.angular_upper_limit;
+		if (hi <= lo) {
+			hi = lo + 1.0e-4f;
+		}
+		physx::PxJointAngularLimitPair limit(lo, hi);
 		limit.stiffness = params.angular_limit_softness;
 		limit.damping = params.angular_damping;
 		limit.restitution = params.angular_restitution;
 		p_d6->setTwistLimit(limit);
 	} else {
 		// Swing1 (Y) / Swing2 (Z) share a PxJointLimitCone. Use the lower of
-		// the two spans as both yAngle and zAngle extents of the cone.
+		// the two spans as both yAngle and zAngle extents of the cone, clamped
+		// into PhysX's valid (0, PI] range (0 = locked in Godot).
 		const real_t y_angle = g6dof_params[Vector3::AXIS_Y].angular_lower_limit;
 		const real_t z_angle = g6dof_params[Vector3::AXIS_Z].angular_lower_limit;
-		const real_t cone_extent = MIN(y_angle, z_angle);
+		const real_t cone_extent = CLAMP(MIN(y_angle, z_angle), 1.0e-4, (real_t)Math::PI);
 		physx::PxJointLimitCone cone_limit(cone_extent, cone_extent);
 		cone_limit.stiffness = params.angular_limit_softness;
 		cone_limit.damping = params.angular_damping;
@@ -833,7 +939,12 @@ void PhysXJoint3D::_apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::A
 }
 
 void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJointAxisParam p_param, real_t p_value) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_6DOF); // unchecked static_cast below
 	physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(px_joint);
 	G6DOFJointAxisParams &params = g6dof_params[p_axis];
@@ -1075,7 +1186,11 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 }
 
 real_t PhysXJoint3D::get_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJointAxisParam p_param) const {
-	ERR_FAIL_NULL_V_MSG(px_joint, 0.0f, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return 0.0f;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_6DOF); // unchecked static_cast below
 	const physx::PxD6Joint *d6 = static_cast<const physx::PxD6Joint *>(px_joint);
 
@@ -1132,7 +1247,12 @@ real_t PhysXJoint3D::get_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DO
 }
 
 void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJointAxisFlag p_flag, bool p_enable) {
-	ERR_FAIL_NULL_MSG(px_joint, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet: Joint3D configures the joint as soon as one node
+		// path is assigned and re-applies every param/flag once both are set.
+		// Cache-only calls before that point must not raise errors.
+		return;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_6DOF); // unchecked static_cast below
 	physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(px_joint);
 	G6DOFJointAxisParams &params = g6dof_params[p_axis];
@@ -1221,7 +1341,11 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 }
 
 bool PhysXJoint3D::get_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJointAxisFlag p_flag) const {
-	ERR_FAIL_NULL_V_MSG(px_joint, false, "PhysX: joint is null.");
+	if (!px_joint) {
+		// No PhysX joint yet -- return the fallback quietly (Joint3D
+		// re-applies state once the joint has been created).
+		return false;
+	}
 	DEV_ASSERT(kind == JOINT_KIND_6DOF); // unchecked static_cast below
 	const physx::PxD6Joint *d6 = static_cast<const physx::PxD6Joint *>(px_joint);
 	const G6DOFJointAxisParams &params = g6dof_params[p_axis];

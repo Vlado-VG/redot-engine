@@ -1261,47 +1261,27 @@ bool PhysXServer3D::articulation_is_sleeping(RID p_articulation) const {
 }
 
 // ---------------------------------------------------------------------------
-// FEM SKELETON (see objects/physx_soft_body_3d.h)
+// ---------------------------------------------------------------------------
+// SOFT BODY (see objects/physx_soft_body_3d.h)
 // ---------------------------------------------------------------------------
 
-bool PhysXServer3D::soft_body_build_fem_box(RID p_body, const Vector3 &p_size, int p_voxels) {
-	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
-	ERR_FAIL_NULL_V(soft_body, false);
-	return soft_body->build_fem_box(p_size, p_voxels);
-}
-
-bool PhysXServer3D::soft_body_is_fem_built(RID p_body) const {
-	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
-	ERR_FAIL_NULL_V(soft_body, false);
-	return soft_body->is_fem_built();
-}
-
-int PhysXServer3D::soft_body_get_fem_point_count(RID p_body) const {
-	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
-	ERR_FAIL_NULL_V(soft_body, 0);
-	return soft_body->get_fem_point_count();
-}
-
-Vector<Vector3> PhysXServer3D::soft_body_get_fem_positions(RID p_body) {
-	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
-	ERR_FAIL_NULL_V(soft_body, Vector<Vector3>());
-	return soft_body->get_fem_positions();
-}
-
 RID PhysXServer3D::soft_body_create() {
-	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
-			"PhysX: soft_body_create() called before PhysX initialization.");
 	PhysXSoftBody3D *soft_body = memnew(PhysXSoftBody3D);
 	RID rid = soft_body_owner.make_rid(soft_body);
 	soft_body->set_rid(rid);
-	soft_body->refresh_user_data();
 	return rid;
+}
+
+void PhysXServer3D::soft_body_update_rendering_server(RID p_body, PhysicsServer3DRenderingServerHandler *p_rendering_server_handler) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	soft_body->update_rendering_server(p_rendering_server_handler);
 }
 
 void PhysXServer3D::soft_body_set_space(RID p_body, RID p_space) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
-	PhysXSpace3D *space = p_space.is_valid() ? space_owner.get_or_null(p_space) : nullptr;
+	PhysXSpace3D *space = space_owner.get_or_null(p_space);
 	if (p_space.is_valid()) {
 		ERR_FAIL_NULL_MSG(space, "PhysX: soft_body_set_space passed an invalid space RID.");
 	}
@@ -1380,6 +1360,32 @@ void PhysXServer3D::soft_body_set_transform(RID p_body, const Transform3D &p_tra
 	soft_body->set_transform(p_transform);
 }
 
+void PhysXServer3D::soft_body_apply_point_impulse(RID p_body, int p_point_index, const Vector3 &p_impulse) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	soft_body->apply_point_impulse(p_point_index, p_impulse);
+}
+
+void PhysXServer3D::soft_body_apply_point_force(RID p_body, int p_point_index, const Vector3 &p_force) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	const double dt = soft_body->get_space() ? soft_body->get_space()->get_last_step() : 0.0;
+	soft_body->apply_point_force(p_point_index, p_force, dt);
+}
+
+void PhysXServer3D::soft_body_apply_central_impulse(RID p_body, const Vector3 &p_impulse) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	soft_body->apply_central_impulse(p_impulse);
+}
+
+void PhysXServer3D::soft_body_apply_central_force(RID p_body, const Vector3 &p_force) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	const double dt = soft_body->get_space() ? soft_body->get_space()->get_last_step() : 0.0;
+	soft_body->apply_central_force(p_force, dt);
+}
+
 void PhysXServer3D::soft_body_set_simulation_precision(RID p_body, int p_precision) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
@@ -1395,13 +1401,13 @@ int PhysXServer3D::soft_body_get_simulation_precision(RID p_body) const {
 void PhysXServer3D::soft_body_set_total_mass(RID p_body, real_t p_total_mass) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
-	soft_body->set_mass(p_total_mass);
+	soft_body->set_total_mass(p_total_mass);
 }
 
 real_t PhysXServer3D::soft_body_get_total_mass(RID p_body) const {
 	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL_V(soft_body, real_t());
-	return soft_body->get_mass();
+	return soft_body->get_total_mass();
 }
 
 void PhysXServer3D::soft_body_set_linear_stiffness(RID p_body, real_t p_coefficient) {
@@ -1416,8 +1422,16 @@ real_t PhysXServer3D::soft_body_get_linear_stiffness(RID p_body) const {
 	return soft_body->get_linear_stiffness();
 }
 
+void PhysXServer3D::soft_body_set_shrinking_factor(RID p_body, real_t p_shrinking_factor) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	soft_body->set_shrinking_factor(p_shrinking_factor);
+}
+
 real_t PhysXServer3D::soft_body_get_shrinking_factor(RID p_body) const {
-	return 0.0;
+	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL_V(soft_body, real_t());
+	return soft_body->get_shrinking_factor();
 }
 
 void PhysXServer3D::soft_body_set_pressure_coefficient(RID p_body, real_t p_coefficient) {
@@ -1459,9 +1473,7 @@ real_t PhysXServer3D::soft_body_get_drag_coefficient(RID p_body) const {
 void PhysXServer3D::soft_body_set_mesh(RID p_body, RID p_mesh) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
-	soft_body->set_mesh_rid(p_mesh);
-	// TODO: cook the mesh into a PxDeformableVolumeMesh and create the actor
-	// (see the wiring notes in physx_soft_body_3d.h).
+	soft_body->set_mesh(p_mesh);
 }
 
 AABB PhysXServer3D::soft_body_get_bounds(RID p_body) const {
@@ -1470,14 +1482,22 @@ AABB PhysXServer3D::soft_body_get_bounds(RID p_body) const {
 	return soft_body->get_bounds();
 }
 
+void PhysXServer3D::soft_body_move_point(RID p_body, int p_point_index, const Vector3 &p_global_position) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	soft_body->move_point(p_point_index, p_global_position);
+}
+
 Vector3 PhysXServer3D::soft_body_get_point_global_position(RID p_body, int p_point_index) const {
-	return Vector3();
+	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL_V(soft_body, Vector3());
+	return soft_body->get_point_global_position(p_point_index);
 }
 
 void PhysXServer3D::soft_body_remove_all_pinned_points(RID p_body) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
-	soft_body->clear_pinned_points();
+	soft_body->unpin_all();
 }
 
 void PhysXServer3D::soft_body_pin_point(RID p_body, int p_point_index, bool p_pin) {
@@ -1519,6 +1539,12 @@ void PhysXServer3D::particle_fluid_set_capacity(RID p_fluid, int p_max) {
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_capacity(p_max > 0 ? (uint32_t)p_max : 1);
+}
+
+void PhysXServer3D::particle_fluid_set_granular(RID p_fluid, bool p_enabled, real_t p_friction) {
+	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
+	ERR_FAIL_NULL(fluid);
+	fluid->set_granular(p_enabled, p_friction);
 }
 
 void PhysXServer3D::particle_fluid_set_particles(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_initial_velocity) {
@@ -1755,6 +1781,16 @@ void PhysXServer3D::joint_make_pin(RID p_joint, RID p_body_a, const Vector3 &p_l
     ERR_FAIL_NULL(px_actor_a);
     physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
 
+    // PhysX joints require at least one dynamic rigid actor; Joint3D
+    // transiently configures the joint as soon as the first node path is
+    // set (the other side still unset, i.e. the world frame). Skip that
+    // transient static/world configuration without an error -- the joint
+    // is re-created once both node paths are assigned.
+    if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
+        print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
+        return;
+    }
+
     physx::PxTransform local_a(physx::PxVec3(p_local_a.x, p_local_a.y, p_local_a.z));
     physx::PxTransform local_b(physx::PxVec3(p_local_b.x, p_local_b.y, p_local_b.z));
 
@@ -1815,6 +1851,15 @@ void PhysXServer3D::joint_make_hinge(RID p_joint, RID p_body_a, const Transform3
 	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
 	ERR_FAIL_NULL(px_actor_a);
 	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
+	// PhysX joints require at least one dynamic rigid actor; Joint3D
+	// transiently configures the joint as soon as the first node path is
+	// set (the other side still unset, i.e. the world frame). Skip that
+	// transient static/world configuration without an error -- the joint
+	// is re-created once both node paths are assigned.
+	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
+		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
+		return;
+	}
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_hinge_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_hinge_b);
@@ -1835,6 +1880,15 @@ void PhysXServer3D::joint_make_hinge_simple(RID p_joint, RID p_body_a, const Vec
 	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
 	ERR_FAIL_NULL(px_actor_a);
 	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
+	// PhysX joints require at least one dynamic rigid actor; Joint3D
+	// transiently configures the joint as soon as the first node path is
+	// set (the other side still unset, i.e. the world frame). Skip that
+	// transient static/world configuration without an error -- the joint
+	// is re-created once both node paths are assigned.
+	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
+		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
+		return;
+	}
 
 	physx::PxVec3 pivot_a(p_pivot_a.x, p_pivot_a.y, p_pivot_a.z);
 	physx::PxVec3 pivot_b(p_pivot_b.x, p_pivot_b.y, p_pivot_b.z);
@@ -1884,6 +1938,15 @@ void PhysXServer3D::joint_make_slider(RID p_joint, RID p_body_a, const Transform
 	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
 	ERR_FAIL_NULL(px_actor_a);
 	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
+	// PhysX joints require at least one dynamic rigid actor; Joint3D
+	// transiently configures the joint as soon as the first node path is
+	// set (the other side still unset, i.e. the world frame). Skip that
+	// transient static/world configuration without an error -- the joint
+	// is re-created once both node paths are assigned.
+	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
+		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
+		return;
+	}
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_local_ref_b);
@@ -1916,6 +1979,15 @@ void PhysXServer3D::joint_make_cone_twist(RID p_joint, RID p_body_a, const Trans
 	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
 	ERR_FAIL_NULL(px_actor_a);
 	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
+	// PhysX joints require at least one dynamic rigid actor; Joint3D
+	// transiently configures the joint as soon as the first node path is
+	// set (the other side still unset, i.e. the world frame). Skip that
+	// transient static/world configuration without an error -- the joint
+	// is re-created once both node paths are assigned.
+	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
+		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
+		return;
+	}
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_local_ref_b);
@@ -1948,6 +2020,15 @@ void PhysXServer3D::joint_make_generic_6dof(RID p_joint, RID p_body_a, const Tra
 	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
 	ERR_FAIL_NULL(px_actor_a);
 	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
+	// PhysX joints require at least one dynamic rigid actor; Joint3D
+	// transiently configures the joint as soon as the first node path is
+	// set (the other side still unset, i.e. the world frame). Skip that
+	// transient static/world configuration without an error -- the joint
+	// is re-created once both node paths are assigned.
+	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
+		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
+		return;
+	}
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_local_ref_b);

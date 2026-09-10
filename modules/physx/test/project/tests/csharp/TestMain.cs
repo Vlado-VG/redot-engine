@@ -84,6 +84,7 @@ public partial class TestMain : SceneTree {
     }
 
     static void RegisterAll(TestRunner r) {
+        SmokeTests.Register(new SuiteBuilder(r, "smoke"));
         FoundationTests.Register(new SuiteBuilder(r, "foundation"));
         BindingTests.Register(new SuiteBuilder(r, "bindings"));
         SpaceTests.Register(new SuiteBuilder(r, "spaces"));

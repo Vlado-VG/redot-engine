@@ -613,10 +613,12 @@ void PhysXBody3D::_apply_sleep_policy(physx::PxRigidDynamic *p_dyn) {
         p_dyn->setSleepThreshold((float)cached_sleep_threshold);
         cached_sleep_threshold = -1.0f;
     }
-    if (space) {
+    // Kinematic dynamics never sleep and PhysX rejects setWakeCounter() on
+    // them ("Body must be non-kinematic!") — sleep policy does not apply.
+    if (space && mode != PhysicsServer3D::BODY_MODE_KINEMATIC) {
         // Godot's velocity thresholds (m/s, rad/s) mapped onto PhysX's
         // mass-normalized kinetic-energy threshold, and time-before-sleep
-        // onto the wake counter. Same mapping as the reference module.
+        // onto the wake counter.
         p_dyn->setSleepThreshold((float)space->get_sleep_energy_threshold());
         p_dyn->setWakeCounter((float)space->get_time_before_sleep());
     }
@@ -1093,7 +1095,7 @@ void PhysXBody3D::on_pre_step(float p_step) {
 
     // Area wind (World3D wind force/attenuation params). Stock Godot applies
     // area wind only to SoftBody3D; this backend also pushes rigid bodies,
-    // matching the reference module. Wind is additive across areas and zero
+    // matching the Area3D wind model. Wind is additive across areas and zero
     // unless an area sets wind_force_magnitude, so scenes that don't use it
     // behave identically.
     Vector3 total_wind(0, 0, 0);

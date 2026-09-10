@@ -100,11 +100,26 @@ physx::PxFilterFlags physx_simulation_filter_shader(
 	// --- Simulation (solver) pair ---
 	pairFlags = physx::PxPairFlag::eCONTACT_DEFAULT;
 	pairFlags |= physx::PxPairFlag::eDETECT_DISCRETE_CONTACT;
-	// Route every simulation pair through the contact-modify callback so the
-	// Godot material combiner (absorbent/rough → sum-clamped / min-abs) can
-	// override the per-contact restitution/friction. PhysX's built-in combine
-	// modes can't express Godot's "sum, clamped to [0,1]" rule.
-	pairFlags |= physx::PxPairFlag::eMODIFY_CONTACTS;
+	// Route simulation pairs through the contact-modify callback so the Godot
+	// material combiner (absorbent/rough → sum-clamped / min-abs) can override
+	// the per-contact restitution/friction. PhysX's built-in combine modes
+	// can't express Godot's "sum, clamped to [0,1]" rule.
+	//
+	// Deformable pairs (PxDeformableSurface/PxDeformableVolume against rigids)
+	// are solved by the GPU deformable pipeline, which does not support contact
+	// modification — flagging such a pair drops it entirely and the soft body
+	// falls through the world, so they are excluded here. Deformables always
+	// use the material's own friction/damping.
+	const physx::PxFilterObjectType::Enum obj_type0 = physx::PxGetFilterObjectType(attributes0);
+	const physx::PxFilterObjectType::Enum obj_type1 = physx::PxGetFilterObjectType(attributes1);
+	const bool deformable_pair =
+			obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_SURFACE ||
+			obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME ||
+			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_SURFACE ||
+			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME;
+	if (!deformable_pair) {
+		pairFlags |= physx::PxPairFlag::eMODIFY_CONTACTS;
+	}
 	// CCD pairs are only resolved if the pair flag is set; the per-body
 	// eENABLE_CCD flag on the actor gates which bodies actually sweep.
 	pairFlags |= physx::PxPairFlag::eDETECT_CCD_CONTACT;

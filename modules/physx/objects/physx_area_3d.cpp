@@ -670,7 +670,7 @@ void PhysXArea3D::_emit_area_exit_events() {
 }
 
 // ---------------------------------------------------------------------------
-// Wind force at a world position (ported from the reference godot_physx
+// Wind force at a world position (same convention as the Area3D wind
 // module). Applies the Godot-4 Area3D wind parameters: a constant magnitude
 // along wind_direction, attenuated over downwind distance from wind_source
 // when wind_attenuation_factor is nonzero. Zero when wind is unused, so the

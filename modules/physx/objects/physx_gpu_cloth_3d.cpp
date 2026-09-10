@@ -1,7 +1,7 @@
 /**
  * @file physx_gpu_cloth_3d.cpp
- * @brief Implementation of PhysXGPUCloth3D (ported from the reference
- * godot_physx module; class renamed to fit this module's naming).
+ * @brief Implementation of PhysXGPUCloth3D — a PhysX 5 PxDeformableSurface
+ * cloth patch simulated on CUDA.
  */
 
 #include "physx_gpu_cloth_3d.h"

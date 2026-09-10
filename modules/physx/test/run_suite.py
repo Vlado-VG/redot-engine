@@ -33,6 +33,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 PROJECT = HERE / "project"
 CSHARP_SCRIPT = "res://tests/csharp/TestMain.cs"
 GDSCRIPT_SCRIPT = "res://gdscript/gdscript_binding_tests.gd"
+SMOKE_SCRIPT = "res://gdscript/physics_smoke_test.gd"
 DEFAULT_GODOT = pathlib.Path("bin/redot.windows.editor.x86_64.console.exe")
 
 TIER_TIMEOUTS = {"fast": 1500, "extended": 3600, "nightly": 6 * 3600}
@@ -41,7 +42,7 @@ TIER_TIMEOUTS = {"fast": 1500, "extended": 3600, "nightly": 6 * 3600}
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--godot", default=str(DEFAULT_GODOT), help="engine binary (default: %(default)s)")
-    ap.add_argument("--suite", choices=["csharp", "gdscript", "all"], default="all")
+    ap.add_argument("--suite", choices=["csharp", "gdscript", "smoke", "all"], default="all")
     ap.add_argument("--tier", choices=["fast", "extended", "nightly"], default="fast")
     ap.add_argument("--category", action="append", default=[], help="restrict to category (repeatable)")
     ap.add_argument("--test", action="append", default=[], help="restrict to test ID (repeatable)")
@@ -158,6 +159,8 @@ def main():
         suites.append("csharp")
     if args.suite in ("gdscript", "all"):
         suites.append("gdscript")
+    if args.suite in ("smoke", "all"):
+        suites.append("smoke")
 
     if "csharp" in suites and not args.skip_build:
         if not build_csharp():
@@ -177,8 +180,13 @@ def main():
     failed_processes = 0
 
     for suite in suites:
-        script = CSHARP_SCRIPT if suite == "csharp" else GDSCRIPT_SCRIPT
-        if per_category and not args.list:
+        if suite == "csharp":
+            script = CSHARP_SCRIPT
+        elif suite == "gdscript":
+            script = GDSCRIPT_SCRIPT
+        else:
+            script = SMOKE_SCRIPT
+        if per_category and suite != "smoke" and not args.list:
             categories = args.category if args.category else list_categories(godot, script, user_args, timeout)
             for cat in categories:
                 cat_args = [a for a in user_args if not a.startswith("--category=")] + [f"--category={cat}"]

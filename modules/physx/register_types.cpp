@@ -19,6 +19,7 @@
 #include "objects/physx_direct_body_state_3d.h"
 #include "nodes/physx_chunk_emitter_3d.h"
 #include "nodes/physx_cloth_3d.h"
+#include "nodes/physx_granular_3d.h"
 #include "nodes/physx_particle_fluid_3d.h"
 
 #ifdef TOOLS_ENABLED
@@ -64,6 +65,7 @@ void initialize_physx_module(ModuleInitializationLevel p_level) {
 		// Scene-level node classes provided by the module.
 		ClassDB::register_class<PhysXChunkEmitter3D>();
 		ClassDB::register_class<PhysXCloth3D>();
+		ClassDB::register_class<PhysXGranular3D>();
 		ClassDB::register_class<PhysXParticleFluid3D>();
 	}
 

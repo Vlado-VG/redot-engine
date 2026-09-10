@@ -2,9 +2,9 @@
  * @file physx_project_settings.h
  * @brief Module settings under Project Settings → Physics → PhysX 3D.
  *
- * Adapted from the godot_physx reference module. Settings are registered at
- * MODULE_INITIALIZATION_LEVEL_SERVERS (register_types.cpp) and read once in
- * PhysXServer3D::init(), before any PxScene exists.
+ * Settings are registered at MODULE_INITIALIZATION_LEVEL_SERVERS
+ * (register_types.cpp) and read once in PhysXServer3D::init(), before any
+ * PxScene exists.
  */
 
 #ifndef PHYSX_PROJECT_SETTINGS_H
@@ -47,7 +47,7 @@ public:
 	// toward rest so they settle and can sleep instead of jittering; the same
 	// mechanism Unity and Unreal call "stabilization".
 	//
-	// Default OFF in this module (the reference module ships it ON): the flag
+	// Default OFF in this module: the flag
 	// applies an extra damping force to low-kinetic-energy bodies, which on a
 	// sphere sliding down a ramp suppresses the angular acceleration from
 	// contact friction — the sphere slides instead of rolling. Stacks are
@@ -62,6 +62,15 @@ public:
 	// GPU path). A fixed value is useful for reproducible profiling. The
 	// dispatcher is shared by every PxScene the server creates.
 	inline static int cpu_worker_threads = 0;
+
+	// physics/physx_3d/soft_body/mode
+	//
+	// Resolution for stock SoftBody3D bodies: 0 = Auto (GPU PxDeformableVolume
+	// when the mesh tetrahedralizes and CUDA is available, else the CPU XPBD
+	// solver — decided per body), 1 = CPU, 2 = GPU. A per-body override is
+	// available via the node metadata "physx_soft_mode" = "cpu" / "gpu".
+	// enhanced_determinism forces every soft body to CPU (no CUDA context).
+	inline static int soft_body_mode = 0;
 
 	static void register_settings();
 	static void read_settings();

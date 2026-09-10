@@ -1,34 +1,34 @@
-/**
- * @file physx_chunk_emitter_3d.h
- * @brief Burst/continuous emitter of small rigid-body chunks, drawn as one MultiMesh.
- *
- * Ported from the reference godot_physx module. A general-purpose burst of
- * small rigid-body chunks, rendered as one MultiMesh -- impact debris (a
- * bullet hit, an explosion, a footstep), an exploding crate, hail, a
- * rockslide, confetti that actually collides -- anything that wants many
- * small solid things flying and settling for real. Call spawn_at() for a
- * one-off burst (bias it toward a surface normal for impacts, or use
- * spread_degrees=180 for an omnidirectional explosion), or turn on `emitting`
- * for a steady stream from the node's own position.
- *
- * Real PhysicsServer3D bodies, not a particle effect -- they land on slopes
- * and pile up, collide with (and can be occluded/blocked by) the rest of the
- * world, and interact through the normal collision_layer/mask rules. No
- * per-chunk Node.
- *
- * The chunks are ordinary dynamic rigid bodies, created through the generic
- * PhysicsServer3D RID API -- this needs no PhysX-specific code and works on
- * any 3D physics backend. On this module, with a physx_gpu=yes build and a
- * CUDA device, they ride the same GPU rigid-body dynamics as everything else
- * in the scene automatically (the whole PxScene is GPU-accelerated, not
- * individual actors), which is what makes a high chunk_count/max_active
- * affordable; on the CPU path (or another backend) lower them, the same way
- * NVIDIA-PhysX-era games scaled their debris counts down without a
- * supporting GPU.
- */
+/**************************************************************************/
+/*  physx_chunk_emitter_3d.h                                              */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
-#ifndef PHYSX_CHUNK_EMITTER_3D_H
-#define PHYSX_CHUNK_EMITTER_3D_H
+#pragma once
 
 #include "core/templates/local_vector.h"
 #include "scene/3d/visual_instance_3d.h"
@@ -36,6 +36,28 @@
 #include "scene/resources/mesh.h"
 #include "scene/resources/multimesh.h"
 
+// A general-purpose burst of small rigid-body chunks, rendered as one
+// MultiMesh -- impact debris (a bullet hit, an explosion, a footstep), an
+// exploding crate, hail, a rockslide, confetti that actually collides --
+// anything that wants many small solid things flying and settling for real.
+// call spawn_at() for a one-off burst (bias it toward a surface normal for
+// impacts, or use spread_degrees=180 for an omnidirectional explosion), or
+// turn on `emitting` for a steady stream from the node's own position.
+//
+// Real PhysicsServer3D bodies, not a particle effect -- they land on slopes
+// and pile up, collide with (and can be occluded/blocked by) the rest of the
+// world, and interact through the normal collision_layer/mask rules. No
+// per-chunk Node.
+//
+// The chunks are ordinary dynamic rigid bodies, created through the generic
+// PhysicsServer3D RID API -- this needs no PhysX-specific code and works on
+// any 3D physics backend. On this module, with a physx_gpu=yes build and a
+// CUDA device, they ride the same GPU rigid-body dynamics as everything else
+// in the scene automatically (the whole PxScene is GPU-accelerated, not
+// individual actors), which is what makes a high chunk_count/max_active
+// affordable; on the CPU path (or another backend) lower them, the same way
+// NVIDIA-PhysX-era games scaled their debris counts down without a
+// supporting GPU.
 class PhysXChunkEmitter3D : public GeometryInstance3D {
 	GDCLASS(PhysXChunkEmitter3D, GeometryInstance3D);
 
@@ -122,6 +144,18 @@ public:
 	void set_chunk_mesh(const Ref<Mesh> &p_v);
 	Ref<Mesh> get_chunk_mesh() const { return chunk_mesh; }
 
+	// Live state of the active chunks, for other systems that want to couple
+	// against the debris (e.g. the MPM fluid). All in world space.
+	struct ChunkBody {
+		Transform3D xform;
+		Vector3 velocity;
+		Vector3 half_extents; // box: half size; sphere: x = radius
+		bool sphere = false;
+		int index = -1; // pass back to apply_chunk_impulse()
+	};
+	void get_active_chunk_bodies(LocalVector<ChunkBody> &r_out) const;
+	void apply_chunk_impulse(int p_index, const Vector3 &p_impulse);
+
 	void set_emitting(bool p_v);
 	bool is_emitting() const { return emitting; }
 	void set_emission_rate(float p_v);
@@ -143,5 +177,3 @@ public:
 };
 
 VARIANT_ENUM_CAST(PhysXChunkEmitter3D::ChunkShape);
-
-#endif // PHYSX_CHUNK_EMITTER_3D_H

@@ -1,9 +1,32 @@
-/**
- * @file physx_chunk_emitter_3d.cpp
- * @brief Implementation of PhysXChunkEmitter3D (ported from the reference
- * godot_physx module; adapted to the Redot 26.2 server API — PhysicsServer3D::free
- * and the servers/rendering_server.h layout).
- */
+/**************************************************************************/
+/*  physx_chunk_emitter_3d.cpp                                            */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/*                        https://godotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "physx_chunk_emitter_3d.h"
 
@@ -63,13 +86,50 @@ void PhysXChunkEmitter3D::_free_chunk(uint32_t p_index) {
 	chunks.remove_at(p_index);
 }
 
-void PhysXChunkEmitter3D::_sync_transforms() {
+void PhysXChunkEmitter3D::get_active_chunk_bodies(LocalVector<ChunkBody> &r_out) const {
+	r_out.clear();
 	if (chunks.is_empty()) {
+		return;
+	}
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	const bool is_sphere = chunk_shape == SHAPE_SPHERE;
+	r_out.reserve(chunks.size());
+	for (uint32_t i = 0; i < chunks.size(); i++) {
+		PhysicsDirectBodyState3D *state = ps->body_get_direct_state(chunks[i].body);
+		if (state == nullptr) {
+			continue;
+		}
+		ChunkBody cb;
+		cb.xform = state->get_transform();
+		cb.velocity = state->get_linear_velocity();
+		const float h = chunks[i].size * 0.5f;
+		cb.half_extents = Vector3(h, h, h);
+		cb.sphere = is_sphere;
+		cb.index = (int)i;
+		r_out.push_back(cb);
+	}
+}
+
+void PhysXChunkEmitter3D::apply_chunk_impulse(int p_index, const Vector3 &p_impulse) {
+	if (p_index < 0 || p_index >= (int)chunks.size()) {
+		return;
+	}
+	PhysicsServer3D::get_singleton()->body_apply_central_impulse(chunks[p_index].body, p_impulse);
+}
+
+void PhysXChunkEmitter3D::_sync_transforms() {
+	if (multimesh.is_null()) {
 		return;
 	}
 	RenderingServer *rs = RenderingServer::get_singleton();
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	// Always push the count first: when the last chunk is recycled (lifetime or
+	// max_active) this is what actually hides the stale instances -- otherwise
+	// they stay frozen on screen until the next spawn.
 	rs->multimesh_set_visible_instances(multimesh, chunks.size());
+	if (chunks.is_empty()) {
+		return;
+	}
 
 	const Transform3D to_local = get_global_transform().affine_inverse();
 	AABB aabb;
@@ -203,16 +263,15 @@ void PhysXChunkEmitter3D::_notification(int p_what) {
 					_free_chunk(0);
 				}
 			}
-			if (chunks.is_empty()) {
-				break;
-			}
-			const double now = Time::get_singleton()->get_ticks_msec() / 1000.0;
-			for (int i = (int)chunks.size() - 1; i >= 0; i--) {
-				if (now - chunks[i].spawn_time > lifetime) {
-					_free_chunk(i);
+			if (!chunks.is_empty()) {
+				const double now = Time::get_singleton()->get_ticks_msec() / 1000.0;
+				for (int i = (int)chunks.size() - 1; i >= 0; i--) {
+					if (now - chunks[i].spawn_time > lifetime) {
+						_free_chunk(i);
+					}
 				}
+				_sync_transforms();
 			}
-			_sync_transforms();
 		} break;
 	}
 }

@@ -378,22 +378,13 @@ public:
 	bool articulation_is_sleeping(RID p_articulation) const;
 
 	// ------------------------------------------------------------------
-	// FEM API — SKELETON for deformable volumes (GPU-only; see
-	// objects/physx_soft_body_3d.h). One-call voxel-box construction plus a
-	// pull-based position readback.
-	// ------------------------------------------------------------------
-	bool soft_body_build_fem_box(RID p_body, const Vector3 &p_size, int p_voxels);
-	bool soft_body_is_fem_built(RID p_body) const;
-	int soft_body_get_fem_point_count(RID p_body) const;
-	Vector<Vector3> soft_body_get_fem_positions(RID p_body);
-
-	// ------------------------------------------------------------------
-	// SOFT BODY API — skeleton. Lifecycle/params are wired to PhysXSoftBody3D;
-	// simulation is not implemented yet (see physx_soft_body_3d.h).
+	// SOFT BODY API — stock SoftBody3D. Each body resolves to a GPU
+	// PxDeformableVolume (CUDA) or the CPU XPBD solver — see
+	// objects/physx_soft_body_3d.h.
 	// ------------------------------------------------------------------
 	virtual RID soft_body_create() override;
 
-	virtual void soft_body_update_rendering_server(RID p_body, PhysicsServer3DRenderingServerHandler *p_rendering_server_handler) override{}
+	virtual void soft_body_update_rendering_server(RID p_body, PhysicsServer3DRenderingServerHandler *p_rendering_server_handler) override;
 
 	virtual void soft_body_set_space(RID p_body, RID p_space) override;
 	virtual RID soft_body_get_space(RID p_body) const override;
@@ -415,10 +406,10 @@ public:
 
 	virtual void soft_body_set_transform(RID p_body, const Transform3D &p_transform) override;
 
-	virtual void soft_body_apply_point_impulse(RID p_body, int p_point_index, const Vector3 &p_impulse) override{}
-	virtual void soft_body_apply_point_force(RID p_body, int p_point_index, const Vector3 &p_force) override{}
-	virtual void soft_body_apply_central_impulse(RID p_body, const Vector3 &p_impulse) override{}
-	virtual void soft_body_apply_central_force(RID p_body, const Vector3 &p_force) override{}
+	virtual void soft_body_apply_point_impulse(RID p_body, int p_point_index, const Vector3 &p_impulse) override;
+	virtual void soft_body_apply_point_force(RID p_body, int p_point_index, const Vector3 &p_force) override;
+	virtual void soft_body_apply_central_impulse(RID p_body, const Vector3 &p_impulse) override;
+	virtual void soft_body_apply_central_force(RID p_body, const Vector3 &p_force) override;
 
 	virtual void soft_body_set_simulation_precision(RID p_body, int p_precision) override;
 	virtual int soft_body_get_simulation_precision(RID p_body) const override;
@@ -429,7 +420,7 @@ public:
 	virtual void soft_body_set_linear_stiffness(RID p_body, real_t p_coefficient) override;
 	virtual real_t soft_body_get_linear_stiffness(RID p_body) const override;
 
-	virtual void soft_body_set_shrinking_factor(RID p_body, real_t p_shrinking_factor) override{}
+	virtual void soft_body_set_shrinking_factor(RID p_body, real_t p_shrinking_factor) override;
 	virtual real_t soft_body_get_shrinking_factor(RID p_body) const override;
 
 	virtual void soft_body_set_pressure_coefficient(RID p_body, real_t p_coefficient) override;
@@ -445,7 +436,7 @@ public:
 
 	virtual AABB soft_body_get_bounds(RID p_body) const override;
 
-	virtual void soft_body_move_point(RID p_body, int p_point_index, const Vector3 &p_global_position) override{}
+	virtual void soft_body_move_point(RID p_body, int p_point_index, const Vector3 &p_global_position) override;
 
 	virtual Vector3 soft_body_get_point_global_position(RID p_body, int p_point_index) const override;
 
@@ -463,6 +454,10 @@ public:
 	void particle_fluid_set_space(RID p_fluid, RID p_space);
 	void particle_fluid_set_param(RID p_fluid, int p_param, real_t p_value);
 	void particle_fluid_set_capacity(RID p_fluid, int p_max);
+	// Runs the PBD system as Drucker-Prager grains instead of a liquid
+	// (PhysXGranular3D's explicit PBD mode). p_friction is a friction
+	// coefficient (~tan of the repose angle).
+	void particle_fluid_set_granular(RID p_fluid, bool p_enabled, real_t p_friction);
 	void particle_fluid_set_particles(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_initial_velocity);
 	void particle_fluid_emit(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_velocity);
 	void particle_fluid_clear(RID p_fluid);
