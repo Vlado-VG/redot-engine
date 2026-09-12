@@ -245,8 +245,8 @@ public sealed class PhysxWorld : IDisposable {
         return (r != null && r.Length >= 2) ? new Vector2(r[0], r[1]) : Vector2.One;
     }
 
-    public (bool hit, PhysicsTestMotionResult3D res) TestMotion(Rid body, Transform3D from, Vector3 motion) {
-        var p = new PhysicsTestMotionParameters3D { From = from, Motion = motion };
+    public (bool hit, PhysicsTestMotionResult3D res) TestMotion(Rid body, Transform3D from, Vector3 motion, bool recoveryAsCollision = false) {
+        var p = new PhysicsTestMotionParameters3D { From = from, Motion = motion, RecoveryAsCollision = recoveryAsCollision };
         var r = new PhysicsTestMotionResult3D();
         bool hit = PhysicsServer3D.BodyTestMotion(body, p, r);
         return (hit, r);

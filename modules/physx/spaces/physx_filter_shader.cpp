@@ -105,19 +105,21 @@ physx::PxFilterFlags physx_simulation_filter_shader(
 	// the per-contact restitution/friction. PhysX's built-in combine modes
 	// can't express Godot's "sum, clamped to [0,1]" rule.
 	//
-	// Deformable pairs (PxDeformableSurface/PxDeformableVolume against rigids)
-	// are solved by the GPU deformable pipeline, which does not support contact
-	// modification — flagging such a pair drops it entirely and the soft body
-	// falls through the world, so they are excluded here. Deformables always
-	// use the material's own friction/damping.
+	// GPU-solved pairs — deformables (PxDeformableSurface/PxDeformableVolume)
+	// and particle systems (PxPBDParticleSystem) — do not support contact
+	// modification: flagging such a pair drops it entirely, so the soft body /
+	// particles fall through the world. They are excluded here and always use
+	// their own material's friction/damping.
 	const physx::PxFilterObjectType::Enum obj_type0 = physx::PxGetFilterObjectType(attributes0);
 	const physx::PxFilterObjectType::Enum obj_type1 = physx::PxGetFilterObjectType(attributes1);
-	const bool deformable_pair =
+	const bool gpu_solved_pair =
 			obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_SURFACE ||
 			obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME ||
+			obj_type0 == physx::PxFilterObjectType::ePARTICLESYSTEM ||
 			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_SURFACE ||
-			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME;
-	if (!deformable_pair) {
+			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME ||
+			obj_type1 == physx::PxFilterObjectType::ePARTICLESYSTEM;
+	if (!gpu_solved_pair) {
 		pairFlags |= physx::PxPairFlag::eMODIFY_CONTACTS;
 	}
 	// CCD pairs are only resolved if the pair flag is set; the per-body

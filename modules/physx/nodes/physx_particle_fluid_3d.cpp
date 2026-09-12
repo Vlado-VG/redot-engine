@@ -1425,8 +1425,23 @@ void PhysXParticleFluid3D::set_mpm_colliders(const TypedArray<NodePath> &p_colli
 }
 
 void PhysXParticleFluid3D::set_particle_count(int p_count) {
-	particle_count = MAX(p_count, 1);
+	const int new_count = MAX(p_count, 1);
+	if (particle_count == new_count) {
+		return;
+	}
+	particle_count = new_count;
 	update_configuration_warnings();
+	// The PBD path sizes its MultiMesh and the server-side particle buffer from
+	// particle_count at creation. A live count change (e.g. a demo's amount
+	// keys) would otherwise make _update_render() write a buffer larger than
+	// the MultiMesh allocation ("p_buffer.size() != instances * stride"), so
+	// rebuild the fluid for the new capacity. The caller respawns if it wants
+	// the volume back (this mirrors clear() + spawn()).
+	if (!Engine::get_singleton()->is_editor_hint() && !_mpm_path() && multimesh.is_valid()) {
+		_free_fluid();
+		_make_fluid();
+		spawned = false;
+	}
 }
 
 void PhysXParticleFluid3D::set_particle_size(float p_size) {
@@ -1535,7 +1550,20 @@ void PhysXParticleFluid3D::set_foam_enabled(bool p_enabled) {
 }
 
 void PhysXParticleFluid3D::set_foam_particle_count(int p_count) {
-	foam_particle_count = MAX(p_count, 1);
+	const int new_count = MAX(p_count, 1);
+	if (foam_particle_count == new_count) {
+		return;
+	}
+	foam_particle_count = new_count;
+	// The foam MultiMesh and the server-side diffuse capacity are sized from
+	// foam_particle_count at creation; rebuild a live PBD fluid so the foam
+	// buffer write can't outgrow the allocation (same contract as
+	// set_particle_count).
+	if (!Engine::get_singleton()->is_editor_hint() && !_mpm_path() && fluid.is_valid()) {
+		_free_fluid();
+		_make_fluid();
+		spawned = false;
+	}
 }
 
 void PhysXParticleFluid3D::set_foam_lifetime(float p_v) {

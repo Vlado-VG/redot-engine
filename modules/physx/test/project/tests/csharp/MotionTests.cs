@@ -54,9 +54,14 @@ internal static class MotionTests {
     static IEnumerator SweepDepenetration() {
         using var w = new PhysxWorld();
         var body = w.MakeKinematic(w.Box(0.4f), new Vector3(3, 5, 0));
-        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(3, 0.2f, 0)), new Vector3(0, 0.5f, 0));
+        // recovery_as_collision mirrors CharacterBody3D: recovery counts as a
+        // collision only when explicitly requested, and then only with actual
+        // contacts (Godot contract: body_test_motion never returns true with
+        // an empty collision list).
+        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(3, 0.2f, 0)), new Vector3(0, 0.5f, 0), recoveryAsCollision: true);
         Assert.Expect(r.GetTravel().Y > 0.52f, $"recovery adds depenetration travel (travel.y={r.GetTravel().Y:F2})");
         Assert.Expect(hit, "penetrating motion reports collision");
+        Assert.Expect(r.GetCollisionCount() > 0, "reported collision has contacts");
         yield return Wait.Frame();
     }
     static IEnumerator SweepInitialPenetration() {

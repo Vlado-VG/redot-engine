@@ -716,13 +716,14 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 r_result->collision_unsafe_fraction = unsafe_fraction;
                 r_result->collision_safe_fraction = safe_fraction;
             } else {
-                // No cast hit: recovery alone is the collision. Set travel to full motion + recovery,
-                // remainder = 0, safe = 1, unsafe = 1.
+                // No cast hit: recovery alone can be the collision, but only if
+                // the contact pass at the recovered pose actually found
+                // touching/overlapping shapes — Godot never reports a hit with
+                // an empty collision list (CharacterBody3D would hand out
+                // slide collisions with no contacts).
                 _body_motion_collide(p_body, transform, Vector3(), p_parameters.max_collisions, self_and_excluded, p_parameters.exclude_objects, r_result);
                 r_result->travel = motion + recovery;
                 r_result->remainder = Vector3();
-                r_result->collision_depth = 0;
-                r_result->collision_count = 0;
                 r_result->collision_safe_fraction = 1.0;
                 r_result->collision_unsafe_fraction = 1.0;
             }
@@ -757,11 +758,13 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
         }
     }
 
-    // An initial penetration counts as a collision even when the recovered
-    // sweep itself is unobstructed: the body started embedded, the recovery
-    // MTD was folded into travel, and callers (e.g. CharacterBody3D) need the
-    // collision reported to register floor/ceiling state (REG-0012).
-    return hit || recovered;
+    // An initial penetration counts as a collision only when the caller asked
+    // for it (recovery_as_collision) AND the contact pass actually recorded
+    // contacts. Returning true with an empty collision list violates Godot's
+    // contract — body_test_motion must never report a hit without collisions
+    // (CharacterBody3D exposes those as slide collisions, and reading them
+    // errors with "index out of bounds"). (REG-0012)
+    return hit || (p_parameters.recovery_as_collision && recovered && r_result != nullptr && r_result->collision_count > 0);
 }
 
 bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin, 
