@@ -23,6 +23,7 @@ internal static class FoundationTests {
         s.Add("PHYSX-FOUND-013", "two identical bodies fall identically (bit-stable pair)", IdenticalFallers);
         s.Add("PHYSX-FOUND-014", "simulation with only inactive spaces stays responsive", InactiveSpaceTicks);
         s.Add("PHYSX-FOUND-015", "space activation is observable via space_is_active", SpaceActivationFlag);
+        s.Add("PHYSX-FOUND-016", "process info: collision pairs reflect contacts; islands documented 0", ProcessInfoStats);
     }
 
     static IEnumerator BackendIsPhysX() {
@@ -164,6 +165,22 @@ internal static class FoundationTests {
         PhysicsServer3D.SpaceSetActive(sp, false);
         Assert.Expect(!PhysicsServer3D.SpaceIsActive(sp), "space inactive again");
         PhysicsServer3D.FreeRid(sp);
+        yield return Wait.Frame();
+    }
+    static IEnumerator ProcessInfoStats() {
+        using var w = new PhysxWorld();
+        Assert.Expect(PhysicsServer3D.GetProcessInfo(PhysicsServer3D.ProcessInfo.CollisionPairs) == 0,
+            "no collision pairs in an empty scene");
+        var body = w.MakeBody(w.Sphere(0.5f), new Vector3(0, 4, 0));
+        // Keep the body awake so the contact pair is processed every step and
+        // the counter is stable regardless of when the poll happens.
+        PhysicsServer3D.BodySetState(body, PhysicsServer3D.BodyState.CanSleep, false);
+        yield return Wait.UntilOrFail(() => w.Pos(body).Origin.Y < 0.6f, 240, "sphere lands on the floor");
+        yield return Wait.Frames(10);
+        Assert.Expect(PhysicsServer3D.GetProcessInfo(PhysicsServer3D.ProcessInfo.CollisionPairs) >= 1,
+            "collision pairs reported once contacts exist");
+        Assert.Expect(PhysicsServer3D.GetProcessInfo(PhysicsServer3D.ProcessInfo.IslandCount) == 0,
+            "island count documented 0 (PhysX exposes no island counter)");
         yield return Wait.Frame();
     }
 }

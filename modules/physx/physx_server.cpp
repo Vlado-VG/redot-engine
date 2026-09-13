@@ -2638,6 +2638,29 @@ int PhysXServer3D::get_process_info(PhysicsServer3D::ProcessInfo p_process_info)
 	switch (p_process_info) {
 		case PhysicsServer3D::INFO_ACTIVE_OBJECTS:
 			return active_objects;
+		case PhysicsServer3D::INFO_COLLISION_PAIRS: {
+			// Narrow-phase pair count of the last step, aggregated over active
+			// spaces. PxScene::getSimulationStatistics must not be called
+			// while the simulation runs — under the synchronous step model
+			// this is only ever consulted between steps (same window as
+			// INFO_ACTIVE_OBJECTS). Cost is one stats-struct copy per active
+			// scene per poll, so no caching layer is warranted.
+			int pairs = 0;
+			for (const RID &rid : space_owner.get_owned_list()) {
+				const PhysXSpace3D *space = space_owner.get_or_null(rid);
+				if (space && space->is_active() && space->get_px_scene()) {
+					physx::PxSimulationStatistics stats;
+					space->get_px_scene()->getSimulationStatistics(stats);
+					pairs += (int)stats.nbDiscreteContactPairsTotal;
+				}
+			}
+			return pairs;
+		}
+		case PhysicsServer3D::INFO_ISLAND_COUNT:
+			// PxSimulationStatistics exposes no island count (verified against
+			// the vendored SDK: only pair/body/shape/constraint counters), and
+			// PhysX does not expose its islands externally. Reported as 0.
+			return 0;
 		default:
 			return 0;
 	}

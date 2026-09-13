@@ -491,7 +491,20 @@ void PhysXBody3D::set_param(PhysicsServer3D::BodyParameter p_param, const Varian
             break;
         default: break;
     }
-    _apply_params_to_actor();
+    // Mass properties (setMassAndUpdateInertia re-derives the inertia tensor
+    // and center of mass from the shapes) are only recomputed for the
+    // parameters that can affect them; surface parameters (bounce/friction/
+    // damping/CCD/locks/sleep) apply without that cost.
+    switch (p_param) {
+        case PhysicsServer3D::BODY_PARAM_MASS:
+        case PhysicsServer3D::BODY_PARAM_INERTIA:
+        case PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS:
+            _apply_params_to_actor();
+            break;
+        default:
+            _apply_surface_params_to_actor();
+            break;
+    }
 }
 
 Variant PhysXBody3D::get_param(PhysicsServer3D::BodyParameter p_param) const {
@@ -652,7 +665,7 @@ physx::PxRigidDynamicLockFlags PhysXBody3D::_effective_lock_flags() const {
     return effective;
 }
 
-void PhysXBody3D::_apply_params_to_actor() {
+void PhysXBody3D::_apply_surface_params_to_actor() {
     if (!px_actor) {
         return;
     }
@@ -678,12 +691,21 @@ void PhysXBody3D::_apply_params_to_actor() {
     }
 
     if (physx::PxRigidDynamic *dyn = get_px_dynamic()) {
-        dyn->setMass((float)mass);
         dyn->setLinearDamping((float)linear_damp);
         dyn->setAngularDamping((float)angular_damp);
         dyn->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, ccd_enabled);
         dyn->setRigidDynamicLockFlags(_effective_lock_flags());
         _apply_sleep_policy(dyn);
+    }
+}
+
+void PhysXBody3D::_apply_params_to_actor() {
+    if (!px_actor) {
+        return;
+    }
+    _apply_surface_params_to_actor();
+    if (physx::PxRigidDynamic *dyn = get_px_dynamic()) {
+        dyn->setMass((float)mass);
 
         // Derive the inertia tensor from the attached shapes' geometries, scaled
         // to the user mass. setMassAndUpdateInertia overwrites the setMass() above

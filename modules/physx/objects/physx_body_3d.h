@@ -296,7 +296,15 @@ private:
 
     void _create_actor();
     void _destroy_actor();
+    /// Full re-apply: surface params + mass properties (setMass + inertia/COM
+    /// re-derived from the shapes). Used by creation, mode switches and the
+    /// mass-affecting parameters.
     void _apply_params_to_actor();
+    /// Cheap re-apply: bounce/friction (userData + private material),
+    /// damping, CCD, axis locks, sleep policy. Everything except mass
+    /// properties — used by set_param for parameters that cannot change the
+    /// inertia tensor or center of mass.
+    void _apply_surface_params_to_actor();
     void _apply_sleep_policy(physx::PxRigidDynamic *p_dyn);
     void _update_kinematic_velocity(float p_step);
     /// Lock flags actually enforced: user axis_lock_flags plus mode-derived
