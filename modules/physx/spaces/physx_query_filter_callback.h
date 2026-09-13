@@ -47,6 +47,11 @@ public:
 	/// respects exceptions (see godot_space_3d.cpp _cull_aabb_for_body).
 	const PhysXBody3D *motion_body = nullptr;
 	bool multi_hit = false; ///< true = return eTOUCH (collect all); false = return eBLOCK (single hit)
+	/// When true (intersect_ray only), objects whose is_ray_pickable() is false
+	/// are rejected. Godot applies body/area ray-pickability to raycasts only —
+	/// point/shape/sweep queries never consult it (reference: godot_physics_3d
+	/// gathers pickable objects for _intersect_ray alone).
+	bool pick_ray = false;
 
 	virtual physx::PxQueryHitType::Enum preFilter(
 			const physx::PxFilterData &filterData,

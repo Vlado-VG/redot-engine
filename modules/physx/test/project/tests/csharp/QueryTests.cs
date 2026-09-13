@@ -36,7 +36,8 @@ internal static class QueryTests {
         s.Add("PHYSX-QUERY-024", "cast_motion with initial overlap returns unobstructed (documented)", CastMotionInitialOverlap);
         s.Add("PHYSX-QUERY-025", "queries against areas with collide_with_areas", AreaQueries);
         s.Add("PHYSX-QUERY-026", "query on second space does not leak first space", CrossSpaceLeak);
-        s.Add("PHYSX-QUERY-027", "ray pickable flag toggling does not corrupt queries", RayPickableToggle);
+        s.Add("PHYSX-QUERY-027", "ray_pickable=false body is invisible to raycasts until re-enabled", RayPickableToggle);
+        s.Add("PHYSX-QUERY-028", "ray_pickable across bodies and areas; enforcement is ray-only", RayPickableMixed);
     }
 
     static IEnumerator RayFields() {
@@ -287,9 +288,43 @@ internal static class QueryTests {
         var b = w.MakeStatic(w.Box(1, 1, 1), new Vector3(0, 1, 0));
         PhysicsServer3D.BodySetRayPickable(b, false);
         yield return Wait.Frames(3);
-        Assert.Expect(w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0)).Count > 0, "raw server ray unaffected by ray_pickable=false");
+        Assert.Expect(w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0)).Count == 0,
+            "ray misses body with ray_pickable=false (reference semantics)");
+        // Pickability is a raycast-only flag: point queries are unaffected.
+        Assert.Expect(w.Point(new Vector3(0, 1, 0)).Count > 0, "point query still finds non-pickable body");
         PhysicsServer3D.BodySetRayPickable(b, true);
         yield return Wait.Frames(3);
-        Assert.Expect(w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0)).Count > 0, "still hit after re-enable");
+        var hit = w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0));
+        Assert.Expect(hit.Count > 0 && hit["rid"].AsRid() == b, "ray hits body again after re-enable");
+    }
+    static IEnumerator RayPickableMixed() {
+        using var w = new PhysxWorld(false);
+        var pickable = w.MakeStatic(w.Box(1, 1, 1), new Vector3(-3, 1, 0));
+        var hidden = w.MakeStatic(w.Box(1, 1, 1), new Vector3(3, 1, 0));
+        PhysicsServer3D.BodySetRayPickable(hidden, false);
+        var area = w.MakeArea(w.Box(1, 1, 1), new Vector3(0, 1, 0));
+        PhysicsServer3D.AreaSetRayPickable(area, false);
+        yield return Wait.Frames(3);
+
+        // The hidden body never resolves its RID in a raycast...
+        Assert.Expect(w.Ray(new Vector3(3, 5, 0), new Vector3(3, -5, 0)).Count == 0,
+            "non-pickable body: ray misses");
+        // ...while the pickable one is reported.
+        var hitPickable = w.Ray(new Vector3(-3, 5, 0), new Vector3(-3, -5, 0));
+        Assert.Expect(hitPickable.Count > 0 && hitPickable["rid"].AsRid() == pickable,
+            "pickable body: ray hits");
+
+        // Area rays: non-pickable area skipped until re-enabled.
+        Assert.Expect(w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0), areas: true, bodies: false).Count == 0,
+            "non-pickable area: ray misses");
+        PhysicsServer3D.AreaSetRayPickable(area, true);
+        yield return Wait.Frames(3);
+        var areaHit = w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0), areas: true, bodies: false);
+        Assert.Expect(areaHit.Count > 0 && areaHit["rid"].AsRid() == area, "area hit after re-enable");
+
+        // Shape/point queries ignore pickability entirely: the hidden body is found.
+        Assert.Expect(w.Point(new Vector3(3, 1, 0)).Count > 0, "point query ignores pickability");
+        var overlap = w.Overlap(w.Box(0.5f, 0.5f, 0.5f), new Transform3D(Basis.Identity, new Vector3(3, 1, 0)));
+        Assert.Expect(overlap.Count > 0 && overlap[0]["rid"].AsRid() == hidden, "shape query ignores pickability");
     }
 }

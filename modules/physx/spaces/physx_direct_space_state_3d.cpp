@@ -100,6 +100,10 @@ bool PhysXDirectSpaceState3D::intersect_ray(const RayParameters &p_parameters, R
     filter_cb.collide_with_bodies = p_parameters.collide_with_bodies;
     filter_cb.collide_with_areas = p_parameters.collide_with_areas;
     filter_cb.exclude_rids = &p_parameters.exclude;
+    // Raycasts honor body/area ray_pickable (Godot: raycasts only — the
+    // hit_from_inside overlap below shares this callback, so the pickability
+    // gate covers the synthesized origin hit too).
+    filter_cb.pick_ray = true;
     // intersect_ray is single-hit — keep eBLOCK for the closest hit.
 
     // 2. Configure PhysX to USE the preFilter callback
@@ -409,6 +413,31 @@ bool PhysXDirectSpaceState3D::cast_motion(const ShapeParameters &p_parameters, r
 
             r_closest_safe = MAX(0.0, hit_fraction - margin_fraction);
             r_closest_unsafe = hit_fraction;
+
+            // Optional rest info for the blocking hit (C++-only output — the
+            // script binding drops it). Same field mapping as rest_info():
+            // point on the collider's surface, normal toward the query shape,
+            // collider velocity at the point. Initial-overlap casts leave
+            // r_info untouched (the reference reports no rest info there).
+            if (r_info) {
+                if (hit.block.actor && hit.block.actor->userData) {
+                    const auto *actor_data = static_cast<const PhysXActorUserData *>(hit.block.actor->userData);
+                    r_info->rid = actor_data->rid;
+                    r_info->collider_id = actor_data->object_id;
+                } else {
+                    r_info->rid = RID();
+                    r_info->collider_id = ObjectID();
+                }
+                r_info->shape = physx_resolve_shape_index(hit.block.actor, hit.block.shape);
+                r_info->point = Vector3(hit.block.position.x, hit.block.position.y, hit.block.position.z);
+                r_info->normal = Vector3(hit.block.normal.x, hit.block.normal.y, hit.block.normal.z);
+                r_info->linear_velocity = Vector3();
+                if (hit.block.actor && hit.block.actor->is<physx::PxRigidDynamic>()) {
+                    const physx::PxRigidDynamic *dyn = hit.block.actor->is<physx::PxRigidDynamic>();
+                    const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*const_cast<physx::PxRigidDynamic *>(dyn), hit.block.position);
+                    r_info->linear_velocity = Vector3(v.x, v.y, v.z);
+                }
+            }
             return true;
         }
     }

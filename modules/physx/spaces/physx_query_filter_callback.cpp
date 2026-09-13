@@ -47,6 +47,12 @@ physx::PxQueryHitType::Enum PhysXQueryFilterCallback::preFilter(
 		return physx::PxQueryHitType::eNONE;
 	}
 
+	// Raycasts honor ray_pickable (intersect_ray sets pick_ray; all other
+	// queries leave it false and never consult the flag).
+	if (pick_ray && !obj->is_ray_pickable()) {
+		return physx::PxQueryHitType::eNONE;
+	}
+
 	// Collision exceptions (body_test_motion paths, mirroring godot's
 	// _cull_aabb_for_body): skip bodies excepted against the moving body.
 	if (motion_body && type == PhysXObject3D::OBJECT_TYPE_BODY) {

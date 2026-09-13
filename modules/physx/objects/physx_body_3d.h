@@ -141,7 +141,7 @@ public:
 
     // --- Ray pickable ---
     void set_ray_pickable(bool p_enable) { ray_pickable = p_enable; }
-    bool is_ray_pickable() const { return ray_pickable; }
+    bool is_ray_pickable() const override { return ray_pickable; }
 
     // --- Shape lifecycle overrides (update inertia tensor) ---
     void _on_shape_added() override;

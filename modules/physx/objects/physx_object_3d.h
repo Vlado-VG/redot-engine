@@ -59,6 +59,13 @@ public:
 	uint32_t get_collision_mask() const { return collision_mask; }
 	void set_collision_mask(uint32_t p_mask);
 
+	// --- Ray pickable ---
+	// Whether intersect_ray may report this object. Godot applies the flag to
+	// raycasts ONLY — point/shape/sweep queries ignore it (reference:
+	// godot_physics_3d gathers pickable objects for _intersect_ray alone).
+	// Bodies default true; areas default false (each wrapper holds the member).
+	virtual bool is_ray_pickable() const { return true; }
+
 protected:
 	ObjectType type = OBJECT_TYPE_INVALID;
 	PhysXRIDOwner physx_rid;

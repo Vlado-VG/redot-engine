@@ -50,7 +50,7 @@ public:
 	bool get_monitoring() const;
 
 	void set_ray_pickable(bool p_enable);
-	bool is_ray_pickable() const;
+	bool is_ray_pickable() const override;
 
 	void set_monitor_callback(const Callable &p_callback) {
 		monitor_callback = p_callback;
@@ -140,7 +140,10 @@ private:
 
 	Transform3D transform;
 	bool monitorable = false;
-	bool ray_pickable = false;
+	// Reference default is pickable for every collision object (bodies and
+	// areas alike: godot_physics_3d godot_collision_object_3d.h). The Area3D
+	// node pushes its own value on ready; this only governs raw-server areas.
+	bool ray_pickable = true;
 
 	Callable monitor_callback;
 	Callable area_monitor_callback;

@@ -63,7 +63,7 @@ public:
 
 	// --- Ray pickable ---
 	void set_ray_pickable(bool p_enable) { ray_pickable = p_enable; }
-	bool is_ray_pickable() const { return ray_pickable; }
+	bool is_ray_pickable() const override { return ray_pickable; }
 
 	// --- State (transform round-trip; velocity/sleep have no meaning here) ---
 	void set_state(PhysicsServer3D::BodyState p_state, const Variant &p_variant);
