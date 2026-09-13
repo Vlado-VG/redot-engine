@@ -25,6 +25,7 @@ internal static class LifecycleTests {
         s.Add("PHYSX-LIFE-013", "shape data changed while attached everywhere", MutateDuringUse);
         s.Add("PHYSX-LIFE-014", "free body inside monitor callback context (deferred-safe)", FreeFromCallbackContext);
         s.Add("PHYSX-LIFE-015", "space freed while body_test_motion not running", FreeSpaceAfterQueries);
+        s.Add("PHYSX-LIFE-016", "body freed via deferred call (mid-flight in async mode) stays crash-free", DeferredBodyFree);
     }
 
     static IEnumerator Canary(PhysxWorld w, string after, float from = 3f) {
@@ -265,5 +266,27 @@ internal static class LifecycleTests {
         PhysicsServer3D.FreeRid(sh);
         yield return Wait.Frames(20);
         yield return Canary(w, "space freed right after queries");
+    }
+
+    // A body freed through the message queue lands in the engine's in-flight
+    // window when async stepping is on (message_queue->flush() runs after
+    // step() kicked the solve, before the next tick's sync() fetches it).
+    // The space must queue the actor removal and the release until after the
+    // fetch. In sync mode the same deferred free is harmless by construction.
+    static IEnumerator DeferredBodyFree() {
+        using var w = new PhysxWorld();
+        var victim = w.MakeBody(w.Box(0.5f), new Vector3(0, 4, 0));
+        yield return Wait.Frames(5);
+        // MessageQueue is not exposed to C#; a GDScript bridge instance's
+        // CallDeferred lands in the same message-queue flush.
+        var bridge = (Godot.GodotObject)GD.Load<GDScript>("res://gdscript/deferred_free_bridge.gd").New();
+        bridge.CallDeferred("free_rid", victim);
+        bridge.Free();
+        yield return Wait.Frames(30);
+        // Canary proves the space keeps simulating after the mid-flight free.
+        var canary = w.MakeBody(w.Sphere(0.3f), new Vector3(3, 4, 0));
+        yield return Wait.UntilOrFail(() => w.Pos(canary).Origin.Y < 3.5f, 240, "canary falls after deferred body free");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(canary)), "engine healthy after deferred mid-flight body free");
+        yield return Wait.Frame();
     }
 }

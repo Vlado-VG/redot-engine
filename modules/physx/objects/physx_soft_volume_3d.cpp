@@ -24,10 +24,13 @@ PhysXSoftVolume3D::~PhysXSoftVolume3D() {
 
 void PhysXSoftVolume3D::_destroy() {
 	if (volume) {
-		if (space && space->get_px_scene()) {
-			space->get_px_scene()->removeActor(*volume);
+		// Routed through the space (queued when a solve is in flight).
+		if (space) {
+			space->remove_actor(volume);
+			space->release_actor(volume);
+		} else {
+			volume->release();
 		}
-		volume->release();
 		volume = nullptr;
 	}
 	if (shape) {
@@ -136,7 +139,7 @@ bool PhysXSoftVolume3D::build(PhysXSpace3D *p_space, const Vector<Vector3> &p_wo
 	shape->setContactOffset(0.05f);
 	shape->setRestOffset(0.02f);
 	volume->attachSimulationMesh(*volume_mesh->getSimulationMesh(), *volume_mesh->getDeformableVolumeAuxData());
-	scene->addActor(*volume);
+	space->add_actor(volume);
 
 	volume->setDeformableBodyFlag(PxDeformableBodyFlag::eDISABLE_SELF_COLLISION, true);
 	volume->setSolverIterationCounts(MAX(p_params.solver_iterations, 15));

@@ -47,9 +47,18 @@ public:
     ~PhysXSpace3D();
 
     // Simulation Loop
+    // Async stepping (physics/physx_3d/simulation/async_step): step() kicks
+    // PxScene::simulate() and returns; sync() — which the engine calls at the
+    // start of the next tick, BEFORE scripts — does the fetchResults and the
+    // whole post-solve pipeline (_finish_step). With the flag off, step()
+    // fetches inline and sync() is a no-op, byte-identical to the historic
+    // behavior.
     void step(float p_step);
+    void sync();
     bool is_stepping() const { return stepping; }
     float get_last_step() const { return last_step; }
+    /// Active-actor count of the last completed solve (INFO_ACTIVE_OBJECTS).
+    int get_active_objects() const { return active_objects; }
 
     RID get_rid() const { return rid; }
     void set_rid(const RID &p_rid) { rid = p_rid; }
@@ -90,8 +99,16 @@ public:
     PhysXDirectSpaceState3D *get_direct_state() { return direct_state; }
 
     // Actor Management
+    // While a solve is in flight (async mode), scene mutations are queued and
+    // applied right after the fetch — PhysX forbids add/remove while the
+    // simulation runs. The mid-flight window is real: deferred engine calls
+    // and node destruction (message_queue flush / iteration_end) run between
+    // step() and the next sync(). release_actor lets wrappers transfer
+    // PxActor ownership to the space so a freed body's actor is released
+    // only after the fetch, never mid-solve.
     void add_actor(physx::PxActor *p_actor);
     void remove_actor(physx::PxActor *p_actor);
+    void release_actor(physx::PxActor *p_actor);
 
     // PhysX-specific getter for helper classes (like DirectSpaceState)
     physx::PxScene *get_px_scene() const { return px_scene; }
@@ -245,7 +262,20 @@ private:
     RID rid;
     bool active = false;
     bool stepping = false;
+    bool batched_isosurface = false;
     float last_step = 0.0f;
+    int active_objects = 0;
+
+    // Queued scene mutations from the async in-flight window (see
+    // add_actor/remove_actor/release_actor), applied in order at fetch time.
+    struct PendingActorOp {
+        physx::PxActor *actor = nullptr;
+        bool add = false;
+        bool remove = false;
+        bool release = false;
+    };
+    LocalVector<PendingActorOp> pending_actor_ops;
+    void _flush_actor_ops();
 	int solver_iteration_count = 8; // Godot default (physics/3d/solver/solver_iterations)
 
 	// Cached SpaceParameter values so get_param round-trips all eight. The
@@ -288,6 +318,10 @@ private:
     // Private helper to initialize/destroy the scene + vehicle context
     void _initialize_scene();
     void _terminate_scene();
+    /// Shared tail of step()/sync(): everything after fetchResults — queued
+    /// mutations, GPU readbacks, CPU soft-body step, post-step hooks, active
+    /// actor count. Runs on the server thread.
+    void _finish_step();
     /// CPU soft bodies only: resolves the effective gravity from overlapping
     /// areas (AABB approximation of the reference's broadphase pairs) with the
     /// default area as the additive fallback — mirrors godot_physics_3d's

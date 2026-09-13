@@ -37,6 +37,13 @@ public partial class TestMain : SceneTree {
     bool _done;
 
     public override void _Initialize() {
+        // Optional async stepping toggle for CI: PHYSX_ASYNC_STEP=1 flips the
+        // project setting before the first tick (the server reads it live per
+        // step, so a runtime set works).
+        if (OS.GetEnvironment("PHYSX_ASYNC_STEP") == "1") {
+            ProjectSettings.SetSetting("physics/physx_3d/simulation/async_step", true);
+            GD.Print("----  PHYSX_ASYNC_STEP=1: async stepping enabled");
+        }
         long seed = 123456;
         string json = null;
         var tier = TestTier.Fast;

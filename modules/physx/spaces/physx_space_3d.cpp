@@ -191,6 +191,14 @@ void PhysXSpace3D::_initialize_scene() {
 }
 
 void PhysXSpace3D::_terminate_scene() {
+    if (stepping && px_scene) {
+        // The space died with a solve in flight (World3D freed between an
+        // async step and its sync). Fetch so nothing releases into a live
+        // solve, then let the flush below apply queued mutations.
+        px_scene->fetchResults(true);
+        stepping = false;
+    }
+    _flush_actor_ops();
     if (px_scene) {
         px_scene->release();
         px_scene = nullptr;
@@ -222,9 +230,14 @@ void PhysXSpace3D::step(float p_step) {
     if (!active || !px_scene) {
         return;
     }
-    // PhysX forbids calling simulate() while a previous step is in flight.
+    // PhysX forbids calling simulate() while a solve is in flight. A leftover
+    // in-flight step can only happen when the async flag was flipped off
+    // mid-flight or a sync was skipped — fetch defensively instead of dying.
     if (stepping) {
-        ERR_FAIL_MSG("PhysX: step() called while a previous step is still in flight");
+        WARN_PRINT_ONCE("PhysX: step() called with a solve in flight; fetching it first.");
+        px_scene->fetchResults(true);
+        _finish_step();
+        stepping = false;
     }
 
     stepping = true;
@@ -250,7 +263,7 @@ void PhysXSpace3D::step(float p_step) {
     // mid-solve, because PhysX invokes each fluid's onPostSolve in turn and
     // system 2's kernel would not be issued until system 1's callback finished
     // blocking. Single-fluid spaces keep the inline path.
-    const bool batched_isosurface = fluids.size() > 1;
+    batched_isosurface = fluids.size() > 1;
     for (PhysXGPUParticleFluid3D *fluid : fluids) {
         fluid->set_deferred_extraction(batched_isosurface);
     }
@@ -262,11 +275,37 @@ void PhysXSpace3D::step(float p_step) {
         vehicle->update(p_step);
     }
 
-    // Synchronous mode: simulate + block. When async support lands, move
-    // fetchResults() into sync()/flush_queries() so the worker can run
-    // concurrently with the simulation.
     px_scene->simulate(p_step);
+
+    // Synchronous mode (default): simulate + block in the same call — the
+    // historic behavior. Async mode (physics/physx_3d/simulation/async_step):
+    // return with the solve in flight; sync() — called by the engine at the
+    // START of the next tick, before scripts — does the fetch and the whole
+    // post-solve pipeline, so the solve overlaps the rest of this frame.
+    if (!PhysXServer3D::get_singleton()->is_async_stepping()) {
+        px_scene->fetchResults(true);
+        _finish_step();
+        stepping = false;
+    }
+}
+
+void PhysXSpace3D::sync() {
+    if (!stepping || !px_scene) {
+        return;
+    }
     px_scene->fetchResults(true);
+    _finish_step();
+    stepping = false;
+}
+
+// Everything after fetchResults, shared by the sync and async paths. Runs on
+// the server thread with the solve complete.
+void PhysXSpace3D::_finish_step() {
+    // Mutations queued during the in-flight window (deferred calls, node
+    // destruction): apply removes/adds against the now-idle scene and run any
+    // deferred releases. Flush BEFORE the readbacks so a mid-flight-destroyed
+    // GPU object is out of the picture first.
+    _flush_actor_ops();
 
     // GPU fluid/cloth read-back: copy particle/vertex positions GPU -> host so
     // the nodes can render them. Must run while the scene is still valid
@@ -302,22 +341,29 @@ void PhysXSpace3D::step(float p_step) {
             // scene gravity — the solver has no per-body gravity injection.
             gravity = _resolve_soft_body_gravity(*sb);
         }
-        sb->step(p_step, gravity);
+        sb->step(last_step, gravity);
     }
 
     // Post-step: derive kinematic velocities and fire state-sync callbacks so
     // Godot nodes read the new transforms.
     for (PhysXBody3D *body : bodies) {
-        body->on_post_step(p_step);
+        body->on_post_step(last_step);
     }
 
     // Vehicle post-step (post-step): sync the PhysX actor pose/velocity from
     // vehicle2 state after the simulation step is complete.
     for (PhysXVehicle3D *vehicle : vehicles) {
-        vehicle->post_step(p_step);
+        vehicle->post_step(last_step);
     }
 
-    stepping = false;
+    // Active-actor count for INFO_ACTIVE_OBJECTS (reflects the solve that
+    // just completed; in async mode it is read one phase later than the
+    // historic inline path).
+    if (px_scene) {
+        physx::PxU32 nb_active = 0;
+        px_scene->getActiveActors(nb_active);
+        active_objects = (int)nb_active;
+    }
 }
 
 void PhysXSpace3D::set_active(bool p_active) { active = p_active; }
@@ -325,7 +371,12 @@ void PhysXSpace3D::set_active(bool p_active) { active = p_active; }
 void PhysXSpace3D::add_actor(physx::PxActor *p_actor) {
     ERR_FAIL_NULL(p_actor);
     ERR_FAIL_NULL(px_scene);
-    // TODO: once step() is async, defer to a pending queue when stepping.
+    if (stepping) {
+        // Async in-flight window: PhysX forbids scene mutation during the
+        // solve. Apply right after the fetch (see _flush_actor_ops).
+        pending_actor_ops.push_back({ p_actor, true, false, false });
+        return;
+    }
     px_scene->addActor(*p_actor);
 }
 
@@ -337,7 +388,38 @@ void PhysXSpace3D::remove_actor(physx::PxActor *p_actor) {
     if (!px_scene) {
         return;
     }
+    if (stepping) {
+        pending_actor_ops.push_back({ p_actor, false, true, false });
+        return;
+    }
     px_scene->removeActor(*p_actor);
+}
+
+// Takes ownership of a PxActor release: while a solve is in flight the
+// release is queued until after the fetch (the solve still references the
+// actor), otherwise it runs inline. Wrappers that destroy their actor route
+// through this so a mid-flight node free never releases into a live solve.
+void PhysXSpace3D::release_actor(physx::PxActor *p_actor) {
+    ERR_FAIL_NULL(p_actor);
+    if (stepping && px_scene) {
+        pending_actor_ops.push_back({ p_actor, false, false, true });
+        return;
+    }
+    p_actor->release();
+}
+
+void PhysXSpace3D::_flush_actor_ops() {
+    for (const PendingActorOp &op : pending_actor_ops) {
+        if (op.add && px_scene) {
+            px_scene->addActor(*op.actor);
+        } else if (op.remove && px_scene) {
+            px_scene->removeActor(*op.actor);
+        }
+        if (op.release) {
+            op.actor->release();
+        }
+    }
+    pending_actor_ops.clear();
 }
 
 void PhysXSpace3D::set_param(PhysicsServer3D::SpaceParameter p_param, double p_value) {

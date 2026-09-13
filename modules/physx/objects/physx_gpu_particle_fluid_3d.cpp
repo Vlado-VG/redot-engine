@@ -601,10 +601,14 @@ void PhysXGPUParticleFluid3D::_destroy() {
 		px_buffer = nullptr;
 	}
 	if (px_system) {
-		if (space && space->get_px_scene()) {
-			space->get_px_scene()->removeActor(*px_system);
+		// Routed through the space so a mid-flight destroy (async stepping)
+		// queues the scene removal and the release until after the fetch.
+		if (space) {
+			space->remove_actor(px_system);
+			space->release_actor(px_system);
+		} else {
+			px_system->release();
 		}
-		px_system->release();
 		px_system = nullptr;
 	}
 	if (px_material) {
@@ -712,7 +716,7 @@ void PhysXGPUParticleFluid3D::_ensure_system() {
 	// layer bit 0 and a full mask so it collides with the standard body layers.
 	px_system->setSimulationFilterData(PxFilterData(1, 0xFFFFFFFF, 0, 0));
 
-	scene->addActor(*px_system);
+	space->add_actor(px_system);
 	dirty_material = false;
 }
 

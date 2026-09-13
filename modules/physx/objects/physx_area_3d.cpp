@@ -44,14 +44,23 @@ PhysXArea3D::~PhysXArea3D() {
 	// clear_shapes() MUST run before px_actor->release() — releasing the actor
 	// destroys its attached PxShapes, so the base-class destructor's
 	// remove_shape() loop would otherwise detachShape() against a freed actor.
-	if (space) {
+	PhysXSpace3D *previous_space = space;
+	if (previous_space) {
 		set_space(nullptr);
 	}
 
 	clear_shapes();
 
 	if (px_actor) {
-		px_actor->release();
+		// Route the release through the space: with async stepping a
+		// mid-flight area destruction queues the release until after the
+		// fetch — releasing into a live solve would free an actor the solver
+		// still references (see PhysXSpace3D::release_actor).
+		if (previous_space) {
+			previous_space->release_actor(px_actor);
+		} else {
+			px_actor->release();
+		}
 		px_actor = nullptr;
 	}
 }

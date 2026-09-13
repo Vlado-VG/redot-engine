@@ -2561,30 +2561,31 @@ void PhysXServer3D::step(real_t p_step) {
 	if (!active) {
 		return;
 	}
-	active_objects = 0;
+	// Read live so tests and tools can toggle async stepping at runtime.
+	async_stepping = GLOBAL_GET("physics/physx_3d/simulation/async_step");
 	for (const RID &rid : space_owner.get_owned_list()) {
 		PhysXSpace3D *space = space_owner.get_or_null(rid);
 		if (space && space->is_active()) {
 			space->step((float)p_step);
-			// Count the actors that moved this step (eENABLE_ACTIVE_ACTORS) so
-			// get_process_info(INFO_ACTIVE_OBJECTS) reflects live simulation
-			// load. Valid after fetchResults(), which space->step blocks on.
-			if (physx::PxScene *scene = space->get_px_scene()) {
-				physx::PxU32 nb_active = 0;
-				scene->getActiveActors(nb_active);
-				active_objects += (int)nb_active;
-			}
 		}
 	}
 }
 
 void PhysXServer3D::sync() {
-	// Push queued transforms/forces from gameplay into PxRigidActors.
-	// PhysX reads happen after fetchResults, which step() completes synchronously.
+	// The engine calls sync() at the start of every physics tick, before
+	// scripts. In async stepping mode this fetches the solve that step()
+	// kicked last tick (per-space no-op when nothing is in flight); with the
+	// flag off the fetch already happened inline in step() and this is a no-op.
+	for (const RID &rid : space_owner.get_owned_list()) {
+		PhysXSpace3D *space = space_owner.get_or_null(rid);
+		if (space) {
+			space->sync();
+		}
+	}
 }
 
 void PhysXServer3D::end_sync() {
-	// Marks the sync window closed. No-op in the current synchronous stepping model.
+	// Marks the sync window closed. The fetch already happened in sync().
 }
 
 void PhysXServer3D::flush_queries() {
@@ -2643,8 +2644,18 @@ bool PhysXServer3D::is_flushing_queries() const {
 
 int PhysXServer3D::get_process_info(PhysicsServer3D::ProcessInfo p_process_info) {
 	switch (p_process_info) {
-		case PhysicsServer3D::INFO_ACTIVE_OBJECTS:
-			return active_objects;
+		case PhysicsServer3D::INFO_ACTIVE_OBJECTS: {
+			// Sum the per-space counts from the last completed solve (each
+			// space counts in its _finish_step, right after fetchResults).
+			int total = 0;
+			for (const RID &rid : space_owner.get_owned_list()) {
+				const PhysXSpace3D *space = space_owner.get_or_null(rid);
+				if (space) {
+					total += space->get_active_objects();
+				}
+			}
+			return total;
+		}
 		case PhysicsServer3D::INFO_COLLISION_PAIRS: {
 			// Narrow-phase pair count of the last step, aggregated over active
 			// spaces. PxScene::getSimulationStatistics must not be called

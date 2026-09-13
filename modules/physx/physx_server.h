@@ -87,6 +87,10 @@ class PhysXServer3D : public PhysicsServer3D {
 	// stays frozen until the game runs. Mirrors Jolt/godot_physics_3d.
 	bool active = true;
 
+	// Optional async stepping (physics/physx_3d/simulation/async_step, read
+	// live per server step): step() kicks the solve, sync() fetches it.
+	bool async_stepping = false;
+
 private:
 	/** @brief Creates a shape of type T, registers it, and returns its RID. */
 	template <typename T>
@@ -574,6 +578,9 @@ public:
 	void release_vehicles_for_body(PhysXBody3D *p_body) const;
 
 	virtual void set_active(bool p_active) override;
+
+	/// Whether step() defers the solve fetch to sync() (async stepping).
+	bool is_async_stepping() const { return async_stepping; }
 
 	virtual void init() override;
 	virtual void finish() override;

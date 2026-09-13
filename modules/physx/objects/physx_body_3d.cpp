@@ -130,10 +130,16 @@ void PhysXBody3D::_create_actor() {
 
 void PhysXBody3D::_destroy_actor() {
     if (px_actor) {
+        // Route the release through the space: in async stepping a mid-flight
+        // destroy (deferred call, node free) queues both the scene removal and
+        // the release until after the fetch -- releasing into a live solve
+        // would free an actor the solver still references.
         if (space) {
             space->remove_actor(px_actor);
+            space->release_actor(px_actor);
+        } else {
+            px_actor->release();
         }
-        px_actor->release();
         px_actor = nullptr;
     }
     // Reset so that a new actor (e.g., after mode switch) can be added

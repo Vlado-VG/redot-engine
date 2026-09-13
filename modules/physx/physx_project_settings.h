@@ -63,6 +63,26 @@ public:
 	// dispatcher is shared by every PxScene the server creates.
 	inline static int cpu_worker_threads = 0;
 
+	// physics/physx_3d/simulation/async_step
+	//
+	// Optional async stepping (default OFF). When on, PhysXSpace3D::step()
+	// only kicks PxScene::simulate(); the fetchResults + GPU readbacks +
+	// post-step hooks run in sync(), which the engine calls at the start of
+	// the NEXT tick (main.cpp order: sync -> flush_queries -> scripts ->
+	// end_sync -> step). The solve therefore overlaps the rest of the frame.
+	// Read live per server step, so it can be toggled at runtime; flipping it
+	// mid-flight is safe (step() fetches defensively).
+	//
+	// Caveats when on:
+	//  - A scene query issued while a solve is in flight forces an immediate
+	//    fetch (PhysX forbids queries against a running scene).
+	//  - Server calls that land in the in-flight window (deferred calls,
+	//    node destruction) have their actor add/remove/release queued until
+	//    the fetch; the wrappers must route releases through the space.
+	//  - Body/actor data writes from scripts still happen after sync() (the
+	//    engine order keeps scripts out of the in-flight window).
+	inline static bool async_step = false;
+
 	// physics/physx_3d/soft_body/mode
 	//
 	// Resolution for stock SoftBody3D bodies: 0 = Auto (GPU PxDeformableVolume

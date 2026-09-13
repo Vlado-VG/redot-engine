@@ -46,11 +46,12 @@ void PhysXGPUCloth3D::clear() {
 }
 
 void PhysXGPUCloth3D::_destroy_surface() {
-	if (space && space->get_px_scene() && surface) {
-		space->get_px_scene()->removeActor(*surface);
+	if (space && surface) {
+		// Routed through the space (queued when a solve is in flight).
+		space->remove_actor(surface);
+		space->release_actor(surface);
 	}
 	if (surface) {
-		surface->release();
 		surface = nullptr;
 	}
 	if (shape) {
@@ -168,7 +169,7 @@ bool PhysXGPUCloth3D::_cook_and_create(const Vector<Vector3> &p_positions, const
 	surface->setSelfCollisionFilterDistance(thickness * 2.5f);
 	surface->setMaxLinearVelocity(500.0f);
 
-	scene->addActor(*surface);
+	space->add_actor(surface);
 
 	// Host mirror. The cooked mesh may have reordered/welded vertices; use its
 	// own vertices as the authoritative rest set.
