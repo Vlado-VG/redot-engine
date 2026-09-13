@@ -83,6 +83,12 @@ internal static class ShapeTests {
         s.Add("PHYSX-SHAPE-MUT-003", "clear_shapes removes all collision", MutClear);
         s.Add("PHYSX-SHAPE-MUT-004", "body_set_shape replaces geometry", MutReplace);
         s.Add("PHYSX-SHAPE-MUT-005", "shape disabled flag disables collision but keeps slot", MutDisabled);
+
+        // Mirrored (negative-scale) convex shapes: Godot preserves mirroring
+        // for ConvexPolygonShape3D; the module bakes it via signed PxMeshScale.
+        s.Add("PHYSX-SHAPE-MIR-001", "mirrored convex cube drops and rests like unmirrored", MirroredCubeRest);
+        s.Add("PHYSX-SHAPE-MIR-002", "mirrored convex wedge: ray height + normal follow the mirror", MirroredWedgeRay);
+        s.Add("PHYSX-SHAPE-MIR-003", "rest_info on a mirrored query shape matches floor surface", MirroredRestInfo);
     }
 
     // Godot front faces are CW seen from outside; the module (like Jolt)
@@ -561,5 +567,67 @@ internal static class ShapeTests {
         PhysicsServer3D.BodySetShapeDisabled(b, 0, false);
         yield return Wait.Frames(3);
         Assert.Expect(w.Ray(new Vector3(0, 5, 0), new Vector3(0, -5, 0)).Count > 0, "re-enabled shape hit again");
+    }
+
+    // ------------------------------------------------------------- mirrored
+    // Triangular prism, origin at bottom center: bottom rect x in [-1,1],
+    // top edge at x=+1,y=+1. Slope plane y=(x+1)/2, normal ~(-0.447,0.894,0).
+    static Rid Wedge(PhysxWorld w) => w.Convex(
+        new Vector3(-1, 0, -1), new Vector3(1, 0, -1), new Vector3(1, 0, 1),
+        new Vector3(-1, 0, 1), new Vector3(1, 1, -1), new Vector3(1, 1, 1));
+    static Rid ConvexCube(PhysxWorld w, float half) => w.Convex(
+        new Vector3(-half, -half, -half), new Vector3(half, -half, -half),
+        new Vector3(half, -half, half), new Vector3(-half, -half, half),
+        new Vector3(-half, half, -half), new Vector3(half, half, -half),
+        new Vector3(half, half, half), new Vector3(-half, half, half));
+
+    // A symmetric hull is mirror-invariant; this only proves the mirrored
+    // attachment still collides (no crash/NaN from the negative PxMeshScale).
+    static IEnumerator MirroredCubeRest() {
+        using var w = new PhysxWorld();
+        var hull = ConvexCube(w, 0.4f);
+        var b = w.MakeBody(hull, new Vector3(0, 5, 0),
+            shapeXf: new Transform3D(Basis.FromScale(new Vector3(-1, 1, 1)), Vector3.Zero));
+        yield return Wait.UntilOrFail(() => w.Pos(b).Origin.Y < 0.6f, 240, "mirrored convex lands");
+        yield return Wait.Frames(90);
+        Assert.ExpectNear(w.Pos(b).Origin.Y, 0.4f, 0.2f, "mirrored convex cube rests at half-height");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)) && PhysxWorld.Finite(w.Vel(b)), "state finite after mirrored rest");
+    }
+
+    // The decisive geometry check: the wedge is asymmetric, so an X-mirror
+    // moves the slope. With the mirror applied, a ray at local x=-0.5 hits the
+    // slope 0.75 above the base with the mirrored normal; without it (old abs
+    // behavior) the same ray would hit the low side at 0.25 with a -X normal.
+    static IEnumerator MirroredWedgeRay() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(Wedge(w), new Vector3(-10, 0, 0));
+        w.MakeStatic(Wedge(w), new Vector3(10, 0, 0),
+            shapeXf: new Transform3D(Basis.FromScale(new Vector3(-1, 1, 1)), Vector3.Zero));
+        yield return Wait.Frames(3);
+
+        var h1 = w.Ray(new Vector3(-10 + 0.5f, 5, 0), new Vector3(-10 + 0.5f, -5, 0));
+        Assert.Require(h1.Count > 0, "ray hits unmirrored wedge slope");
+        Assert.ExpectNear(h1["position"].AsVector3().Y, 0.75f, 0.05f, "unmirrored slope height at +0.5");
+        Assert.Expect(h1["normal"].AsVector3().X < -0.3f, "unmirrored slope normal tilts toward -X");
+
+        var h2 = w.Ray(new Vector3(10 - 0.5f, 5, 0), new Vector3(10 - 0.5f, -5, 0));
+        Assert.Require(h2.Count > 0, "ray hits mirrored wedge slope");
+        Assert.ExpectNear(h2["position"].AsVector3().Y, 0.75f, 0.05f, "mirrored slope height at -0.5 (mirror applied)");
+        Assert.Expect(h2["normal"].AsVector3().X > 0.3f, "mirrored slope normal tilts toward +X");
+        yield return Wait.Frame();
+    }
+
+    // Query-vs-simulation agreement: the mirrored query shape must resolve
+    // against the floor the same way the mirrored attachment collides.
+    static IEnumerator MirroredRestInfo() {
+        using var w = new PhysxWorld(); // floor top at y=0
+        var hull = ConvexCube(w, 0.4f);
+        var rm = w.RestInfo(hull, new Transform3D(Basis.FromScale(new Vector3(-1, 1, 1)), new Vector3(0, 0.3f, 0)));
+        var rp = w.RestInfo(hull, new Transform3D(Basis.FromScale(Vector3.One), new Vector3(5, 0.3f, 0)));
+        Assert.Require(rm.Count > 0, "mirrored overlapping query reports rest info");
+        Assert.Expect(rm["normal"].AsVector3().Y > 0.9f, "mirrored rest normal points up out of the floor");
+        Assert.ExpectNear(rm["point"].AsVector3().Y, 0f, 0.05f, "mirrored rest point on floor surface");
+        Assert.Expect(rp.Count > 0 && rp["normal"].AsVector3().Y > 0.9f, "unmirrored control agrees");
+        yield return Wait.Frame();
     }
 }

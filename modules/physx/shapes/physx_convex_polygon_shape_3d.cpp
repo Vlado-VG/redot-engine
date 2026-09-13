@@ -50,14 +50,25 @@ Variant PhysXConvexPolygonShape3D::get_data() const {
 }
 
 bool PhysXConvexPolygonShape3D::get_physx_geometry(physx::PxGeometryHolder &holder, const physx::PxVec3 &scale) const {
-	if (!_ensure_convex_mesh()) {
+	// This shape receives the SIGNED scale (see
+	// PhysXShapedObject3D::_shape_geometry_scale_for). PhysX rejects negative
+	// scale components on convex geometries (PxMeshScale::isValidForConvexMesh
+	// — unlike triangle meshes), so a negative-determinant scale is baked by
+	// cooking a point-reflected hull and using the absolute scale:
+	//     pose * |scale| * reflected  ==  pose * scale.
+	// All current callers pass a uniformly-signed scale (Godot's
+	// Basis::get_scale() convention); a mixed sign pattern (unreachable via
+	// the module plumbing) degrades to the unmirrored magnitudes.
+	const bool mirrored = scale.minElement() < 0.0f;
+	if (!_ensure_convex_mesh(mirrored)) {
 		return false;
 	}
 
 	holder.storeAny(
 		physx::PxConvexMeshGeometry(
-			convex_mesh,
-			physx::PxMeshScale(scale)
+			mirrored ? convex_mesh_mirrored : convex_mesh,
+			physx::PxMeshScale(
+					physx::PxVec3(physx::PxAbs(scale.x), physx::PxAbs(scale.y), physx::PxAbs(scale.z)))
 		)
 	);
 
@@ -65,16 +76,18 @@ bool PhysXConvexPolygonShape3D::get_physx_geometry(physx::PxGeometryHolder &hold
 }
 
 void PhysXConvexPolygonShape3D::_release_convex_mesh() {
-	if (!convex_mesh) {
-		return;
+	if (convex_mesh) {
+		convex_mesh->release();
+		convex_mesh = nullptr;
 	}
-
-	convex_mesh->release();
-	convex_mesh = nullptr;
+	if (convex_mesh_mirrored) {
+		convex_mesh_mirrored->release();
+		convex_mesh_mirrored = nullptr;
+	}
 }
 
-bool PhysXConvexPolygonShape3D::_ensure_convex_mesh() const {
-	if (convex_mesh) {
+bool PhysXConvexPolygonShape3D::_ensure_convex_mesh(bool p_mirrored) const {
+	if (p_mirrored ? convex_mesh_mirrored != nullptr : convex_mesh != nullptr) {
 		return true;
 	}
 
@@ -84,17 +97,23 @@ bool PhysXConvexPolygonShape3D::_ensure_convex_mesh() const {
 		return false;
 	}
 
-	// A 3D convex hull requires at least 4 non-coplanar points, but PhysX can 
+	// A 3D convex hull requires at least 4 non-coplanar points, but PhysX can
 	// compute planar convex hulls with 3.
 	ERR_FAIL_COND_V_MSG(vertex_count < 3, false, "Failed to build PhysX convex polygon: vertex count < 3.");
 
-	// 1. Prepare PhysX data arrays
+	// 1. Prepare PhysX data arrays. The mirrored variant cooks the hull from
+	// the point-reflected cloud (p' = -p): pose * |scale| * (-p) reproduces
+	// pose * scale for the uniformly-signed scales this module passes.
 	LocalVector<physx::PxVec3> px_vertices;
 	px_vertices.resize(vertex_count);
 
 	for (int i = 0; i < vertex_count; ++i) {
 		const Vector3 &v = points[i];
-		px_vertices[i] = physx::PxVec3(v.x, v.y, v.z);
+		if (p_mirrored) {
+			px_vertices[i] = physx::PxVec3(-v.x, -v.y, -v.z);
+		} else {
+			px_vertices[i] = physx::PxVec3(v.x, v.y, v.z);
+		}
 	}
 
 	// 2. Set up the mesh descriptor
@@ -102,7 +121,7 @@ bool PhysXConvexPolygonShape3D::_ensure_convex_mesh() const {
 	mesh_desc.points.count = vertex_count;
 	mesh_desc.points.stride = sizeof(physx::PxVec3);
 	mesh_desc.points.data = px_vertices.ptr();
-	
+
 	// eCOMPUTE_CONVEX tells PhysX to generate the hull from our point cloud.
 	mesh_desc.flags = physx::PxConvexFlag::eCOMPUTE_CONVEX;
 
@@ -113,11 +132,17 @@ bool PhysXConvexPolygonShape3D::_ensure_convex_mesh() const {
 	ERR_FAIL_NULL_V_MSG(&physics, false, "PhysX PxPhysics is not initialized.");
 
 	// 4. Cook the convex mesh
-	convex_mesh = PxCreateConvexMesh(cooking_params, mesh_desc, physics.getPhysicsInsertionCallback());
+	physx::PxConvexMesh *mesh = PxCreateConvexMesh(cooking_params, mesh_desc, physics.getPhysicsInsertionCallback());
 
-	if (!convex_mesh) {
+	if (!mesh) {
 		ERR_PRINT("PhysX failed to create convex mesh.");
 		return false;
+	}
+
+	if (p_mirrored) {
+		convex_mesh_mirrored = mesh;
+	} else {
+		convex_mesh = mesh;
 	}
 
 	return true;

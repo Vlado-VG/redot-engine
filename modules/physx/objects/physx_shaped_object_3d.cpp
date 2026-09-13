@@ -5,6 +5,7 @@
 #include "../physx_conversions.h"
 #include "../spaces/physx_filter_shader.h"
 #include "core/config/project_settings.h"
+#include "core/math/math_funcs.h"
 
 PhysXShapedObject3D::PhysXShapedObject3D(ObjectType p_type) : PhysXObject3D(p_type){
 }
@@ -41,6 +42,33 @@ Vector3 PhysXShapedObject3D::_shape_geometry_scale(const Transform3D &p_shape_tr
 			body_scale.x * shape_scale.x,
 			body_scale.y * shape_scale.y,
 			body_scale.z * shape_scale.z);
+}
+
+Vector3 PhysXShapedObject3D::_shape_geometry_scale_signed(const Transform3D &p_shape_transform) const {
+	// Zero determinant is degenerate (SIGN(0) would zero the whole scale);
+	// keep the absolute path there.
+	if (Math::is_zero_approx(p_shape_transform.basis.determinant())) {
+		return _shape_geometry_scale(p_shape_transform);
+	}
+	// Godot's signed scale (determinant sign applied uniformly). Paired with
+	// get_rotation_quaternion() — which absorbs the same sign as (-1,-1,-1) —
+	// pose * PxMeshScale(signed) reconstructs the original mirrored basis.
+	const Vector3 shape_scale = p_shape_transform.basis.get_scale();
+	return Vector3(
+			body_scale.x * shape_scale.x,
+			body_scale.y * shape_scale.y,
+			body_scale.z * shape_scale.z);
+}
+
+Vector3 PhysXShapedObject3D::_shape_geometry_scale_for(const PhysXShape3D *p_shape, const Transform3D &p_shape_transform) const {
+	// Convex polygon meshes are the only consumers of the signed scale: the
+	// shape bakes a negative determinant by cooking a point-reflected hull
+	// (PxMeshScale rejects negative components on convex geometries). Every
+	// other geometry stays on the absolute path.
+	if (p_shape && p_shape->get_type() == PhysicsServer3D::SHAPE_CONVEX_POLYGON) {
+		return _shape_geometry_scale_signed(p_shape_transform);
+	}
+	return _shape_geometry_scale(p_shape_transform);
 }
 
 /**
@@ -96,7 +124,7 @@ void PhysXShapedObject3D::shape_changed(PhysXShape3D *p_shape) {
             // per-shape transform scale, and refresh the contact offset (the
             // margin is stored per PxShape, not per blueprint).
             physx::PxGeometryHolder holder;
-            const Vector3 geom_scale = _shape_geometry_scale(record.relative_transform);
+            const Vector3 geom_scale = _shape_geometry_scale_for(p_shape, record.relative_transform);
             physx::PxVec3 scale(geom_scale.x, geom_scale.y, geom_scale.z);
             if (p_shape->get_physx_geometry(holder, scale)) {
                 if (record.px_shape) {
@@ -157,8 +185,9 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
         // Create a per-actor PxShape from the shared shape resource.
         // The body scale AND the per-shape transform scale are baked into the
         // geometry (e.g. a 1x1 trimesh quad whose shape offset scales it
-        // (50,1,50) into a floor - the standard Godot idiom).
-        const Vector3 geom_scale = _shape_geometry_scale(p_transform);
+        // (50,1,50) into a floor - the standard Godot idiom). Convex polygon
+        // meshes additionally receive the signed (mirror-capable) scale.
+        const Vector3 geom_scale = _shape_geometry_scale_for(p_shape, p_transform);
         physx::PxVec3 total_scale(geom_scale.x, geom_scale.y, geom_scale.z);
         physx::PxPhysics &physics = PhysXServer3D::get_singleton()->get_physics();
 
@@ -275,9 +304,10 @@ void PhysXShapedObject3D::set_shape_transform(int p_index, const Transform3D &p_
 	AttachedShape &record = shapes[p_index];
 
 	// A scale change must be re-baked into the geometry (PxShape::setGeometry);
-	// a pure pose change only needs setLocalPose.
-	const Vector3 old_geom_scale = _shape_geometry_scale(record.relative_transform);
-	const Vector3 new_geom_scale = _shape_geometry_scale(p_transform);
+	// a pure pose change only needs setLocalPose. Convex polygon shapes also
+	// detect a MIRROR change (sign flip) as a geometry change.
+	const Vector3 old_geom_scale = _shape_geometry_scale_for(record.shareable_shape, record.relative_transform);
+	const Vector3 new_geom_scale = _shape_geometry_scale_for(record.shareable_shape, p_transform);
 	const bool scale_changed = old_geom_scale != new_geom_scale;
 
 	record.relative_transform = p_transform;
@@ -377,8 +407,9 @@ void PhysXShapedObject3D::rebuild_shapes() {
 		}
 
 		// Body scale + per-shape transform scale, per record (each attached
-		// shape can carry its own offset scale).
-		const Vector3 geom_scale = _shape_geometry_scale(record.relative_transform);
+		// shape can carry its own offset scale). Convex polygon meshes get the
+		// signed scale so mirrors survive actor-recreating mode switches too.
+		const Vector3 geom_scale = _shape_geometry_scale_for(record.shareable_shape, record.relative_transform);
 		physx::PxVec3 total_scale(geom_scale.x, geom_scale.y, geom_scale.z);
 		record.px_shape = record.shareable_shape->create_shape(physics, total_scale, material, shape_flags);
 		if (!record.px_shape) {

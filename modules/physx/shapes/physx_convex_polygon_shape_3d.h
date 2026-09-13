@@ -23,8 +23,13 @@ private:
 	PackedVector3Array points;
 
 	mutable physx::PxConvexMesh *convex_mesh = nullptr;
+	// Point-reflected hull for mirrored (negative-determinant) scales. PhysX
+	// rejects negative scale components on convex geometries
+	// (PxMeshScale::isValidForConvexMesh — unlike triangle meshes), so the
+	// mirror must be baked into the cooked mesh instead of the PxMeshScale.
+	mutable physx::PxConvexMesh *convex_mesh_mirrored = nullptr;
 
-	bool _ensure_convex_mesh() const;
+	bool _ensure_convex_mesh(bool p_mirrored) const;
 	void _release_convex_mesh();
 
 	AABB _calculate_aabb() const;

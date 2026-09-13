@@ -10,6 +10,19 @@
  * Concrete subclasses (e.g. the cylinder shape) specialize this template with
  * their specific callback type and implement _create_callbacks() /
  * _apply_scale_to_callbacks().
+ *
+ * GPU DYNAMICS NOTE (verified — do not re-investigate without cause):
+ * PhysX documentation historically described PxCustomGeometry as unsupported
+ * by the GPU pipeline, suggesting bodies with custom geometry could lose
+ * collision in GODOT_PHYSX_GPU scenes. Tested against the vendored SDK with
+ * GPU dynamics active (CUDA device present, scene with eENABLE_GPU_DYNAMICS +
+ * eGPU broadphase): a dynamic cylinder and a dynamic cone both fall, contact,
+ * and rest at their exact half-heights on a static floor — PhysX generates
+ * such pairs' contacts on the CPU while they remain in the GPU broadphase.
+ * The suite's shape-family pair matrix (PHYSX-SHAPE-P-*) guards this
+ * permanently. If custom-geometry contact cost ever matters in GPU scenes,
+ * cooking a convex approximation is the available optimization — a behavior
+ * change (faceted silhouette), not a correctness fix.
  */
 
 #ifndef PHYSX_CUSTOM_GEOMETRY_CALLBACK_H

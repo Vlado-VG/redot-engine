@@ -48,6 +48,30 @@ public:
 	 */
 	Vector3 _shape_geometry_scale(const Transform3D &p_shape_transform) const;
 
+	/**
+	 * @brief Signed variant of _shape_geometry_scale for geometries that
+	 * support mirroring (convex polygon meshes).
+	 *
+	 * Uses Godot's Basis::get_scale() convention (determinant sign applied to
+	 * all axes), which pairs exactly with get_rotation_quaternion()'s own
+	 * (-1,-1,-1) absorption. A degenerate (zero-determinant) basis falls back
+	 * to the absolute scale.
+	 */
+	Vector3 _shape_geometry_scale_signed(const Transform3D &p_shape_transform) const;
+
+	/**
+	 * @brief Geometry scale for an attached shape, dispatched by shape type.
+	 *
+	 * Only convex polygon meshes consume the signed (mirror-capable) scale;
+	 * every other geometry keeps the absolute scale (PhysX heightfields
+	 * require positive scales; primitive geometries consume max-abs
+	 * components; concave meshes keep Godot's "negative scale unsupported"
+	 * restriction). The convex shape bakes a negative determinant by cooking
+	 * a point-reflected hull — PxMeshScale itself rejects negative components
+	 * on convex geometries.
+	 */
+	Vector3 _shape_geometry_scale_for(const PhysXShape3D *p_shape, const Transform3D &p_shape_transform) const;
+
 	// --- Shape Observer ---
 	// Called by PhysXShape3D::_notify_shape_changed when a shape's geometry
 	// is modified (e.g. user changes box size in the editor). Finds all

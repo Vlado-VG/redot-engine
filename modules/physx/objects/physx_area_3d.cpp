@@ -597,8 +597,9 @@ void PhysXArea3D::_sync_detection_shape(AttachedShape &p_record) {
 	}
 
 	physx::PxPhysics &physics = PhysXServer3D::get_singleton()->get_physics();
-	// Body scale + per-shape transform scale, matching PhysXShapedObject3D::add_shape().
-	const Vector3 geom_scale = _shape_geometry_scale(p_record.relative_transform);
+	// Body scale + per-shape transform scale, matching PhysXShapedObject3D::add_shape()
+	// (convex polygon shapes receive the signed/mirror-capable scale).
+	const Vector3 geom_scale = _shape_geometry_scale_for(p_record.shareable_shape, p_record.relative_transform);
 	physx::PxVec3 total_scale(geom_scale.x, geom_scale.y, geom_scale.z);
 	// Plain simulation shape: no trigger (that would be the trigger shape's
 	// job), no scene query (avoids double query hits), no visualization

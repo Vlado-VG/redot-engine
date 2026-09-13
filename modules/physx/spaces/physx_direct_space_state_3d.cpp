@@ -57,7 +57,14 @@ static bool _build_query_shape(const RID &p_shape_rid,
 
     // Bake the query transform's scale into the geometry (PhysX shapes carry
     // no scale of their own). The pose uses the unscaled rotation/translation.
-    const Vector3 scale = p_transform.basis.get_scale_abs();
+    // Convex polygon meshes get the signed scale so a mirrored query shape
+    // matches how the same mirrored attachment collides in simulation (the
+    // convex shape bakes the mirror); every other geometry keeps the
+    // absolute scale.
+    const Vector3 scale = (shape->get_type() == PhysicsServer3D::SHAPE_CONVEX_POLYGON &&
+                                  !Math::is_zero_approx(p_transform.basis.determinant()))
+            ? p_transform.basis.get_scale()
+            : p_transform.basis.get_scale_abs();
     const physx::PxVec3 px_scale(scale.x, scale.y, scale.z);
     if (!shape->get_physx_geometry(r_geometry, px_scale)) {
         ERR_PRINT_ONCE("PhysX: query shape failed to generate geometry.");
