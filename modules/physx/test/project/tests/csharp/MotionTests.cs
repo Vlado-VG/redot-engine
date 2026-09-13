@@ -19,6 +19,9 @@ internal static class MotionTests {
         s.Add("PHYSX-MOVE-008", "corner sweep between two walls picks a deflection", SweepCorner);
         s.Add("PHYSX-MOVE-009", "sweep respects collision exceptions", SweepException);
         s.Add("PHYSX-MOVE-010", "kinematic body sweeps use its own shapes", SweepOwnShape);
+        s.Add("PHYSX-MOVE-011", "sweep across tiled concave floor seam blocks at the surface, not the seam", SweepMeshSeam);
+        s.Add("PHYSX-MOVE-012", "sweep into concave wall seam reports the face normal at contact", SweepMeshWallNormal);
+        s.Add("PHYSX-MOVE-013", "mesh-hit normal matches rest_info on the same setup", SweepMeshNormalMatchesRestInfo);
     }
 
     static IEnumerator SweepHitsFloor() {
@@ -124,6 +127,78 @@ internal static class MotionTests {
         Assert.Expect(hit, "capsule sweep hits floor");
         Assert.Expect(r.GetCollisionSafeFraction() > 0.05f && r.GetCollisionSafeFraction() < 0.6f,
             "capsule (long shape) contacts earlier than a box would");
+        yield return Wait.Frame();
+    }
+
+    // ---------------------------------------------------- mesh internal edges
+    // Flat floor from 4 triangles sharing a straight internal seam along Z at
+    // x=0 (plus two diagonal seams) so an X-travel path crosses it head-on.
+    static Rid TiledFloor(PhysxWorld w) => w.Concave(
+        new Vector3(-8, 0, -8), new Vector3(0, 0, -8), new Vector3(-8, 0, 8),
+        new Vector3(-8, 0, 8), new Vector3(0, 0, -8), new Vector3(0, 0, 8),
+        new Vector3(0, 0, -8), new Vector3(8, 0, -8), new Vector3(0, 0, 8),
+        new Vector3(0, 0, 8), new Vector3(8, 0, -8), new Vector3(8, 0, 8));
+
+    // Wall plane x=5 built from 2 triangles whose shared diagonal passes
+    // through (5, 0.5, 6.8) — exactly where the wall test's contact lands.
+    static Rid SeamedWall(PhysxWorld w) => w.Concave(
+        new Vector3(5, 0, -8), new Vector3(5, 4, -8), new Vector3(5, 0, 8),
+        new Vector3(5, 0, 8), new Vector3(5, 4, -8), new Vector3(5, 4, 8));
+
+    static IEnumerator SweepMeshSeam() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(TiledFloor(w), new Vector3(0, 0, 0));
+        var body = w.MakeKinematic(w.Sphere(0.5f), new Vector3(3, 5, 0));
+        yield return Wait.Frames(3);
+        // Sphere bottom starts 0.05 above the floor and the motion drops 1 m
+        // over 12 m, so the true contact fraction is ~0.05. The seam at x=0
+        // is crossed at fraction 0.5 — a premature block there is the artifact.
+        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(-6, 0.55f, 0)), new Vector3(12, -1, 0));
+        Assert.Expect(hit, "descending sweep across the seam hits the floor");
+        Assert.Expect(r.GetCollisionSafeFraction() < 0.2f,
+            $"blocked at the floor contact, not the seam (safe={r.GetCollisionSafeFraction():F3})");
+        Assert.Expect(r.GetCollisionNormal(0).Y > 0.9f, "floor face normal, not an edge normal");
+        yield return Wait.Frame();
+    }
+    static IEnumerator SweepMeshWallNormal() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(SeamedWall(w), new Vector3(0, 0, 0));
+        var body = w.MakeKinematic(w.Sphere(0.5f), new Vector3(3, 5, 0));
+        yield return Wait.Frames(3);
+        // Approach the wall with a slight descent; the sphere contacts it at
+        // center x=4.5 (fraction 0.75), right on the wall's internal diagonal
+        // seam. The reported normal must be the face normal (-1,0,0).
+        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(0, 0.5f, 6.8f)), new Vector3(6, -0.001f, 0));
+        Assert.Expect(hit, "sweep into the seamed wall is blocked");
+        Assert.Expect(r.GetCollisionSafeFraction() > 0.6f && r.GetCollisionSafeFraction() < 0.9f,
+            $"contact at the wall, not earlier (safe={r.GetCollisionSafeFraction():F3})");
+        Assert.Expect(r.GetCollisionNormal(0).X < -0.9f, "wall face normal (-1,0,0), not an edge normal");
+        yield return Wait.Frame();
+    }
+    static IEnumerator SweepMeshNormalMatchesRestInfo() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(TiledFloor(w), new Vector3(0, 0, 0));
+        w.MakeStatic(SeamedWall(w), new Vector3(0, 0, 0));
+        var body = w.MakeKinematic(w.Sphere(0.5f), new Vector3(3, 5, 0));
+        yield return Wait.Frames(3);
+        // Floor: descending sweep normal vs rest_info normal for a sphere
+        // penetrating the same mesh floor.
+        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(0, 0.55f, 0)), new Vector3(0, -1, 0));
+        Assert.Expect(hit, "floor sweep hits");
+        Assert.Expect(r.GetCollisionNormal(0).Y > 0.9f, "sweep normal up on mesh floor");
+        var restFloor = w.RestInfo(w.Sphere(0.5f), new Transform3D(Basis.Identity, new Vector3(0, 0.45f, 0)));
+        Assert.Expect(restFloor.Count > 0 && restFloor["normal"].AsVector3().Y > 0.9f,
+            "rest_info normal up on mesh floor (agrees with sweep)");
+
+        // Wall: lateral sweep normal vs rest_info normal against the same wall.
+        // The sphere starts 0.05 above the floor so the floor's zero-distance
+        // touch cannot shadow the wall hit in the single closest-hit sweep.
+        var (hitW, rW) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(0, 0.55f, 0)), new Vector3(6, 0, 0));
+        Assert.Expect(hitW, "wall sweep hits");
+        Assert.Expect(rW.GetCollisionNormal(0).X < -0.9f, "sweep normal -X on mesh wall");
+        var restWall = w.RestInfo(w.Sphere(0.5f), new Transform3D(Basis.Identity, new Vector3(4.6f, 0.55f, 0)));
+        Assert.Expect(restWall.Count > 0 && restWall["normal"].AsVector3().X < -0.9f,
+            "rest_info normal -X on mesh wall (agrees with sweep)");
         yield return Wait.Frame();
     }
 }

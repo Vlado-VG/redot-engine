@@ -19,12 +19,18 @@
 #include "../shapes/physx_user_data.h"
 
 #include "geometry/PxGeometryQuery.h"
+#include "geometry/PxMeshQuery.h"
 
 // Upper bound on the number of results a single scene query can return.
 // Caller-provided p_result_max is clamped to this so a hostile or buggy
 // caller cannot exhaust the stack/heap. Godot caps its own result arrays
 // at 64, so 256 leaves comfortable headroom.
 static constexpr int PHYSX_QUERY_MAX_RESULTS = 256;
+
+// Internal-edge handling for sweep hits (defined below, shared by cast_motion
+// and the body_test_motion cast phase): re-derives the face normal on mesh
+// hits and reports whether the hit opposes the sweep direction.
+static bool _sweep_hit_opposing_normal(const physx::PxSweepHit &p_hit, const physx::PxVec3 &p_dir, physx::PxVec3 &r_normal);
 
 PhysXDirectSpaceState3D::PhysXDirectSpaceState3D(PhysXSpace3D *p_space) {
     space = p_space;
@@ -415,6 +421,15 @@ bool PhysXDirectSpaceState3D::cast_motion(const ShapeParameters &p_parameters, r
         // as distance <= 0 (hadInitialOverlap), so skip it and report an
         // unobstructed full motion. A real forward hit has distance > 0.
         if (!hit.block.hadInitialOverlap()) {
+            // Internal-edge handling (see _sweep_hit_opposing_normal): a
+            // forward hit on a mesh with an edge-derived or contradictory
+            // normal does not obstruct the motion.
+            physx::PxVec3 face_normal;
+            if (!_sweep_hit_opposing_normal(hit.block, px_dir, face_normal)) {
+                r_closest_safe = 1.0;
+                r_closest_unsafe = 1.0;
+                return false;
+            }
             real_t hit_fraction = hit.block.distance / length;
             real_t margin_fraction = p_parameters.margin / length;
 
@@ -437,7 +452,7 @@ bool PhysXDirectSpaceState3D::cast_motion(const ShapeParameters &p_parameters, r
                 }
                 r_info->shape = physx_resolve_shape_index(hit.block.actor, hit.block.shape);
                 r_info->point = Vector3(hit.block.position.x, hit.block.position.y, hit.block.position.z);
-                r_info->normal = Vector3(hit.block.normal.x, hit.block.normal.y, hit.block.normal.z);
+                r_info->normal = Vector3(face_normal.x, face_normal.y, face_normal.z);
                 r_info->linear_velocity = Vector3();
                 if (hit.block.actor && hit.block.actor->is<physx::PxRigidDynamic>()) {
                     const physx::PxRigidDynamic *dyn = hit.block.actor->is<physx::PxRigidDynamic>();
@@ -700,6 +715,61 @@ static void _fill_collision_from_sweep(PhysicsServer3D::MotionResult *r_result, 
         col.collider_angular_velocity = Vector3();
     }
     r_result->collision_count = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Internal-edge handling for sweep hits against triangle meshes/heightfields.
+//
+// Sweeping a convex over such a surface can catch on the shared edge between
+// facets, and PhysX may then report an edge-derived normal (often
+// axis-aligned, looking like a wall to a walking character) or one that does
+// not oppose the motion at all. Re-derive the true world-space face normal
+// from the hit triangle (PxMeshQuery::getTriangle; it flips the normal itself
+// for negative-determinant mesh scales) and reject hits whose normal does not
+// oppose the sweep direction.
+//
+// r_normal is always written: the re-derived face normal for mesh hits
+// (oriented to agree with the side the mover approached from), otherwise the
+// sweep hit's own normal. Returns false when the hit should be treated as
+// non-blocking (grazing/edge artifact). Applies to primitive-geometry hits
+// too: a genuine forward block always opposes the motion.
+// ---------------------------------------------------------------------------
+static bool _sweep_hit_opposing_normal(const physx::PxSweepHit &p_hit, const physx::PxVec3 &p_dir, physx::PxVec3 &r_normal) {
+	r_normal = p_hit.normal;
+
+	const physx::PxGeometryType::Enum geom_type = p_hit.shape
+			? p_hit.shape->getGeometry().getType()
+			: physx::PxGeometryType::eINVALID;
+	const bool is_mesh = geom_type == physx::PxGeometryType::eTRIANGLEMESH ||
+			geom_type == physx::PxGeometryType::eHEIGHTFIELD;
+	if (is_mesh && p_hit.actor && p_hit.faceIndex != 0xffffffffu) {
+		const physx::PxTransform hit_pose = physx::PxShapeExt::getGlobalPose(*p_hit.shape, *p_hit.actor);
+		physx::PxTriangle tri;
+		if (geom_type == physx::PxGeometryType::eTRIANGLEMESH) {
+			physx::PxMeshQuery::getTriangle(
+					static_cast<const physx::PxTriangleMeshGeometry &>(p_hit.shape->getGeometry()),
+					hit_pose, p_hit.faceIndex, tri);
+		} else {
+			physx::PxMeshQuery::getTriangle(
+					static_cast<const physx::PxHeightFieldGeometry &>(p_hit.shape->getGeometry()),
+					hit_pose, p_hit.faceIndex, tri);
+		}
+		physx::PxVec3 face_n;
+		tri.normal(face_n);
+		if (!face_n.isZero()) {
+			// Winding alone decides neither side; keep the orientation that
+			// agrees with the reported hit normal (the mover approached from
+			// that side).
+			if (face_n.dot(p_hit.normal) < 0.0f) {
+				face_n = -face_n;
+			}
+			r_normal = face_n;
+		}
+	}
+
+	// A genuine blocking hit opposes the motion; a grazing/edge contact has a
+	// normal along (or barely against) the sweep direction.
+	return r_normal.dot(p_dir) < -0.001f;
 }
 
 bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const PhysicsServer3D::MotionParameters &p_parameters, PhysicsServer3D::MotionResult *r_result) const {
@@ -1078,7 +1148,21 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
                 // surface (against the MTD normal); separating or tangential
                 // motion passes through — the MTD is already folded into travel
                 // by the caller, so the shape is ejected as expected.
-                if (sweep_hit.block.distance <= 0.0f) {
+                // The MTD normal (a push-out direction) is kept as-reported for
+                // those hits; internal-edge re-derivation applies to forward
+                // hits only.
+                const physx::PxVec3 *reported_normal = &sweep_hit.block.normal;
+                if (sweep_hit.block.distance > 0.0f) {
+                    // Internal-edge handling: a forward hit on a triangle
+                    // mesh/heightfield may carry an edge-derived or
+                    // contradictory normal. Re-derive the face normal and
+                    // require the hit to oppose the motion.
+                    physx::PxVec3 face_normal;
+                    if (!_sweep_hit_opposing_normal(sweep_hit.block, px_dir, face_normal)) {
+                        continue; // grazing/edge contact: not a forward block
+                    }
+                    reported_normal = &face_normal;
+                } else {
                     const Vector3 mtd_normal(sweep_hit.block.normal.x, sweep_hit.block.normal.y, sweep_hit.block.normal.z);
                     if (mtd_normal.dot(dir) >= 0.0f) {
                         continue; // separating or tangential: not a forward block
@@ -1089,7 +1173,7 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
                     min_hit_distance = sweep_hit.block.distance;
                     hit_any = true;
                     best_position = Vector3(sweep_hit.block.position.x, sweep_hit.block.position.y, sweep_hit.block.position.z);
-                    best_normal = Vector3(sweep_hit.block.normal.x, sweep_hit.block.normal.y, sweep_hit.block.normal.z);
+                    best_normal = Vector3(reported_normal->x, reported_normal->y, reported_normal->z);
                     best_actor = sweep_hit.block.actor;
                     best_shape = sweep_hit.block.shape;
                 }
