@@ -66,6 +66,14 @@ public:
 	// Bodies default true; areas default false (each wrapper holds the member).
 	virtual bool is_ray_pickable() const { return true; }
 
+	// --- Soft-body collision exceptions ---
+	// Shapes of exception participants carry this slot in PxFilterData.word2;
+	// the simulation filter shader matches (soft-body slot, body slot) pairs
+	// against the module registry (see spaces/physx_filter_shader.h). 0 =
+	// "no slot"; allocated lazily on the first exception involving the object.
+	uint32_t get_or_alloc_exception_slot();
+	uint32_t get_exception_slot() const { return exception_slot; }
+
 protected:
 	ObjectType type = OBJECT_TYPE_INVALID;
 	PhysXRIDOwner physx_rid;
@@ -77,6 +85,7 @@ protected:
 	// Godot collision bits: layer = "what I am", mask = "what I collide with".
 	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
+	uint32_t exception_slot = 0;
 
 	/// Re-applies collision filter data to all shapes. Called when
 	/// layer/mask/contact-notify changes. Implemented by shaped objects.

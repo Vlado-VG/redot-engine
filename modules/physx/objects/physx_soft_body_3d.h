@@ -15,6 +15,19 @@
  * The path is chosen per body: the physics/physx_3d/soft_body/mode project
  * setting (Auto/CPU/GPU), overridden per node by the "physx_soft_mode"
  * metadata ("cpu" / "gpu"). Auto prefers GPU whenever it can build.
+ *
+ * Known limits (documented, not bugs):
+ *  - Query invisibility: soft bodies have no PhysXActorUserData, so they are
+ *    never reported by raycasts/overlaps/sweeps and soft_body_set_ray_pickable
+ *    is inert (see physx_query_filter_callback.cpp).
+ *  - Collision exceptions: the CPU path enforces them in the per-vertex query
+ *    exclude list; the GPU path routes them through the filter-shader slot
+ *    registry (word2, spaces/physx_filter_shader.h) — verified working on the
+ *    GPU deformable path. Only rigid-body targets are registry-routed.
+ *  - Area overrides: the CPU path resolves area gravity overrides exactly
+ *    like the reference (PhysXSpace3D::_resolve_soft_body_gravity); GPU
+ *    deformables use the scene gravity (the solver has no per-body gravity
+ *    injection). Area wind on soft bodies is not implemented (deferred).
  */
 
 #ifndef PHYSX_SOFT_BODY_3D_H
@@ -97,6 +110,12 @@ public:
 	void apply_central_force(const Vector3 &p_force, double p_delta);
 
 	bool is_gpu() const { return using_gpu; }
+
+	/// Stores the soft-body exception slot and pushes it into the GPU volume's
+	/// collision shape (filter word2 — see spaces/physx_filter_shader.h). The
+	/// CPU path enforces exceptions via the per-vertex query exclude list and
+	/// needs no slot.
+	void set_exception_slot(uint32_t p_slot);
 
 	// Driven by the space each step: step() advances the CPU path (no-op on
 	// GPU); read_back() pulls the GPU volume's deformed state after

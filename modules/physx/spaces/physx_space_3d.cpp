@@ -279,8 +279,18 @@ void PhysXSpace3D::step(float p_step) {
     // rigid poses.
     for (PhysXSoftBody3D *sb : soft_bodies) {
         sb->read_back();
-        const physx::PxVec3 g = px_scene->getGravity();
-        sb->step(p_step, Vector3(g.x, g.y, g.z));
+        Vector3 gravity;
+        if (px_scene) {
+            const physx::PxVec3 g = px_scene->getGravity();
+            gravity = Vector3(g.x, g.y, g.z);
+        }
+        if (!sb->is_gpu()) {
+            // Reference parity (GodotSoftBody3D::predict_motion): CPU soft
+            // bodies resolve area gravity overrides. GPU deformables keep the
+            // scene gravity — the solver has no per-body gravity injection.
+            gravity = _resolve_soft_body_gravity(*sb);
+        }
+        sb->step(p_step, gravity);
     }
 
     // Post-step: derive kinematic velocities and fire state-sync callbacks so
@@ -564,4 +574,52 @@ void PhysXSpace3D::flush_pending_callbacks() {
 
     pending_trigger_events.clear();
     flushing_callbacks = false;
+}
+
+Vector3 PhysXSpace3D::_resolve_soft_body_gravity(const PhysXSoftBody3D &p_sb) const {
+	// Mirror of godot_physics_3d GodotSoftBody3D::predict_motion's gravity
+	// resolution: overlapping areas resolve by priority (highest first) with
+	// the per-channel override modes, and the space's default area is the
+	// additive fallback. The reference tracks true broadphase pairs; here the
+	// soft body's world AABB vs each area's shape AABB approximates the overlap.
+	const AABB bounds = p_sb.get_bounds();
+
+	LocalVector<const PhysXArea3D *> overlapping;
+	for (const PhysXArea3D *area : areas) {
+		const physx::PxBounds3 pb = area->get_world_bounds();
+		if (pb.isEmpty()) {
+			continue;
+		}
+		const AABB area_bounds(
+				Vector3(pb.minimum.x, pb.minimum.y, pb.minimum.z),
+				Vector3(pb.maximum.x - pb.minimum.x, pb.maximum.y - pb.minimum.y, pb.maximum.z - pb.minimum.z));
+		if (area_bounds.intersects(bounds)) {
+			overlapping.push_back(area);
+		}
+	}
+
+	// Insertion sort by priority ascending; iterate descending (highest first)
+	// — same ordering the rigid-body pre-step uses.
+	for (int i = 1; i < (int)overlapping.size(); i++) {
+		const PhysXArea3D *key = overlapping[i];
+		int j = i - 1;
+		while (j >= 0 && overlapping[j]->get_priority() > key->get_priority()) {
+			overlapping[j + 1] = overlapping[j];
+			j--;
+		}
+		overlapping[j + 1] = key;
+	}
+
+	const Vector3 center = bounds.get_center();
+	Vector3 gravity;
+	bool gravity_done = false;
+	for (int i = (int)overlapping.size() - 1; i >= 0 && !gravity_done; i--) {
+		const PhysXArea3D *area = overlapping[i];
+		gravity_done = physx_apply_area_override(gravity, area->get_gravity_override_mode(),
+				[&] { return physx_area_gravity_at(*area, center); });
+	}
+	if (!gravity_done && default_area) {
+		gravity += physx_area_gravity_at(*default_area, center);
+	}
+	return gravity;
 }

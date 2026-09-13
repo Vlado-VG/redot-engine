@@ -199,5 +199,35 @@ private:
 	/// (target) pose. Called after set_transform so overrides and contact-
 	/// driven state for bodies at the destination take effect this step.
 	void _wake_overlapping_dynamic_bodies(const physx::PxTransform &p_target_pose) const;
+
+public:
+	/// World-space bounds of the area's shapes (empty when it has none).
+	physx::PxBounds3 get_world_bounds() const;
 };
+
+// ---------------------------------------------------------------------------
+// Shared area-resolution helpers (used by the rigid-body pre-step AND the
+// soft-body gravity resolver — same semantics as godot_physics_3d).
+// ---------------------------------------------------------------------------
+
+// Godot's override-mode resolver: applies p_getter() to r_value per the mode;
+// returns true when the channel is resolved (REPLACE / COMBINE_REPLACE stop
+// the search, COMBINE continues).
+template <typename TValue, typename TGetter>
+inline bool physx_apply_area_override(TValue &r_value,
+		PhysicsServer3D::AreaSpaceOverrideMode p_mode,
+		TGetter &&p_getter) {
+	switch (p_mode) {
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_DISABLED:        return false;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE:         r_value += p_getter(); return false;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE_REPLACE: r_value += p_getter(); return true;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE:         r_value  = p_getter(); return true;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE_COMBINE: r_value  = p_getter(); return false;
+	}
+	return false;
+}
+
+// The area's gravity contribution at a world position (handles point gravity
+// and the area's world transform).
+Vector3 physx_area_gravity_at(const PhysXArea3D &p_area, const Vector3 &p_position);
 #endif // PHYSX_AREA_3D_H

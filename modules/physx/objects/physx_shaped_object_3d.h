@@ -112,6 +112,10 @@ public:
 	// --- PhysX Access ---
 	physx::PxRigidActor *get_rigid_actor() const { return px_actor; }
 
+	/// Re-applies filter data (layer/mask/exception slot) to all shapes. Public
+	/// wrapper used by the server after PhysXObject3D::exception_slot changes.
+	void refresh_collision_filters() { update_shapes_collision_filter(); }
+
 protected:
 	/** @brief Re-applies collision layer/mask/notify to all attached PxShapes. */
     void update_shapes_collision_filter();

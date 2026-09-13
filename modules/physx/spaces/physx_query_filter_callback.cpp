@@ -10,8 +10,15 @@ physx::PxQueryHitType::Enum PhysXQueryFilterCallback::preFilter(
 		const physx::PxShape *shape,
 		const physx::PxRigidActor *actor,
 		physx::PxHitFlags &queryFlags) {
-	// Every actor this module owns carries a PhysXActorUserData. If it doesn't,
-	// the actor is not one of ours (or was misconfigured) — skip it.
+	// Every rigid actor this module owns carries a PhysXActorUserData. If it
+	// doesn't, the actor is not one of ours — this includes GPU deformable
+	// volumes (soft bodies), articulation links, and particle systems, which
+	// are BY DESIGN invisible to scene queries (raycast/overlap/sweep).
+	// Consequence: soft_body_set_ray_pickable is inert — documented module
+	// limitation, not a bug (Godot's reference resolves soft bodies through
+	// its own pair system, which this backend intentionally does not
+	// reproduce; giving deformables query support would need userData wiring
+	// plus shape-index resolution on the tet mesh).
 	if (!actor->userData) {
 		return physx::PxQueryHitType::eNONE;
 	}

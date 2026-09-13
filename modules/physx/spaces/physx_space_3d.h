@@ -271,6 +271,12 @@ private:
     // Private helper to initialize/destroy the scene + vehicle context
     void _initialize_scene();
     void _terminate_scene();
+    /// CPU soft bodies only: resolves the effective gravity from overlapping
+    /// areas (AABB approximation of the reference's broadphase pairs) with the
+    /// default area as the additive fallback — mirrors godot_physics_3d's
+    /// GodotSoftBody3D::predict_motion. GPU deformables keep the scene gravity
+    /// (no per-body gravity injection path).
+    Vector3 _resolve_soft_body_gravity(const PhysXSoftBody3D &p_sb) const;
     /// Re-applies the sleep policy to every registered body (called when a
     /// sleep-related SpaceParameter changes).
     void _refresh_body_sleep_policies();

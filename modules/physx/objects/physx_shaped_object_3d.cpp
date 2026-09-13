@@ -451,6 +451,9 @@ void PhysXShapedObject3D::update_shapes_collision_filter() {
 	physx::PxFilterData filter_data;
 	filter_data.word0 = collision_layer; // "I belong to this layer"
 	filter_data.word1 = collision_mask;  // "I collide with these layers"
+	// Soft-body exception slot (0 unless this object participates in at least
+	// one soft-body collision exception — see spaces/physx_filter_shader.h).
+	filter_data.word2 = exception_slot;
 	filter_data.word3 = shape_filter_flags();
 
 	for (const AttachedShape &record : shapes) {

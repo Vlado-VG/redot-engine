@@ -677,6 +677,36 @@ void PhysXArea3D::_emit_area_exit_events() {
 // when wind_attenuation_factor is nonzero. Zero when wind is unused, so the
 // common case adds no work.
 // ---------------------------------------------------------------------------
+physx::PxBounds3 PhysXArea3D::get_world_bounds() const {
+	if (!px_actor || px_actor->getNbShapes() == 0) {
+		return physx::PxBounds3::empty();
+	}
+	return px_actor->getWorldBounds(1.0f);
+}
+
+// The area's gravity contribution at p_position, applying the area's WORLD
+// transform to the gravity vector (point-gravity reference point). Moved here
+// from physx_body_3d.cpp so the soft-body gravity resolver shares it.
+Vector3 physx_area_gravity_at(const PhysXArea3D &p_area, const Vector3 &p_position) {
+	const real_t mag = p_area.get_gravity();
+	if (p_area.get_gravity_is_point()) {
+		// Gravity point in world space = area world transform applied to the
+		// stored gravity_vector (which for a point area is the local-space point).
+		const Vector3 point_ws = p_area.get_transform().xform(p_area.get_gravity_vector());
+		const Vector3 to_point = point_ws - p_position;
+		const real_t d_sq = to_point.length_squared();
+		if (d_sq <= 0.0f) {
+			return Vector3();   // body exactly at the singularity
+		}
+		const real_t unit = p_area.get_gravity_point_unit_distance();
+		if (unit > 0.0f) {
+			return to_point.normalized() * (mag * unit * unit / d_sq);
+		}
+		return to_point.normalized() * mag;
+	}
+	return p_area.get_gravity_vector() * mag;
+}
+
 Vector3 PhysXArea3D::wind_at(const Vector3 &p_position) const {
 	if (wind_force_magnitude == 0.0 || wind_direction.length_squared() < CMP_EPSILON) {
 		return Vector3();

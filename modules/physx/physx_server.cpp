@@ -18,6 +18,7 @@
 #include "shapes/physx_custom_shape_type.h"
 #include "spaces/physx_space_3d.h"
 #include "spaces/physx_direct_space_state_3d.h"
+#include "spaces/physx_filter_shader.h"
 #include "objects/physx_body_3d.h"
 #include "objects/physx_direct_body_state_3d.h"
 #include "objects/physx_area_3d.h"
@@ -1387,12 +1388,30 @@ void PhysXServer3D::soft_body_add_collision_exception(RID p_body, RID p_excepted
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
 	soft_body->add_collision_exception(p_excepted_body);
+
+	// GPU path: route the exception through the filter-shader registry — the
+	// deformable solver consults no per-vertex query filters, so without this
+	// the exception is inert on GPU bodies. Only rigid-body targets
+	// participate (soft-vs-soft exceptions stay CPU-path only).
+	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
+	if (!other) {
+		return;
+	}
+	const uint32_t soft_slot = soft_body->get_or_alloc_exception_slot();
+	const uint32_t body_slot = other->get_or_alloc_exception_slot();
+	other->refresh_collision_filters();
+	soft_body->set_exception_slot(soft_slot);
+	g_physx_soft_exceptions.add(soft_slot, body_slot);
 }
 
 void PhysXServer3D::soft_body_remove_collision_exception(RID p_body, RID p_excepted_body) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
 	soft_body->remove_collision_exception(p_excepted_body);
+	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
+	if (other && soft_body->get_exception_slot() != 0 && other->get_exception_slot() != 0) {
+		g_physx_soft_exceptions.remove(soft_body->get_exception_slot(), other->get_exception_slot());
+	}
 }
 
 void PhysXServer3D::soft_body_get_collision_exceptions(RID p_body, List<RID> *p_exceptions) {
@@ -2230,6 +2249,9 @@ void PhysXServer3D::free(RID p_rid) {
 	}
 	if (soft_body_owner.owns(p_rid)) {
 		PhysXSoftBody3D *sb = soft_body_owner.get_or_null(p_rid);
+		if (sb->get_exception_slot() != 0) {
+			g_physx_soft_exceptions.remove_soft(sb->get_exception_slot());
+		}
 		sb->set_space(nullptr);
 		soft_body_owner.free(p_rid);
 		memdelete(sb);

@@ -128,7 +128,7 @@ bool PhysXSoftVolume3D::build(PhysXSpace3D *p_space, const Vector<Vector3> &p_wo
 	volume->attachShape(*shape);
 	// Same layer/mask convention as the module's rigid bodies (word0 = layer,
 	// word1 = mask) so the simulation filter shader lets it collide with them.
-	const PxFilterData fd(p_params.collision_layer, p_params.collision_mask, 0, 0);
+	const PxFilterData fd(p_params.collision_layer, p_params.collision_mask, p_params.exception_slot, 0);
 	shape->setSimulationFilterData(fd);
 	shape->setQueryFilterData(fd);
 	// A contact margin so volume-vs-volume and volume-vs-rigid contacts are
@@ -367,4 +367,15 @@ double PhysXSoftVolume3D::_estimate_mesh_volume(const Vector<Vector3> &p_verts, 
 		v += (double)a.dot(b.cross(c));
 	}
 	return Math::abs(v) / 6.0;
+}
+
+void PhysXSoftVolume3D::set_exception_slot(uint32_t p_slot) {
+	if (!shape) {
+		return;
+	}
+	// Re-write the full filter data with the exception slot in word2; the
+	// layer/mask fields keep the values the volume was built with.
+	const PxFilterData current = shape->getSimulationFilterData();
+	PxFilterData fd(current.word0, current.word1, p_slot, current.word3);
+	shape->setSimulationFilterData(fd);
 }

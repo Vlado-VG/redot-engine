@@ -211,6 +211,7 @@ PhysXSoftVolume3D::Params PhysXSoftBody3D::_gpu_params() const {
 	p.max_speed = 30.0f;
 	p.collision_layer = collision_layer;
 	p.collision_mask = collision_mask;
+	p.exception_slot = exception_slot;
 	return p;
 }
 
@@ -708,6 +709,14 @@ Variant PhysXSoftBody3D::get_state(PhysicsServer3D::BodyState p_state) const {
 			return false;
 		default:
 			return Variant();
+	}
+}
+
+void PhysXSoftBody3D::set_exception_slot(uint32_t p_slot) {
+	// PhysXObject3D::exception_slot holds the value; the GPU volume needs it
+	// baked into its collision shape's filter data word2.
+	if (volume) {
+		volume->set_exception_slot(p_slot);
 	}
 }
 

@@ -16,6 +16,7 @@ internal static class SoftBodyTests {
         s.Add("PHYSX-SOFT-004", "deforms under gravity", DeformsUnderGravity);
         s.Add("PHYSX-SOFT-005", "collides with rigid bodies", CollidesWithRigid);
         s.Add("PHYSX-SOFT-006", "pinned point stays fixed while body sags", PinnedPointHolds);
+        s.Add("PHYSX-SOFT-007", "collision exception: soft body ignores the excepted body, rests on others", ExceptionBehavior);
     }
 
     /// <summary>Unit cube mesh (8 verts / 12 tris) centered on the origin —
@@ -169,6 +170,38 @@ internal static class SoftBodyTests {
                 $"pinned point holds (moved {(now - pinnedStart).Length():F3} m) while bounds center y={bounds.GetCenter().Y:F2}");
         } finally {
             PhysicsServer3D.FreeRid(sb);
+            RenderingServer.FreeRid(mesh);
+        }
+    }
+    static IEnumerator ExceptionBehavior() {
+        using var w = new PhysxWorld(); // floor top at y=0
+        // Two identical platforms; the soft body above the first excepts it.
+        var excepted = w.MakeStatic(w.Box(1, 0.5f, 1), new Vector3(0, 1, 0));
+        w.MakeStatic(w.Box(1, 0.5f, 1), new Vector3(3, 1, 0));
+        var mesh = MakeCubeMesh();
+        var sbEx = PhysicsServer3D.SoftBodyCreate();
+        var sbCtl = PhysicsServer3D.SoftBodyCreate();
+        try {
+            foreach (var (sb, x) in new[] { (sbEx, 0f), (sbCtl, 3f) }) {
+                PhysicsServer3D.SoftBodySetSpace(sb, w.Space);
+                PhysicsServer3D.SoftBodySetTransform(sb, new Transform3D(Basis.Identity, new Vector3(x, 3, 0)));
+                PhysicsServer3D.SoftBodySetMesh(sb, mesh);
+            }
+            // Works both before/after the GPU volume builds (slot baked at
+            // build time and pushed on add).
+            PhysicsServer3D.SoftBodyAddCollisionException(sbEx, excepted);
+
+            yield return Wait.Frames(240);
+            var bEx = PhysicsServer3D.SoftBodyGetBounds(sbEx);
+            var bCtl = PhysicsServer3D.SoftBodyGetBounds(sbCtl);
+            Assert.Expect(PhysxWorld.Finite(bEx.Position) && PhysxWorld.Finite(bCtl.Position), "bounds finite");
+            Assert.Expect(bEx.Position.Y < 0.6f,
+                $"excepted platform ignored: soft body fell through to the floor (min y={bEx.Position.Y:F3})");
+            Assert.Expect(bCtl.Position.Y > 1.0f && bCtl.Position.Y < 2.0f,
+                $"control platform supports the soft body (min y={bCtl.Position.Y:F3})");
+        } finally {
+            PhysicsServer3D.FreeRid(sbEx);
+            PhysicsServer3D.FreeRid(sbCtl);
             RenderingServer.FreeRid(mesh);
         }
     }

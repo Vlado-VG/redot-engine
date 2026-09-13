@@ -7,6 +7,37 @@
 // the simulation thread; toggled by the server when a space enables debug contacts.
 std::atomic<bool> g_physx_debug_contacts_enabled{ false };
 
+// ---------------------------------------------------------------------------
+// Soft-body collision-exception registry (see the header for the contract).
+// ---------------------------------------------------------------------------
+
+uint32_t physx_alloc_soft_exception_slot() {
+	static uint32_t next_slot = 0;
+	return ++next_slot;
+}
+
+bool PhysXSoftExceptionRegistry::has(uint32_t p_soft_slot, uint32_t p_body_slot) const {
+	const HashSet<uint32_t> *set = pairs.getptr(p_soft_slot);
+	return set && set->has(p_body_slot);
+}
+
+void PhysXSoftExceptionRegistry::add(uint32_t p_soft_slot, uint32_t p_body_slot) {
+	pairs[p_soft_slot].insert(p_body_slot);
+}
+
+void PhysXSoftExceptionRegistry::remove(uint32_t p_soft_slot, uint32_t p_body_slot) {
+	HashSet<uint32_t> *set = pairs.getptr(p_soft_slot);
+	if (set) {
+		set->erase(p_body_slot);
+	}
+}
+
+void PhysXSoftExceptionRegistry::remove_soft(uint32_t p_soft_slot) {
+	pairs.erase(p_soft_slot);
+}
+
+PhysXSoftExceptionRegistry g_physx_soft_exceptions;
+
 /**
  * Custom simulation filter shader implementing Godot's collision semantics.
  *
@@ -42,11 +73,19 @@ std::atomic<bool> g_physx_debug_contacts_enabled{ false };
  * PhysX never calls this shader for pairs of two static rigid actors, so
  * static areas could never produce area-vs-area trigger events.
  */
+static inline uint32_t deformable_other_slot(uint32_t p_soft_slot, uint32_t p_word2_0, uint32_t p_word2_1) {
+	return p_word2_0 == p_soft_slot ? p_word2_1 : p_word2_0;
+}
+
 physx::PxFilterFlags physx_simulation_filter_shader(
 		physx::PxFilterObjectAttributes attributes0, physx::PxFilterData filterData0,
 		physx::PxFilterObjectAttributes attributes1, physx::PxFilterData filterData1,
 		physx::PxPairFlags &pairFlags,
 		const void *constantBlock, physx::PxU32 constantBlockSize) {
+	// --- Object types (needed by both the exception gate and the GPU pair check) ---
+	const physx::PxFilterObjectType::Enum obj_type0 = physx::PxGetFilterObjectType(attributes0);
+	const physx::PxFilterObjectType::Enum obj_type1 = physx::PxGetFilterObjectType(attributes1);
+
 	// --- Godot layer/mask test (asymmetric OR) ---
 	const bool layer_match = (filterData0.word0 & filterData1.word1) || (filterData1.word0 & filterData0.word1);
 
@@ -72,6 +111,26 @@ physx::PxFilterFlags physx_simulation_filter_shader(
 	if (!layer_match && !is_trigger_pair) {
 		pairFlags = physx::PxPairFlags();
 		return physx::PxFilterFlag::eKILL;
+	}
+
+	// --- Soft-body collision exceptions (GPU deformable path) ---
+	// A deformable-volume vs body pair where both sides carry exception slots
+	// (word2) is checked against the module registry; a match kills the pair.
+	// The shader cannot see actors/userData, hence the slot indirection. Slots
+	// are only assigned to exception participants, so scenes without soft-body
+	// exceptions never reach the registry. Verified: the shader's eKILL fully
+	// controls GPU PxDeformableVolume pairs.
+	if ((obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME ||
+			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME) &&
+			filterData0.word2 != 0 && filterData1.word2 != 0) {
+		const uint32_t soft_slot = obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME
+				? filterData0.word2
+				: filterData1.word2;
+		const uint32_t body_slot = deformable_other_slot(soft_slot, filterData0.word2, filterData1.word2);
+		if (g_physx_soft_exceptions.has(soft_slot, body_slot)) {
+			pairFlags = physx::PxPairFlags();
+			return physx::PxFilterFlag::eKILL;
+		}
 	}
 
 	if (is_trigger_pair) {
@@ -110,8 +169,6 @@ physx::PxFilterFlags physx_simulation_filter_shader(
 	// modification: flagging such a pair drops it entirely, so the soft body /
 	// particles fall through the world. They are excluded here and always use
 	// their own material's friction/damping.
-	const physx::PxFilterObjectType::Enum obj_type0 = physx::PxGetFilterObjectType(attributes0);
-	const physx::PxFilterObjectType::Enum obj_type1 = physx::PxGetFilterObjectType(attributes1);
 	const bool gpu_solved_pair =
 			obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_SURFACE ||
 			obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME ||

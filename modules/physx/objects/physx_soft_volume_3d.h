@@ -39,6 +39,9 @@ public:
 		float max_speed = 25.0f;
 		uint32_t collision_layer = 1;
 		uint32_t collision_mask = 1;
+		// Soft-body exception slot baked into the collision shape's filter
+		// data word2 (0 = none; see spaces/physx_filter_shader.h).
+		uint32_t exception_slot = 0;
 	};
 
 private:
@@ -73,6 +76,11 @@ public:
 	// render mesh; `p_xform` is the body's world placement.
 	bool build(PhysXSpace3D *p_space, const Vector<Vector3> &p_world_verts,
 			const Vector<int32_t> &p_indices, const Transform3D &p_xform, const Params &p_params);
+
+	/// Writes the soft-body exception slot into the collision shape's filter
+	/// data word2 (0 = no slot; see spaces/physx_filter_shader.h). Called by
+	/// PhysXSoftBody3D when it joins its first collision exception.
+	void set_exception_slot(uint32_t p_slot);
 	void apply_params(const Params &p_params);
 	bool is_valid() const { return volume != nullptr; }
 

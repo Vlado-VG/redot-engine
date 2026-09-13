@@ -17,21 +17,6 @@
 #include "PxPhysicsAPI.h"
 
 
-// Returns true (= "channel done") per Godot's override-mode semantics.
-template <typename TValue, typename TGetter>
-static inline bool _apply_override(TValue &r_value,
-        PhysicsServer3D::AreaSpaceOverrideMode p_mode,
-        TGetter &&p_getter) {
-    switch (p_mode) {
-        case PhysicsServer3D::AREA_SPACE_OVERRIDE_DISABLED:        return false;
-        case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE:         r_value += p_getter(); return false;
-        case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE_REPLACE: r_value += p_getter(); return true;
-        case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE:         r_value  = p_getter(); return true;
-        case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE_COMBINE: r_value  = p_getter(); return false;
-    }
-    return false;
-}
-
 // ---------------------------------------------------------------------------
 // Overlap tracking (maintained by PhysXSimulationEventCallback)
 // ---------------------------------------------------------------------------
@@ -1025,10 +1010,6 @@ void PhysXBody3D::set_shape(int p_shape_idx, PhysXShape3D *p_shape) {
  *    the user callback instead of steps 3-5, passing the DirectBodyState.
  * 7. Applies linear/angular damping overrides from areas.
  */
-// Forward declaration: defined at the bottom of this file. Computes the
-// area's gravity contribution at a world position (handles point gravity).
-static Vector3 _area_gravity_at(const PhysXArea3D &p_area, const Vector3 &p_body_position);
-
 void PhysXBody3D::on_pre_step(float p_step) {
     if (!px_actor) return;
 
@@ -1089,16 +1070,16 @@ void PhysXBody3D::on_pre_step(float p_step) {
     for (int idx = n - 1; idx >= 0 && !(gravity_done && linear_done && angular_done); idx--) {
         const PhysXArea3D *area = overlapping_areas[order[idx]];
         if (!gravity_done) {
-            Vector3 g = _area_gravity_at(*area, body_pos);
-            gravity_done = _apply_override(total_gravity, area->get_gravity_override_mode(), [&]{ return g; });
+            Vector3 g = physx_area_gravity_at(*area, body_pos);
+            gravity_done = physx_apply_area_override(total_gravity, area->get_gravity_override_mode(), [&]{ return g; });
         }
         if (!linear_done) {
             real_t d = area->get_linear_damp();
-            linear_done = _apply_override(total_linear_damp, area->get_linear_damp_override_mode(), [&]{ return d; });
+            linear_done = physx_apply_area_override(total_linear_damp, area->get_linear_damp_override_mode(), [&]{ return d; });
         }
         if (!angular_done) {
             real_t d = area->get_angular_damp();
-            angular_done = _apply_override(total_angular_damp, area->get_angular_damp_override_mode(), [&]{ return d; });
+            angular_done = physx_apply_area_override(total_angular_damp, area->get_angular_damp_override_mode(), [&]{ return d; });
         }
     }
 
@@ -1119,7 +1100,7 @@ void PhysXBody3D::on_pre_step(float p_step) {
     // channel not resolved above. Mirrors godot_physics_3d::integrate_forces.
     if (space && space->get_default_area()) {
         const PhysXArea3D *def = space->get_default_area();
-        if (!gravity_done)  total_gravity     += _area_gravity_at(*def, body_pos);
+        if (!gravity_done)  total_gravity     += physx_area_gravity_at(*def, body_pos);
         if (!linear_done)   total_linear_damp += def->get_linear_damp();
         if (!angular_done)  total_angular_damp+= def->get_angular_damp();
     }
@@ -1287,24 +1268,3 @@ void PhysXBody3D::shape_changed(PhysXShape3D *p_shape) {
     }
 }
 
-// Compute the area's gravity contribution at p_body_position, applying the
-// area's WORLD transform to the gravity vector (point-gravity reference point).
-static Vector3 _area_gravity_at(const PhysXArea3D &p_area, const Vector3 &p_body_position) {
-    const real_t mag = p_area.get_gravity();
-    if (p_area.get_gravity_is_point()) {
-        // Gravity point in world space = area world transform applied to the
-        // stored gravity_vector (which for a point area is the local-space point).
-        const Vector3 point_ws = p_area.get_transform().xform(p_area.get_gravity_vector());
-        const Vector3 to_point = point_ws - p_body_position;
-        const real_t d_sq = to_point.length_squared();
-        if (d_sq <= 0.0f) {
-            return Vector3();   // body exactly at the singularity
-        }
-        const real_t unit = p_area.get_gravity_point_unit_distance();
-        if (unit > 0.0f) {
-            return to_point.normalized() * (mag * unit * unit / d_sq);
-        }
-        return to_point.normalized() * mag;
-    }
-    return p_area.get_gravity_vector() * mag;
-}
