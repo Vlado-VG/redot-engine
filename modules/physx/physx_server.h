@@ -75,10 +75,6 @@ class PhysXServer3D : public PhysicsServer3D {
 	physx::PxCudaContextManager *px_cuda_context = nullptr;
 	bool gpu_dynamics_enabled = false;
 
-	// INFO_ACTIVE_OBJECTS counter: number of actors that moved in the last
-	// step across all active spaces (from PxScene::getActiveActors).
-	int active_objects = 0;
-
 	bool extensions_initialized = false;
 	bool vehicle_sdk_initialized = false;
 
@@ -426,6 +422,10 @@ public:
 	virtual void soft_body_apply_point_force(RID p_body, int p_point_index, const Vector3 &p_force) override;
 	virtual void soft_body_apply_central_impulse(RID p_body, const Vector3 &p_impulse) override;
 	virtual void soft_body_apply_central_force(RID p_body, const Vector3 &p_force) override;
+
+	/// True when this soft body runs the GPU deformable path (and is therefore
+	/// queryable); false on the CPU XPBD path.
+	bool soft_body_is_gpu(RID p_body) const;
 
 	virtual void soft_body_set_simulation_precision(RID p_body, int p_precision) override;
 	virtual int soft_body_get_simulation_precision(RID p_body) const override;

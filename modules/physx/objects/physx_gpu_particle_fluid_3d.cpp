@@ -236,6 +236,36 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		host_positions.reset();
 	}
 
+	// Pin outliers: a particle that escapes the container drags the sparse
+	// grid (and the mesh bounds) out to it -- the surface appears to stretch
+	// to infinity. Clamp every particle to within clamp_reach meters of the
+	// mean before feeding the extractor. Returns the mean (the foam kicker's
+	// reference point). Shared by the inline and deferred extraction paths.
+	PxVec3 clamp_outliers(PxU32 n) {
+		Ext::PxCudaHelpersExt::copyDToH(*cuda, host_positions.ptr(), dev_smoothed, n);
+		PxVec3 center(0.0f);
+		for (uint32_t i = 0; i < n; i++) {
+			center += host_positions[i].getXYZ();
+		}
+		center *= 1.0f / (float)n;
+		bool clamped_any = false;
+		for (uint32_t i = 0; i < n; i++) {
+			PxVec3 p = host_positions[i].getXYZ();
+			const PxVec3 d = p - center;
+			if (d.x < -clamp_reach || d.x > clamp_reach || d.y < -clamp_reach || d.y > clamp_reach || d.z < -clamp_reach || d.z > clamp_reach) {
+				p.x = center.x + PxClamp(d.x, -clamp_reach, clamp_reach);
+				p.y = center.y + PxClamp(d.y, -clamp_reach, clamp_reach);
+				p.z = center.z + PxClamp(d.z, -clamp_reach, clamp_reach);
+				host_positions[i] = PxVec4(p, host_positions[i].w);
+				clamped_any = true;
+			}
+		}
+		if (clamped_any) {
+			Ext::PxCudaHelpersExt::copyHToD(*cuda, dev_smoothed, host_positions.ptr(), n);
+		}
+		return center;
+	}
+
 	void onBegin(const PxGpuMirroredPointer<PxGpuParticleSystem> &, CUstream) override {}
 	void onAdvance(const PxGpuMirroredPointer<PxGpuParticleSystem> &, CUstream) override {}
 
@@ -295,31 +325,7 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		// outlier clamp below reads the smoothed positions back to the host.
 		cuda->getCudaContext()->streamSynchronize(p_stream);
 
-		// Pin outliers: a particle that escapes the container drags the sparse
-		// grid (and the mesh bounds) out to it -- the surface appears to stretch
-		// to infinity. Clamp every particle to within clamp_reach meters of the
-		// mean before feeding the extractor.
-		Ext::PxCudaHelpersExt::copyDToH(*cuda, host_positions.ptr(), dev_smoothed, n);
-		PxVec3 center(0.0f);
-		for (uint32_t i = 0; i < n; i++) {
-			center += host_positions[i].getXYZ();
-		}
-		center *= 1.0f / (float)n;
-		bool clamped_any = false;
-		for (uint32_t i = 0; i < n; i++) {
-			PxVec3 p = host_positions[i].getXYZ();
-			const PxVec3 d = p - center;
-			if (d.x < -clamp_reach || d.x > clamp_reach || d.y < -clamp_reach || d.y > clamp_reach || d.z < -clamp_reach || d.z > clamp_reach) {
-				p.x = center.x + PxClamp(d.x, -clamp_reach, clamp_reach);
-				p.y = center.y + PxClamp(d.y, -clamp_reach, clamp_reach);
-				p.z = center.z + PxClamp(d.z, -clamp_reach, clamp_reach);
-				host_positions[i] = PxVec4(p, host_positions[i].w);
-				clamped_any = true;
-			}
-		}
-		if (clamped_any) {
-			Ext::PxCudaHelpersExt::copyHToD(*cuda, dev_smoothed, host_positions.ptr(), n);
-		}
+		const PxVec3 center = clamp_outliers(n);
 
 		// Anisotropy is passed only when the owner opts in (settled pools). For
 		// emitting fluid it is left off -- fast particles along the emission
@@ -356,29 +362,7 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		// overlaps the whole batch's GPU work.
 		cuda->getCudaContext()->streamSynchronize(p_stream);
 
-		// Pin outliers (identical to the inline path): clamp every particle to
-		// within clamp_reach meters of the mean before feeding the extractor.
-		Ext::PxCudaHelpersExt::copyDToH(*cuda, host_positions.ptr(), dev_smoothed, n);
-		PxVec3 center(0.0f);
-		for (uint32_t i = 0; i < n; i++) {
-			center += host_positions[i].getXYZ();
-		}
-		center *= 1.0f / (float)n;
-		bool clamped_any = false;
-		for (uint32_t i = 0; i < n; i++) {
-			PxVec3 p = host_positions[i].getXYZ();
-			const PxVec3 d = p - center;
-			if (d.x < -clamp_reach || d.x > clamp_reach || d.y < -clamp_reach || d.y > clamp_reach || d.z < -clamp_reach || d.z > clamp_reach) {
-				p.x = center.x + PxClamp(d.x, -clamp_reach, clamp_reach);
-				p.y = center.y + PxClamp(d.y, -clamp_reach, clamp_reach);
-				p.z = center.z + PxClamp(d.z, -clamp_reach, clamp_reach);
-				host_positions[i] = PxVec4(p, host_positions[i].w);
-				clamped_any = true;
-			}
-		}
-		if (clamped_any) {
-			Ext::PxCudaHelpersExt::copyHToD(*cuda, dev_smoothed, host_positions.ptr(), n);
-		}
+		const PxVec3 center = clamp_outliers(n);
 
 		extractor->extractIsosurface(dev_smoothed, n, p_stream, gps.mUnsortedPhaseArray,
 				PxParticlePhaseFlag::eParticlePhaseFluid, nullptr,

@@ -39,6 +39,7 @@ internal static class JointTests {
         s.Add("PHYSX-JOINT-025", "joint under heavy load keeps constraint error bounded", LoadStress);
         s.Add("PHYSX-JOINT-026", "pin joint to static body: pendulum swings below pivot", PendulumSwings);
         s.Add("PHYSX-JOINT-027", "many joints (30) on one body stay finite", ManyJointsOneBody);
+        s.Add("PHYSX-JOINT-028", "6dof: linear spring drives to the equilibrium point", SixDofSpringEquilibrium);
     }
 
     static (Rid a, Rid b, Rid j) MakePinnedPair(PhysxWorld w, Vector3 pos) {
@@ -461,5 +462,38 @@ internal static class JointTests {
             Assert.Expect(PhysxWorld.Finite(hp) && PhysxWorld.Finite(hv), $"hub finite at {(f + 1) * 60}");
             Assert.Expect(hv.Length() < 40f, $"hub velocity bounded with 30 joints (|v|={hv.Length():F3} v=({hv.X:F2},{hv.Y:F2},{hv.Z:F2}) y={hp.Y:F3})");
         }
+    }
+
+    // Godot's 6DOF spring pulls the driven body toward the per-axis
+    // equilibrium point with unlimited force. The equilibrium maps onto
+    // PxD6Joint::setDrivePosition: the body starts at the joint origin and
+    // must settle at the authored offset along X.
+    static IEnumerator SixDofSpringEquilibrium() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.3f), new Vector3(0, 5, 0));
+        var b = w.MakeBody(w.Box(0.25f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.GravityScale, 0f);
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeGeneric6Dof(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearSpring, true);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.LinearSpringStiffness, 400f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.LinearSpringDamping, 30f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.LinearSpringEquilibriumPoint, 0.6f);
+        yield return Wait.Frames(120);
+        Vector3 rel = w.Pos(b).Origin - w.Pos(a).Origin;
+        Assert.ExpectNear(rel.X, 0.6f, 0.1f, $"spring pulls to the equilibrium offset (x={rel.X:F3})");
+        Assert.ExpectNear(rel.Y, 0f, 0.08f, $"no drift off-axis (y={rel.Y:F3})");
+
+        // Angular equilibrium: twist the body toward 0.3 rad about X.
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisFlag.EnableAngularSpring, true);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.AngularSpringStiffness, 300f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.AngularSpringDamping, 30f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.AngularSpringEquilibriumPoint, 0.3f);
+        yield return Wait.Frames(120);
+        Quaternion q = w.Pos(b).Basis.GetRotationQuaternion();
+        Assert.ExpectNear(q.AngleTo(Quaternion.Identity), 0.3f, 0.12f,
+            $"angular spring settles at the equilibrium angle (got {q.AngleTo(Quaternion.Identity):F3})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite");
     }
 }

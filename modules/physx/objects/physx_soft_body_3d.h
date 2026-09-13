@@ -19,7 +19,12 @@
  * Known limits (documented, not bugs):
  *  - Query invisibility: soft bodies have no PhysXActorUserData, so they are
  *    never reported by raycasts/overlaps/sweeps and soft_body_set_ray_pickable
- *    is inert (see physx_query_filter_callback.cpp).
+ *    is inert (see physx_query_filter_callback.cpp). NOTE: wiring userData was
+ *    attempted (2026-09) and REVERTED — with the bridge attached, a raycast
+ *    whose ray passes through the tet mesh HANGS the engine (raycasts against
+ *    PxTetrahedronMeshGeometry; overlap queries return fine, so the hang is in
+ *    the ray-vs-tet traversal of this SDK build). Revisit only with an SDK
+ *    upgrade or an SDK patch that fixes deformable ray traversal.
  *  - Collision exceptions: the CPU path enforces them in the per-vertex query
  *    exclude list; the GPU path routes them through the filter-shader slot
  *    registry (word2, spaces/physx_filter_shader.h) — verified working on the

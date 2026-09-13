@@ -8,9 +8,12 @@
  *   - A PhysXSimulationEventCallback (contacts, triggers, wake/sleep)
  *   - A PhysXDirectSpaceState3D (query interface)
  *
- * The step() method drives the simulation: pre-step hooks → simulate() →
- * fetchResults() → post-step hooks. In the current synchronous model, the
- * entire step blocks until physics is computed.
+ * Stepping is flag-gated (physics/physx_3d/simulation/async_step). With the
+ * flag off (default), step() runs the whole pipeline synchronously: pre-step
+ * hooks → simulate() → fetchResults() → post-step hooks. With the flag on,
+ * step() only kicks simulate(); sync() — which the engine calls at the start
+ * of the next tick, before scripts — fetches and runs the post-solve
+ * pipeline (_finish_step), letting the solve overlap the rest of the frame.
  */
 
 #ifndef PHYSX_SPACE_3D_H

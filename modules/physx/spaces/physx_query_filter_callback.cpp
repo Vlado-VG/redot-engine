@@ -15,10 +15,11 @@ physx::PxQueryHitType::Enum PhysXQueryFilterCallback::preFilter(
 	// volumes (soft bodies), articulation links, and particle systems, which
 	// are BY DESIGN invisible to scene queries (raycast/overlap/sweep).
 	// Consequence: soft_body_set_ray_pickable is inert — documented module
-	// limitation, not a bug (Godot's reference resolves soft bodies through
-	// its own pair system, which this backend intentionally does not
-	// reproduce; giving deformables query support would need userData wiring
-	// plus shape-index resolution on the tet mesh).
+	// limitation, not a bug. NOTE (2026-09): userData wiring for GPU soft
+	// bodies was ATTEMPTED and REVERTED — with the bridge attached, a raycast
+	// through the tet mesh HANGS the engine (overlap queries against the same
+	// mesh return fine, so the hang is in the ray-vs-tet traversal of this
+	// SDK build). Keep soft bodies query-invisible until that is resolved.
 	if (!actor->userData) {
 		return physx::PxQueryHitType::eNONE;
 	}
@@ -45,12 +46,16 @@ physx::PxQueryHitType::Enum PhysXQueryFilterCallback::preFilter(
 		return physx::PxQueryHitType::eNONE;
 	}
 
-	// Bodies vs areas toggle.
+	// Bodies vs areas toggle. Soft bodies count as bodies for queries (they
+	// are PhysicsBody3Ds in Godot's scene tree).
 	const PhysXObject3D::ObjectType type = obj->get_type();
 	if (type == PhysXObject3D::OBJECT_TYPE_AREA && !collide_with_areas) {
 		return physx::PxQueryHitType::eNONE;
 	}
 	if (type == PhysXObject3D::OBJECT_TYPE_BODY && !collide_with_bodies) {
+		return physx::PxQueryHitType::eNONE;
+	}
+	if (type == PhysXObject3D::OBJECT_TYPE_SOFT_BODY && !collide_with_bodies) {
 		return physx::PxQueryHitType::eNONE;
 	}
 

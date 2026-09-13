@@ -155,6 +155,7 @@ void PhysXServer3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("particle_fluid_set_surface_mesh", "fluid", "enabled"), &PhysXServer3D::particle_fluid_set_surface_mesh);
 	ClassDB::bind_method(D_METHOD("particle_fluid_set_surface_anisotropy", "fluid", "enabled"), &PhysXServer3D::particle_fluid_set_surface_anisotropy);
 	ClassDB::bind_method(D_METHOD("particle_fluid_get_surface_triangle_count", "fluid"), &PhysXServer3D::particle_fluid_get_surface_triangle_count);
+	ClassDB::bind_method(D_METHOD("soft_body_is_gpu", "soft_body"), &PhysXServer3D::soft_body_is_gpu);
 	ClassDB::bind_method(D_METHOD("particle_fluid_get_submersion", "fluid", "world_aabb"), &PhysXServer3D::particle_fluid_get_submersion);
 }
 
@@ -1463,6 +1464,12 @@ void PhysXServer3D::soft_body_apply_central_force(RID p_body, const Vector3 &p_f
 	ERR_FAIL_NULL(soft_body);
 	const double dt = soft_body->get_space() ? soft_body->get_space()->get_last_step() : 0.0;
 	soft_body->apply_central_force(p_force, dt);
+}
+
+bool PhysXServer3D::soft_body_is_gpu(RID p_body) const {
+	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL_V(soft_body, false);
+	return soft_body->is_gpu();
 }
 
 void PhysXServer3D::soft_body_set_simulation_precision(RID p_body, int p_precision) {

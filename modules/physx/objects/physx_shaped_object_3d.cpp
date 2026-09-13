@@ -224,15 +224,15 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
         // the half-attached shape segfault). For such combinations, we create the
         // shape with eSCENE_QUERY_SHAPE only (no simulation) so the shape still
         // participates in raycasts/overlaps but never collides (REG-0014).
-        bool concave_on_dynamic = false;
         physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
 
         // Check: is the shape concave? (triangle mesh / heightfield / plane)
+        // Concave geometries on a non-kinematic dynamic body are created
+        // query-only (REG-0014): PhysX forbids those simulation shapes there.
         if (!p_shape->is_convex()) {
             // Check: is the actor a non-kinematic dynamic body?
             physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>();
             if (dyn && !(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
-                concave_on_dynamic = true;
                 shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
             }
         }

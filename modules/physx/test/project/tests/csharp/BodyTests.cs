@@ -78,6 +78,7 @@ internal static class BodyTests {
         // --- mode round-trip / shape-flag regressions ---
         s.Add("PHYSX-BODY-056", "static->rigid round-trip keeps convex shapes colliding (rebuild_shapes)", ModeRoundTripKeepsConvexCollision);
         s.Add("PHYSX-BODY-057", "disable/re-enable: convex restores collision, concave stays query-only on dynamic", DisabledShapeRoundTrip);
+        s.Add("PHYSX-BODY-058", "querying force-integration callback does not re-enter the post pipeline", QueryInIntegratorNoReentry);
     }
 
     // ------------------------------------------------------------------ modes
@@ -827,5 +828,33 @@ internal static class BodyTests {
         yield return Wait.Frames(12);
         Assert.Expect(w.Pos(p).Origin.X < -0.05f,
             $"same body now blocked after enabling CCD (x={w.Pos(p).Origin.X:F2})");
+    }
+
+    // Regression (Phase 11 review, C1): a query issued from inside the force
+    // integrator used to re-enter sync()/_finish_step while the stepping flag
+    // was still set — the whole post pipeline (including state-sync callbacks)
+    // ran mid-step, and a CPU soft body in the space would have recursed
+    // unboundedly. Stepping now spans exactly simulate→fetch, so the
+    // integrator's query runs against the idle scene and the post pipeline
+    // fires exactly once per tick.
+    static IEnumerator QueryInIntegratorNoReentry() {
+        using var w = new PhysxWorld();
+        var b = w.MakeBody(w.Box(0.4f), new Vector3(0, 2, 0));
+        int integrations = 0;
+        int syncs = 0;
+        PhysicsServer3D.BodySetForceIntegrationCallback(b, Callable.From((Variant state, Variant userdata) => {
+            integrations++;
+            w.Ray(new Vector3(0, 10, 0), new Vector3(0, -10, 0));
+        }), 0);
+        PhysicsServer3D.BodySetStateSyncCallback(b, Callable.From((Variant state) => {
+            syncs++;
+        }));
+        yield return Wait.Frames(5);
+        integrations = 0;
+        syncs = 0;
+        yield return Wait.Frames(30);
+        Assert.Expect(integrations >= 28, $"integrator ran each tick ({integrations}/30)");
+        Assert.Expect(Mathf.Abs(syncs - integrations) <= 1,
+            $"exactly one post pipeline per tick (state syncs={syncs}, integrations={integrations})");
     }
 }

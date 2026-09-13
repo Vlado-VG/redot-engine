@@ -416,6 +416,28 @@ void PhysXJoint3D::_apply_hinge_limit() {
 	revolute->setLimit(limit);
 }
 
+// Builds the D6 drive target from the cached per-axis spring equilibrium
+// points and applies it (see the header). Godot's per-axis equilibria are
+// authored independently; PhysX consumes one drive transform, so the linear
+// components collect into the translation and the angular ones into an
+// Euler-derived quaternion.
+void PhysXJoint3D::_apply_g6dof_drive_position() {
+	if (!px_joint || kind != JOINT_KIND_6DOF) {
+		return;
+	}
+	const Vector3 lin(
+			g6dof_params[Vector3::AXIS_X].linear_spring_equilibrium_point,
+			g6dof_params[Vector3::AXIS_Y].linear_spring_equilibrium_point,
+			g6dof_params[Vector3::AXIS_Z].linear_spring_equilibrium_point);
+	const Vector3 ang(
+			g6dof_params[Vector3::AXIS_X].angular_spring_equilibrium_point,
+			g6dof_params[Vector3::AXIS_Y].angular_spring_equilibrium_point,
+			g6dof_params[Vector3::AXIS_Z].angular_spring_equilibrium_point);
+	const Quaternion q = Quaternion::from_euler(ang);
+	physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(px_joint);
+	d6->setDrivePosition(physx::PxTransform(physx_to_px(lin), physx_to_px(q)));
+}
+
 void PhysXJoint3D::set_hinge_param(PhysicsServer3D::HingeJointParam p_param, real_t p_value) {
 	if (!px_joint) {
 		// No PhysX joint yet: Joint3D configures the joint as soon as one node
@@ -1048,7 +1070,9 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.linear_spring_stiffness;
 			drive.damping = params.linear_spring_damping;
-			drive.forceLimit = params.linear_motor_force_limit;
+			// Springs are not clamped by the motor force limit (Godot applies
+			// spring force unlimited; the motor keeps its own limit).
+			drive.forceLimit = PX_MAX_F32;
 			d6->setDrive(lin_drive, drive);
 			break;
 		}
@@ -1059,7 +1083,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.linear_spring_stiffness;
 			drive.damping = params.linear_spring_damping;
-			drive.forceLimit = params.linear_motor_force_limit;
+			drive.forceLimit = PX_MAX_F32;
 			d6->setDrive(lin_drive, drive);
 			break;
 		}
@@ -1067,7 +1091,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_EQUILIBRIUM_POINT:
 		{
 			params.linear_spring_equilibrium_point = (float)p_value;
-			// PxD6Joint::setDrivePosition is used for positional drives.
+			_apply_g6dof_drive_position();
 			break;
 		}
 		// Angular limits
@@ -1158,7 +1182,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.angular_spring_stiffness;
 			drive.damping = params.angular_spring_damping;
-			drive.forceLimit = params.angular_motor_force_limit;
+			drive.forceLimit = PX_MAX_F32;
 			d6->setDrive(ang_drive, drive);
 			break;
 		}
@@ -1169,7 +1193,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.angular_spring_stiffness;
 			drive.damping = params.angular_spring_damping;
-			drive.forceLimit = params.angular_motor_force_limit;
+			drive.forceLimit = PX_MAX_F32;
 			d6->setDrive(ang_drive, drive);
 			break;
 		}
@@ -1177,7 +1201,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_EQUILIBRIUM_POINT:
 		{
 			params.angular_spring_equilibrium_point = (float)p_value;
-			// PxD6Joint::setDrivePosition for positional drives.
+			_apply_g6dof_drive_position();
 			break;
 		}
 		default:
@@ -1276,26 +1300,26 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 		}
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_SPRING:
 		{
-			params.angular_spring_equilibrium_point = 0.0f;
 			{
 				physx::PxD6JointDrive drive;
 				drive.stiffness = params.angular_spring_stiffness;
 				drive.damping = params.angular_spring_damping;
-				drive.forceLimit = params.angular_motor_force_limit;
+				drive.forceLimit = PX_MAX_F32;
 				d6->setDrive(ang_drive, drive);
 			}
+			_apply_g6dof_drive_position();
 			break;
 		}
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_SPRING:
 		{
-			params.linear_spring_equilibrium_point = 0.0f;
 			{
 				physx::PxD6JointDrive drive;
 				drive.stiffness = params.linear_spring_stiffness;
 				drive.damping = params.linear_spring_damping;
-				drive.forceLimit = params.linear_motor_force_limit;
+				drive.forceLimit = PX_MAX_F32;
 				d6->setDrive(lin_drive, drive);
 			}
+			_apply_g6dof_drive_position();
 			break;
 		}
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_MOTOR:

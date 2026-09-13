@@ -179,6 +179,12 @@ private:
 	/// Rebuilds and applies the hinge angular limit from hinge_params.
 	/// No-op if use_limit is false.
 	void _apply_hinge_limit();
+	/// Builds the D6 drive target from the cached per-axis spring equilibrium
+	/// points and applies it via PxD6Joint::setDrivePosition: linear equilibria
+	/// map to the drive translation, angular equilibria (radians about the
+	/// joint X/Y/Z) to the drive rotation as an Euler-derived quaternion that
+	/// PhysX decomposes into twist/swing.
+	void _apply_g6dof_drive_position();
 	/// Rebuilds and applies the cone-twist swing + twist limits from cone_twist_params.
 	void _apply_cone_twist_limits();
 	/// Applies the g6dof angular limit to the correct PhysX limit slot

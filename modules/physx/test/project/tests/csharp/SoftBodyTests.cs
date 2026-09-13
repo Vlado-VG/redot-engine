@@ -41,7 +41,7 @@ internal static class SoftBodyTests {
         foreach (var q in quads) {
             indices[k++] = q[0]; indices[k++] = q[1]; indices[k++] = q[2];
         }
-        var arrays = new Array();
+        var arrays = new Godot.Collections.Array();
         arrays.Resize((int)Mesh.ArrayType.Max);
         arrays[(int)Mesh.ArrayType.Vertex] = verts;
         arrays[(int)Mesh.ArrayType.Index] = indices;
@@ -205,4 +205,5 @@ internal static class SoftBodyTests {
             RenderingServer.FreeRid(mesh);
         }
     }
+
 }
