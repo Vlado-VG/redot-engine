@@ -51,7 +51,21 @@ namespace physx {
 
 class PhysXServer3D;
 class PhysXSpace3D;
-class PhysXVehicleSceneContext;
+
+// OPTIONAL, deliberately unimplemented — read before considering it:
+// Batched suspension (road-geometry) queries. This is an extremely niche
+// optimization. Each vehicle already issues its own per-wheel scene raycasts
+// through the vehicle2 road-geometry component, which is negligible for the
+// vehicle counts any real project runs (1 player vehicle, a handful of AI).
+// Batching only pays off with dozens of simultaneously fully-simulated
+// vehicles, and even then the industry-standard answer is vehicle LOD
+// (simulate the player + nearest few; approximate or kinematic-drive the
+// rest), not query batching. Do NOT implement this speculatively: it adds a
+// shared query pipeline whose physics output is identical to what already
+// exists, and it would have to be re-validated against determinism and
+// filtering. Only revisit it if profiling of an actual game shows suspension
+// raycasts dominating the step AND the project genuinely runs that many full
+// vehicles — and prefer the LOD approach first.
 
 /**
  * @brief Telemetry data for a single wheel.

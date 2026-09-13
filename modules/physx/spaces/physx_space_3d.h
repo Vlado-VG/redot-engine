@@ -33,7 +33,6 @@ class PhysXBody3D;
 class PhysXJoint3D;
 class PhysXDirectSpaceState3D;
 class PhysXVehicle3D;
-class PhysXVehicleSceneContext;
 class PhysXSimulationEventCallback;
 class PhysXShapedObject3D;
 class PhysXSoftBody3D;
@@ -63,6 +62,15 @@ public:
     void set_param(PhysicsServer3D::SpaceParameter p_param, double p_value);
 
     int get_solver_iteration_count() const { return solver_iteration_count; }
+
+    // Space-mapped shape rest offset from SPACE_PARAM_CONTACT_MAX_ALLOWED_
+    // PENETRATION: Godot lets contacts rest at `allowed` penetration; PhysX
+    // bodies rest at the SUM of a pair's rest offsets, so each shape carries
+    // half. 0.0 unless the value was set explicitly — the Godot default
+    // (0.01) deliberately stays unmapped so default resting behavior is
+    // unchanged. Changing the value mid-simulation applies to subsequently
+    // attached shapes only.
+    real_t get_shape_rest_offset() const { return shape_rest_offset; }
 
     // --------------------------------------------------------------------
     // Sleep policy (Godot SpaceParameters, mapped onto PhysX's energy-based
@@ -240,6 +248,18 @@ private:
     float last_step = 0.0f;
 	int solver_iteration_count = 8; // Godot default (physics/3d/solver/solver_iterations)
 
+	// Cached SpaceParameter values so get_param round-trips all eight. The
+	// contact_* defaults mirror Godot's project settings, but only an
+	// explicit space_set_param maps CONTACT_MAX_ALLOWED_PENETRATION onto
+	// shape rest offsets (CONTACT_RECYCLE_RADIUS / CONTACT_DEFAULT_BIAS have
+	// no PhysX counterpart at all and are cached for round-trip only).
+	real_t param_contact_recycle_radius = 0.01;
+	real_t param_contact_max_separation = 0.05;
+	real_t param_contact_max_allowed_penetration = 0.01;
+	real_t param_contact_default_bias = 0.2;
+	bool allowed_penetration_set = false;
+	real_t shape_rest_offset = 0.0;
+
 	// Godot sleep policy defaults (physics/3d/sleep_threshold_linear etc.).
 	real_t sleep_threshold_linear = 0.1;
 	real_t sleep_threshold_angular = Math::deg_to_rad(8.0);
@@ -247,9 +267,6 @@ private:
 
     // Provides world-default gravity/damp
     PhysXArea3D *default_area = nullptr;
-
-    // Vehicle scene context (batched road-geometry query buffer + tire-friction table).
-    PhysXVehicleSceneContext *vehicle_scene_context = nullptr;
 
     // Object registration
     LocalVector<PhysXBody3D *> bodies;

@@ -28,6 +28,17 @@
 
 #include <PxPhysicsAPI.h>
 
+class PhysXSpace3D;
+
+/// Applies the space-mapped rest offset (SPACE_PARAM_CONTACT_MAX_ALLOWED_
+/// PENETRATION) to a freshly created PxShape: PhysX bodies rest at the SUM
+/// of a pair's rest offsets, so each shape carries half the allowed
+/// penetration. restOffset must stay below contactOffset (SDK validation),
+/// so the contact generation distance is raised to keep the margin as the
+/// gap above it. An unset value (0.0 — the default) leaves the PhysX
+/// defaults untouched, so default resting behavior is unchanged.
+void physx_apply_space_rest_offset(physx::PxShape *p_px_shape, float p_margin, const PhysXSpace3D *p_space);
+
 class PhysXShapedObject3D : public PhysXObject3D {
 public:
     explicit PhysXShapedObject3D(ObjectType p_type);

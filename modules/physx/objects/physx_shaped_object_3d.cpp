@@ -4,8 +4,28 @@
 #include "physx_server.h"
 #include "../physx_conversions.h"
 #include "../spaces/physx_filter_shader.h"
+#include "../spaces/physx_space_3d.h"
 #include "core/config/project_settings.h"
 #include "core/math/math_funcs.h"
+
+// Applies the space-mapped rest offset (SPACE_PARAM_CONTACT_MAX_ALLOWED_
+// PENETRATION) to a freshly created PxShape: PhysX bodies rest at the SUM of
+// a pair's rest offsets, so each shape carries half the allowed penetration.
+// restOffset must stay below contactOffset (SDK validation), so the contact
+// generation distance is raised to keep the margin as the gap above it. An
+// unset value (0.0 — the default) leaves the PhysX defaults untouched, so
+// default resting behavior is unchanged.
+void physx_apply_space_rest_offset(physx::PxShape *p_px_shape, float p_margin, const PhysXSpace3D *p_space) {
+	if (!p_px_shape || !p_space) {
+		return;
+	}
+	const float rest = (float)p_space->get_shape_rest_offset();
+	if (rest <= 0.0f) {
+		return;
+	}
+	p_px_shape->setContactOffset(rest + p_margin);
+	p_px_shape->setRestOffset(rest);
+}
 
 PhysXShapedObject3D::PhysXShapedObject3D(ObjectType p_type) : PhysXObject3D(p_type){
 }
@@ -232,6 +252,7 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
             filter_data.word3 = shape_filter_flags();
             record.px_shape->setSimulationFilterData(filter_data);
             record.px_shape->setQueryFilterData(filter_data);
+            physx_apply_space_rest_offset(record.px_shape, p_shape->get_margin(), space);
 
             // Attach to the actor. After this, the actor holds a reference.
             // For concave-on-dynamic, attachShape may still succeed (it returns
@@ -415,6 +436,7 @@ void PhysXShapedObject3D::rebuild_shapes() {
 		if (!record.px_shape) {
 			continue;
 		}
+		physx_apply_space_rest_offset(record.px_shape, record.shareable_shape->get_margin(), space);
 
 		// Restore local pose (placement * intrinsic alignment).
 		Transform3D final_tr = record.relative_transform;

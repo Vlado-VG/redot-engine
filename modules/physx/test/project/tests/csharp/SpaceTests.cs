@@ -21,6 +21,8 @@ internal static class SpaceTests {
         s.Add("PHYSX-SPACE-011", "empty space steps 120 frames without issue", EmptySpaceSteps);
         s.Add("PHYSX-SPACE-012", "moving a body between spaces transfers its query presence", BodyMovedBetweenSpaces);
         s.Add("PHYSX-SPACE-013", "freed space returns null direct state", FreedSpaceDirectState);
+        s.Add("PHYSX-SPACE-014", "space parameters round-trip for all eight", SpaceParamRoundtrip);
+        s.Add("PHYSX-SPACE-015", "allowed-penetration maps to deeper resting sink", PenetrationRestOffset);
     }
 
     static IEnumerator CreateDestroy() {
@@ -207,5 +209,77 @@ internal static class SpaceTests {
         yield return Wait.Frame();
         var st = PhysicsServer3D.SpaceGetDirectState(sp);
         Assert.Expect(st == null, "freed space yields null direct state");
+    }
+
+    // ------------------------------------------------------------------ params
+    static IEnumerator SpaceParamRoundtrip() {
+        var sp = PhysicsServer3D.SpaceCreate();
+        PhysicsServer3D.SpaceSetActive(sp, true);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.SolverIterations, 6);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.BodyLinearVelocitySleepThreshold, 0.3f);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.BodyAngularVelocitySleepThreshold, 0.4f);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.BodyTimeToSleep, 0.7f);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.ContactRecycleRadius, 0.02f);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.ContactMaxSeparation, 0.06f);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.ContactMaxAllowedPenetration, 0.08f);
+        PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.ContactDefaultBias, 0.3f);
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.SolverIterations), 6f, 1e-4f, "solver iterations round-trip");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.BodyLinearVelocitySleepThreshold), 0.3f, 1e-4f, "linear sleep threshold round-trip");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.BodyAngularVelocitySleepThreshold), 0.4f, 1e-4f, "angular sleep threshold round-trip");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.BodyTimeToSleep), 0.7f, 1e-4f, "time-to-sleep round-trip");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.ContactRecycleRadius), 0.02f, 1e-4f, "recycle radius round-trip (cached, unmapped)");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.ContactMaxSeparation), 0.06f, 1e-4f, "max separation round-trip (cached)");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.ContactMaxAllowedPenetration), 0.08f, 1e-4f, "allowed penetration round-trip");
+        Assert.ExpectNear(PhysicsServer3D.SpaceGetParam(sp, PhysicsServer3D.SpaceParameter.ContactDefaultBias), 0.3f, 1e-4f, "default bias round-trip (cached, unmapped)");
+        PhysicsServer3D.FreeRid(sp);
+        yield return Wait.Frame();
+    }
+    /// <summary>Builds a floor + falling sphere in one space; returns the body RID
+    /// and sphere shape RID via out params for cleanup.</summary>
+    static Rid MakeSinkSetup(Rid sp, float penetration, out Rid sphereShape, out Rid floorBody) {
+        if (penetration >= 0f) {
+            PhysicsServer3D.SpaceSetParam(sp, PhysicsServer3D.SpaceParameter.ContactMaxAllowedPenetration, penetration);
+        }
+        var fs = PhysicsServer3D.BoxShapeCreate();
+        PhysicsServer3D.ShapeSetData(fs, new Vector3(20, 1, 20));
+        floorBody = PhysicsServer3D.BodyCreate();
+        PhysicsServer3D.BodySetSpace(floorBody, sp);
+        PhysicsServer3D.BodySetMode(floorBody, PhysicsServer3D.BodyMode.Static);
+        PhysicsServer3D.BodyAddShape(floorBody, fs, Transform3D.Identity);
+        PhysicsServer3D.BodySetState(floorBody, PhysicsServer3D.BodyState.Transform, new Transform3D(Basis.Identity, new Vector3(0, -1, 0)));
+        sphereShape = PhysicsServer3D.SphereShapeCreate();
+        PhysicsServer3D.ShapeSetData(sphereShape, 0.5f);
+        var body = PhysicsServer3D.BodyCreate();
+        PhysicsServer3D.BodySetSpace(body, sp);
+        PhysicsServer3D.BodySetMode(body, PhysicsServer3D.BodyMode.Rigid);
+        PhysicsServer3D.BodyAddShape(body, sphereShape, Transform3D.Identity);
+        PhysicsServer3D.BodySetState(body, PhysicsServer3D.BodyState.Transform, new Transform3D(Basis.Identity, new Vector3(0, 4, 0)));
+        PhysicsServer3D.BodySetState(body, PhysicsServer3D.BodyState.CanSleep, false);
+        return body;
+    }
+    static IEnumerator PenetrationRestOffset() {
+        // Two parallel spaces differing only in allowed penetration. PhysX
+        // bodies rest at the SUM of a pair's rest offsets, so allowed=0.6
+        // rests the sphere (r=0.5) at center y=1.1 instead of 0.5.
+        var spDefault = PhysicsServer3D.SpaceCreate();
+        PhysicsServer3D.SpaceSetActive(spDefault, true);
+        var bodyDefault = MakeSinkSetup(spDefault, -1f, out var ssD, out var flD);
+        var spSink = PhysicsServer3D.SpaceCreate();
+        PhysicsServer3D.SpaceSetActive(spSink, true);
+        var bodySink = MakeSinkSetup(spSink, 0.6f, out var ssS, out var flS);
+        try {
+            yield return Wait.Frames(150);
+            float defaultY = PhysicsServer3D.BodyGetState(bodyDefault, PhysicsServer3D.BodyState.Transform).AsTransform3D().Origin.Y;
+            float sinkY = PhysicsServer3D.BodyGetState(bodySink, PhysicsServer3D.BodyState.Transform).AsTransform3D().Origin.Y;
+            Assert.ExpectNear(defaultY, 0.5f, 0.1f, $"default penetration: sphere touches the floor (y={defaultY:F3})");
+            Assert.Expect(sinkY > defaultY + 0.35f,
+                $"allowed penetration 0.6 rests the sphere deeper (y={sinkY:F3} vs {defaultY:F3})");
+        } finally {
+            foreach (var rid in new[] { bodyDefault, ssD, flD, bodySink, ssS, flS }) {
+                PhysicsServer3D.FreeRid(rid);
+            }
+            PhysicsServer3D.FreeRid(spDefault);
+            PhysicsServer3D.FreeRid(spSink);
+        }
     }
 }

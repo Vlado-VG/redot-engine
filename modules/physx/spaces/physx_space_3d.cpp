@@ -17,7 +17,6 @@
 #include "physx_pair_filter_callback.h"
 #include "physx_simulation_event_callback.h"
 #include "physx_contact_modify_callback.h"
-#include "physx_vehicle_scene_context.h"
 #include "../vehicles/physx_vehicle_3d.h"
 #include "../objects/physx_gpu_cloth_3d.h"
 #include "../objects/physx_gpu_particle_fluid_3d.h"
@@ -189,16 +188,9 @@ void PhysXSpace3D::_initialize_scene() {
 
     px_scene = physics->createScene(scene_desc);
     ERR_FAIL_NULL_MSG(px_scene, "PhysX: createScene failed");
-
-    // Vehicle scene context — created after the scene so it can reference the scene.
-    vehicle_scene_context = memnew(PhysXVehicleSceneContext);
 }
 
 void PhysXSpace3D::_terminate_scene() {
-    if (vehicle_scene_context) {
-        memdelete(vehicle_scene_context);
-        vehicle_scene_context = nullptr;
-    }
     if (px_scene) {
         px_scene->release();
         px_scene = nullptr;
@@ -356,14 +348,36 @@ void PhysXSpace3D::set_param(PhysicsServer3D::SpaceParameter p_param, double p_v
             time_before_sleep = p_value;
             _refresh_body_sleep_policies();
         } break;
-        case PhysicsServer3D::SPACE_PARAM_CONTACT_RECYCLE_RADIUS:
-        case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_SEPARATION:
-        case PhysicsServer3D::SPACE_PARAM_CONTACT_DEFAULT_BIAS: {
-            WARN_PRINT_ONCE("PhysX: this SpaceParameter is not mapped yet and will be ignored.");
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_RECYCLE_RADIUS: {
+            // No PhysX counterpart: PhysX's contact-offset/bias machinery
+            // supersedes Godot's pair-recycling knob. Cached for get_param.
+            param_contact_recycle_radius = p_value;
+            WARN_PRINT_ONCE("PhysX: CONTACT_RECYCLE_RADIUS is intentionally unmapped (cached for get_param only).");
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_SEPARATION: {
+            // The PhysX-native knob for contact generation distance is the
+            // per-shape contactOffset (driven by the shape margin); a
+            // per-space separation has no clean mapping without disturbing
+            // it. Cached for get_param only.
+            param_contact_max_separation = p_value;
         } break;
         case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_ALLOWED_PENETRATION: {
-            // In PhysX, this is handled via contact offsets / bias coefficients.
-            // TODO: map to PxSceneDesc or per-shape settings.
+            // Godot: contacts with penetration < allowed produce no
+            // positional correction, so bodies rest at `allowed` penetration.
+            // PhysX bodies rest at the SUM of a pair's rest offsets — apply
+            // half per shape. Only an explicit set maps the parameter; the
+            // Godot default (0.01) stays unmapped so default resting
+            // behavior is unchanged. Shapes attached afterwards pick the
+            // value up (see PhysXShapedObject3D's rest-offset application).
+            param_contact_max_allowed_penetration = p_value;
+            allowed_penetration_set = true;
+            shape_rest_offset = MAX(0.0, p_value) * 0.5;
+        } break;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_DEFAULT_BIAS: {
+            // No PhysX counterpart: solver bias is a global solver property.
+            // Cached for get_param only.
+            param_contact_default_bias = p_value;
+            WARN_PRINT_ONCE("PhysX: CONTACT_DEFAULT_BIAS is intentionally unmapped (cached for get_param only).");
         } break;
         default: {
             WARN_PRINT_ONCE("PhysX: unknown SpaceParameter, ignored.");
@@ -381,8 +395,15 @@ double PhysXSpace3D::get_param(PhysicsServer3D::SpaceParameter p_param) const {
             return sleep_threshold_angular;
         case PhysicsServer3D::SPACE_PARAM_BODY_TIME_TO_SLEEP:
             return time_before_sleep;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_RECYCLE_RADIUS:
+            return param_contact_recycle_radius;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_SEPARATION:
+            return param_contact_max_separation;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_MAX_ALLOWED_PENETRATION:
+            return param_contact_max_allowed_penetration;
+        case PhysicsServer3D::SPACE_PARAM_CONTACT_DEFAULT_BIAS:
+            return param_contact_default_bias;
         default:
-            // TODO: return cached values once the setter stores them.
             return 0.0;
     }
 }

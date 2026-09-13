@@ -624,6 +624,7 @@ void PhysXArea3D::_sync_detection_shape(AttachedShape &p_record) {
 	detection->setSimulationFilterData(filter_data);
 	detection->setFlag(physx::PxShapeFlag::eTRIGGER_SHAPE, false);
 	detection->setFlag(physx::PxShapeFlag::eSCENE_QUERY_SHAPE, false);
+	physx_apply_space_rest_offset(detection, p_record.shareable_shape->get_margin(), space);
 
 	if (physx::PxRigidActor *rigid_actor = px_actor->is<physx::PxRigidActor>()) {
 		rigid_actor->attachShape(*detection);
