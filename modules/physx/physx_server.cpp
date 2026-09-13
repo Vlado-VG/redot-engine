@@ -154,6 +154,7 @@ void PhysXServer3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("particle_fluid_get_foam_count", "fluid"), &PhysXServer3D::particle_fluid_get_foam_count);
 	ClassDB::bind_method(D_METHOD("particle_fluid_set_surface_mesh", "fluid", "enabled"), &PhysXServer3D::particle_fluid_set_surface_mesh);
 	ClassDB::bind_method(D_METHOD("particle_fluid_set_surface_anisotropy", "fluid", "enabled"), &PhysXServer3D::particle_fluid_set_surface_anisotropy);
+	ClassDB::bind_method(D_METHOD("particle_fluid_get_surface_triangle_count", "fluid"), &PhysXServer3D::particle_fluid_get_surface_triangle_count);
 	ClassDB::bind_method(D_METHOD("particle_fluid_get_submersion", "fluid", "world_aabb"), &PhysXServer3D::particle_fluid_get_submersion);
 }
 
@@ -1676,6 +1677,12 @@ void PhysXServer3D::particle_fluid_set_surface_mesh(RID p_fluid, bool p_enabled)
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_surface_mesh_enabled(p_enabled);
+}
+
+int PhysXServer3D::particle_fluid_get_surface_triangle_count(RID p_fluid) const {
+	const PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
+	ERR_FAIL_NULL_V(fluid, 0);
+	return (int)fluid->get_surface_triangle_count();
 }
 
 void PhysXServer3D::particle_fluid_set_surface_anisotropy(RID p_fluid, bool p_enabled) {

@@ -480,6 +480,8 @@ public:
 	int particle_fluid_get_foam_count(RID p_fluid) const;
 
 	void particle_fluid_set_surface_mesh(RID p_fluid, bool p_enabled);
+	/// Triangle count of the fluid's latest isosurface (script-facing probe).
+	int particle_fluid_get_surface_triangle_count(RID p_fluid) const;
 	void particle_fluid_set_surface_anisotropy(RID p_fluid, bool p_enabled);
 	// Fills Godot arrays with the latest GPU isosurface; returns the triangle count.
 	// r_version: pass the last-seen version; returns -1 (leaving r_* untouched) if

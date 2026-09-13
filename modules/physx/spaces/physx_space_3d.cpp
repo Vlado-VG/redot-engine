@@ -243,6 +243,18 @@ void PhysXSpace3D::step(float p_step) {
         body->on_pre_step(p_step);
     }
 
+    // Batched multi-fluid isosurface readback: with more than one fluid,
+    // onPostSolve kicks each fluid's smoothing kernel WITHOUT syncing and the
+    // sync + outlier clamp + extraction happen in finish_isosurface_extraction()
+    // after fetchResults (below) -- syncing inline would serialize N GPU stalls
+    // mid-solve, because PhysX invokes each fluid's onPostSolve in turn and
+    // system 2's kernel would not be issued until system 1's callback finished
+    // blocking. Single-fluid spaces keep the inline path.
+    const bool batched_isosurface = fluids.size() > 1;
+    for (PhysXGPUParticleFluid3D *fluid : fluids) {
+        fluid->set_deferred_extraction(batched_isosurface);
+    }
+
     // Vehicle update (pre-step): read state from PhysX actor, apply commands,
     // write state back. This runs before simulate so the vehicle2 state is
     // consistent during the physics step.
@@ -258,7 +270,15 @@ void PhysXSpace3D::step(float p_step) {
 
     // GPU fluid/cloth read-back: copy particle/vertex positions GPU -> host so
     // the nodes can render them. Must run while the scene is still valid
-    // (after fetchResults, before the next simulate).
+    // (after fetchResults, before the next simulate). In batched mode the
+    // finish pass completes each fluid's deferred isosurface extraction first
+    // (sync + clamp + extraction kicks) -- every fluid's smoothing kernel was
+    // kicked during the solve, so the first sync absorbs the whole batch.
+    if (batched_isosurface) {
+        for (PhysXGPUParticleFluid3D *fluid : fluids) {
+            fluid->finish_isosurface_extraction();
+        }
+    }
     for (PhysXGPUParticleFluid3D *fluid : fluids) {
         fluid->read_back();
     }

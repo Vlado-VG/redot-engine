@@ -81,6 +81,25 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 	bool surface_pending = false;
 	bool foam_pending = false;
 
+	// Batched multi-fluid mode (see PhysXGPUParticleFluid3D::
+	// set_deferred_extraction): onPostSolve kicks the smoothing kernel without
+	// syncing and defers the sync + outlier clamp + extraction kick to
+	// finish_extraction(), which the space calls once per fluid after
+	// fetchResults. With N fluids PhysX invokes each onPostSolve in turn
+	// during the solve, so syncing inline serializes N stalls -- system 2's
+	// kernel would not even be issued until system 1's callback finished
+	// blocking. Deferred, every fluid's kernel is already in flight when the
+	// first finish_extraction syncs, so N stalls collapse into one pipelined
+	// wait. mHostPtr / the stream are PhysX-owned resources that stay valid
+	// until the next simulate() call, so stashing them across the callback
+	// return is safe within this step's window.
+	bool deferred = false;
+	bool extraction_pending = false;
+	PxGpuParticleSystem *pending_gps = nullptr;
+	PxU32 pending_n = 0;
+	CUstream pending_stream = 0;
+	bool pending_aniso = false;
+
 	// Second extractor over the diffuse (foam) particles. Coarser grid: foam is
 	// meant to read as froth, not a smooth skin, and the particle count is low.
 	PxSparseGridIsosurfaceExtractor *foam_extractor = nullptr;
@@ -259,8 +278,21 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		if (use_aniso) {
 			anisotropy->generateAnisotropy(p_gps.mDevicePtr, gps.mCommonData.mMaxParticles, p_stream);
 		}
-		// The one unavoidable sync: the outlier clamp below reads the smoothed
-		// positions back to the host.
+
+		if (deferred) {
+			// Batched mode: leave the kernels in flight and let the space's
+			// finish_isosurface_extraction() pass (after fetchResults, once
+			// every fluid's kernel is in flight) do the sync + clamp + extract.
+			pending_gps = &gps;
+			pending_n = n;
+			pending_stream = p_stream;
+			pending_aniso = use_aniso;
+			extraction_pending = true;
+			return;
+		}
+
+		// Inline mode (single-fluid spaces): the one unavoidable sync -- the
+		// outlier clamp below reads the smoothed positions back to the host.
 		cuda->getCudaContext()->streamSynchronize(p_stream);
 
 		// Pin outliers: a particle that escapes the container drags the sparse
@@ -292,6 +324,62 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		// Anisotropy is passed only when the owner opts in (settled pools). For
 		// emitting fluid it is left off -- fast particles along the emission
 		// column stretch into ellipsoids that marching cubes meshes as needles.
+		extractor->extractIsosurface(dev_smoothed, n, p_stream, gps.mUnsortedPhaseArray,
+				PxParticlePhaseFlag::eParticlePhaseFluid, nullptr,
+				use_aniso ? dev_aniso1 : nullptr,
+				use_aniso ? dev_aniso2 : nullptr,
+				use_aniso ? dev_aniso3 : nullptr,
+				use_aniso ? gps.mCommonData.mParticleContactDistance : 1.0f);
+		surface_pending = true;
+
+		kick_foam(center, p_stream);
+	}
+
+	// Batched mode only (see onPostSolve): completes one fluid's deferred
+	// extraction -- sync, outlier clamp, extraction + foam kicks. Called by
+	// the space after fetchResults, once every fluid's smoothing kernel is
+	// already in flight, so the first sync absorbs the whole batch's GPU work
+	// instead of stalling per fluid mid-solve. No-op when nothing is pending.
+	void finish_extraction() {
+		if (!deferred || !extraction_pending || !owner) {
+			return;
+		}
+		extraction_pending = false;
+		PxGpuParticleSystem &gps = *pending_gps;
+		const PxU32 n = pending_n;
+		CUstream p_stream = pending_stream;
+		const bool use_aniso = pending_aniso;
+
+		// The one unavoidable sync (on an extraction cycle): the outlier clamp
+		// below reads the smoothed positions back to the host. Every other
+		// fluid's smoothing kernel was kicked before this runs, so this wait
+		// overlaps the whole batch's GPU work.
+		cuda->getCudaContext()->streamSynchronize(p_stream);
+
+		// Pin outliers (identical to the inline path): clamp every particle to
+		// within clamp_reach meters of the mean before feeding the extractor.
+		Ext::PxCudaHelpersExt::copyDToH(*cuda, host_positions.ptr(), dev_smoothed, n);
+		PxVec3 center(0.0f);
+		for (uint32_t i = 0; i < n; i++) {
+			center += host_positions[i].getXYZ();
+		}
+		center *= 1.0f / (float)n;
+		bool clamped_any = false;
+		for (uint32_t i = 0; i < n; i++) {
+			PxVec3 p = host_positions[i].getXYZ();
+			const PxVec3 d = p - center;
+			if (d.x < -clamp_reach || d.x > clamp_reach || d.y < -clamp_reach || d.y > clamp_reach || d.z < -clamp_reach || d.z > clamp_reach) {
+				p.x = center.x + PxClamp(d.x, -clamp_reach, clamp_reach);
+				p.y = center.y + PxClamp(d.y, -clamp_reach, clamp_reach);
+				p.z = center.z + PxClamp(d.z, -clamp_reach, clamp_reach);
+				host_positions[i] = PxVec4(p, host_positions[i].w);
+				clamped_any = true;
+			}
+		}
+		if (clamped_any) {
+			Ext::PxCudaHelpersExt::copyHToD(*cuda, dev_smoothed, host_positions.ptr(), n);
+		}
+
 		extractor->extractIsosurface(dev_smoothed, n, p_stream, gps.mUnsortedPhaseArray,
 				PxParticlePhaseFlag::eParticlePhaseFluid, nullptr,
 				use_aniso ? dev_aniso1 : nullptr,
@@ -472,6 +560,11 @@ void PhysXGPUParticleFluid3D::set_surface_mesh_enabled(bool p_enabled) {
 	} else {
 		_destroy_isosurface();
 	}
+}
+
+uint32_t PhysXGPUParticleFluid3D::get_surface_triangle_count() const {
+	MutexLock lock(mesh_mutex);
+	return (uint32_t)(mesh_indices.size() / 3);
 }
 
 uint32_t PhysXGPUParticleFluid3D::copy_surface_mesh(LocalVector<Vector3> &r_vertices, LocalVector<Vector3> &r_normals, LocalVector<int32_t> &r_indices, uint32_t &p_have_version) const {
@@ -907,6 +1000,18 @@ void PhysXGPUParticleFluid3D::emit(const Vector<Vector3> &p_positions, const Vec
 	write_head = (write_head + n) % capacity;
 	active_count = MIN(active_count + n, capacity);
 	px_buffer->setNbActiveParticles(active_count);
+}
+
+void PhysXGPUParticleFluid3D::set_deferred_extraction(bool p_deferred) {
+	if (iso) {
+		iso->deferred = p_deferred;
+	}
+}
+
+void PhysXGPUParticleFluid3D::finish_isosurface_extraction() {
+	if (iso) {
+		iso->finish_extraction();
+	}
 }
 
 void PhysXGPUParticleFluid3D::read_back() {

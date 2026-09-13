@@ -185,11 +185,23 @@ public:
 	const LocalVector<Vector3> &get_positions() const { return read_positions; }
 	uint32_t get_particle_count() const { return active_count; }
 
+	// Batched multi-fluid isosurface readback. With more than one fluid in a
+	// space, the space defers each fluid's outlier-clamp sync out of
+	// onPostSolve (where N fluids would serialize N GPU stalls mid-solve) and
+	// calls finish_isosurface_extraction() once per fluid after fetchResults,
+	// when every fluid's smoothing kernel is already in flight. Single-fluid
+	// spaces keep the inline path (flag false).
+	void set_deferred_extraction(bool p_deferred);
+	void finish_isosurface_extraction();
+
 	// GPU isosurface mesh (PxIsosurfaceExtractor). Enabling creates the extractor.
 	void set_surface_mesh_enabled(bool p_enabled);
 	bool is_surface_mesh_enabled() const { return surface_mesh_enabled; }
 	void set_surface_anisotropy_enabled(bool p_enabled) { surface_anisotropy_enabled = p_enabled; }
 	bool is_surface_anisotropy_enabled() const { return surface_anisotropy_enabled; }
+	// Triangle count of the latest isosurface (0 until the first extraction
+	// publishes). Cheap script-facing probe that copies nothing.
+	uint32_t get_surface_triangle_count() const;
 	// Thread-safe copy of the latest isosurface. Returns the triangle count.
 	// p_have_version is the caller's last-seen mesh_version; if it still matches,
 	// nothing is copied and r_* are left untouched (caller should skip its rebuild).
