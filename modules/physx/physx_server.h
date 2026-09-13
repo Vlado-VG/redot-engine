@@ -377,6 +377,18 @@ public:
 	Transform3D articulation_get_link_transform(RID p_articulation, int p_link_index) const;
 	bool articulation_is_sleeping(RID p_articulation) const;
 
+	/// Replaces a link's collision shape with a per-link instance of the
+	/// shared PhysXShape3D blueprint (concave shapes degrade to query-only
+	/// per REG-0014; mass recomputed at the link's stored density).
+	void articulation_set_link_shape(RID p_articulation, int p_link_index, RID p_shape, const Transform3D &p_transform);
+	/// Per-link collision filtering (shape filter data word0/word1).
+	void articulation_set_link_collision_layer(RID p_articulation, int p_link_index, uint32_t p_layer);
+	void articulation_set_link_collision_mask(RID p_articulation, int p_link_index, uint32_t p_mask);
+	uint32_t articulation_get_link_collision_layer(RID p_articulation, int p_link_index) const;
+	uint32_t articulation_get_link_collision_mask(RID p_articulation, int p_link_index) const;
+	/// Linear + angular world velocity of a link ("linear"/"angular" keys).
+	Dictionary articulation_get_link_velocity(RID p_articulation, int p_link_index) const;
+
 	// ------------------------------------------------------------------
 	// SOFT BODY API — stock SoftBody3D. Each body resolves to a GPU
 	// PxDeformableVolume (CUDA) or the CPU XPBD solver — see

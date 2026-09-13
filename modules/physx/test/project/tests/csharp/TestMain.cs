@@ -96,6 +96,7 @@ public partial class TestMain : SceneTree {
         AreaTests.Register(new SuiteBuilder(r, "areas"));
         JointTests.Register(new SuiteBuilder(r, "joints"));
         VehicleTests.Register(new SuiteBuilder(r, "vehicles"));
+        ArticulationTests.Register(new SuiteBuilder(r, "articulations"));
         SoftBodyTests.Register(new SuiteBuilder(r, "soft_bodies"));
         LifecycleTests.Register(new SuiteBuilder(r, "lifecycle"));
         EdgeCaseTests.Register(new SuiteBuilder(r, "edge_cases"));

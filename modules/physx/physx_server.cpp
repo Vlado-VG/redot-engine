@@ -115,6 +115,27 @@ void PhysXServer3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("vehicle_set_balance_params", "vehicle", "params"), &PhysXServer3D::vehicle_set_balance_params);
 	ClassDB::bind_method(D_METHOD("vehicle_get_balance_state", "vehicle"), &PhysXServer3D::vehicle_get_balance_state);
 
+	// Reduced-coordinate articulations (module-defined API; the same
+	// inner-server caveat as the vehicle block applies — call these on
+	// PhysXServer3D.GetSingleton(), not PhysicsServer3D.GetSingleton()).
+	ClassDB::bind_method(D_METHOD("articulation_create"), &PhysXServer3D::articulation_create);
+	ClassDB::bind_method(D_METHOD("articulation_set_space", "articulation", "space"), &PhysXServer3D::articulation_set_space);
+	ClassDB::bind_method(D_METHOD("articulation_add_link", "articulation", "parent_index", "parent_frame", "child_frame", "joint_type", "density", "box_half_extents"), &PhysXServer3D::articulation_add_link);
+	ClassDB::bind_method(D_METHOD("articulation_set_drive", "articulation", "link_index", "axis", "stiffness", "damping", "drive_target", "drive_velocity", "drive_type"), &PhysXServer3D::articulation_set_drive);
+	ClassDB::bind_method(D_METHOD("articulation_set_limit", "articulation", "link_index", "axis", "low", "high"), &PhysXServer3D::articulation_set_limit);
+	ClassDB::bind_method(D_METHOD("articulation_set_fix_base", "articulation", "fix"), &PhysXServer3D::articulation_set_fix_base);
+	ClassDB::bind_method(D_METHOD("articulation_wake", "articulation"), &PhysXServer3D::articulation_wake);
+	ClassDB::bind_method(D_METHOD("articulation_sleep", "articulation"), &PhysXServer3D::articulation_sleep);
+	ClassDB::bind_method(D_METHOD("articulation_get_link_count", "articulation"), &PhysXServer3D::articulation_get_link_count);
+	ClassDB::bind_method(D_METHOD("articulation_get_link_transform", "articulation", "link_index"), &PhysXServer3D::articulation_get_link_transform);
+	ClassDB::bind_method(D_METHOD("articulation_is_sleeping", "articulation"), &PhysXServer3D::articulation_is_sleeping);
+	ClassDB::bind_method(D_METHOD("articulation_set_link_shape", "articulation", "link_index", "shape", "transform"), &PhysXServer3D::articulation_set_link_shape);
+	ClassDB::bind_method(D_METHOD("articulation_set_link_collision_layer", "articulation", "link_index", "layer"), &PhysXServer3D::articulation_set_link_collision_layer);
+	ClassDB::bind_method(D_METHOD("articulation_set_link_collision_mask", "articulation", "link_index", "mask"), &PhysXServer3D::articulation_set_link_collision_mask);
+	ClassDB::bind_method(D_METHOD("articulation_get_link_collision_layer", "articulation", "link_index"), &PhysXServer3D::articulation_get_link_collision_layer);
+	ClassDB::bind_method(D_METHOD("articulation_get_link_collision_mask", "articulation", "link_index"), &PhysXServer3D::articulation_get_link_collision_mask);
+	ClassDB::bind_method(D_METHOD("articulation_get_link_velocity", "articulation", "link_index"), &PhysXServer3D::articulation_get_link_velocity);
+
 	// GPU particle fluid (module extension; drives the PhysXParticleFluid3D
 	// node from C++, bound here so GDScript/C# tools like the debug lab can
 	// build fluid volumes through the raw server API).
@@ -1258,6 +1279,44 @@ bool PhysXServer3D::articulation_is_sleeping(RID p_articulation) const {
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, true);
 	return articulation->is_sleeping();
+}
+
+void PhysXServer3D::articulation_set_link_shape(RID p_articulation, int p_link_index, RID p_shape, const Transform3D &p_transform) {
+	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
+	ERR_FAIL_NULL(articulation);
+	PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
+	ERR_FAIL_NULL_MSG(shape, "PhysX: articulation_set_link_shape passed an invalid shape RID.");
+	articulation->set_link_shape(p_link_index, shape, p_transform);
+}
+
+void PhysXServer3D::articulation_set_link_collision_layer(RID p_articulation, int p_link_index, uint32_t p_layer) {
+	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
+	ERR_FAIL_NULL(articulation);
+	articulation->set_link_collision_layer(p_link_index, p_layer);
+}
+
+void PhysXServer3D::articulation_set_link_collision_mask(RID p_articulation, int p_link_index, uint32_t p_mask) {
+	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
+	ERR_FAIL_NULL(articulation);
+	articulation->set_link_collision_mask(p_link_index, p_mask);
+}
+
+uint32_t PhysXServer3D::articulation_get_link_collision_layer(RID p_articulation, int p_link_index) const {
+	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
+	ERR_FAIL_NULL_V(articulation, 0);
+	return articulation->get_link_collision_layer(p_link_index);
+}
+
+uint32_t PhysXServer3D::articulation_get_link_collision_mask(RID p_articulation, int p_link_index) const {
+	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
+	ERR_FAIL_NULL_V(articulation, 0);
+	return articulation->get_link_collision_mask(p_link_index);
+}
+
+Dictionary PhysXServer3D::articulation_get_link_velocity(RID p_articulation, int p_link_index) const {
+	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
+	ERR_FAIL_NULL_V(articulation, Dictionary());
+	return articulation->get_link_velocity(p_link_index);
 }
 
 // ---------------------------------------------------------------------------

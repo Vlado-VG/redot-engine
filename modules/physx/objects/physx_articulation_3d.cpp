@@ -9,9 +9,11 @@
 #include "../spaces/physx_space_3d.h"
 
 #include "core/error/error_macros.h"
+#include "core/math/math_funcs.h"
 
 #include "PxPhysicsAPI.h"
 #include "extensions/PxRigidBodyExt.h"
+#include "../shapes/physx_shape_3d.h"
 
 using namespace physx;
 
@@ -95,7 +97,7 @@ int PhysXArticulation3D::add_link(int p_parent_index,
 	physx::PxArticulationLink *parent_link = nullptr;
 	if (p_parent_index >= 0) {
 		ERR_FAIL_INDEX_V(p_parent_index, (int)links.size(), -1);
-		parent_link = links[p_parent_index];
+		parent_link = links[p_parent_index].link;
 	}
 
 	// The link's pose is relative to its parent; the base link's pose is in
@@ -128,11 +130,100 @@ int PhysXArticulation3D::add_link(int p_parent_index,
 		joint->setChildPose(physx::PxTransform(physx::PxIdentity));
 	}
 
-	links.push_back(link);
+	LinkRecord rec;
+	rec.link = link;
+	rec.shape = shape;
+	rec.density = MAX(p_density, 0.001f);
+	links.push_back(rec);
 	// Per-link mass properties are set by updateMassAndInertia() above; the
 	// reduced-coordinate solver aggregates them when the articulation is added
 	// to a scene.
 	return (int)links.size() - 1;
+}
+
+void PhysXArticulation3D::set_link_shape(int p_link_index, PhysXShape3D *p_shape, const Transform3D &p_transform) {
+	LinkRecord *rec = _record(p_link_index);
+	ERR_FAIL_NULL_MSG(rec, "PhysX: articulation_set_link_shape on invalid link index.");
+	ERR_FAIL_NULL_MSG(p_shape, "PhysX: articulation_set_link_shape passed an invalid shape.");
+	if (!rec->link || !px_articulation) {
+		return;
+	}
+
+	if (rec->shape) {
+		rec->link->detachShape(*rec->shape);
+		rec->shape = nullptr;
+	}
+
+	// Same dispatch as PhysXShapedObject3D::_shape_geometry_scale_for: convex
+	// polygon meshes consume the signed (mirror-capable) scale — the blueprint
+	// bakes the mirror — every other geometry the absolute scale. Links have
+	// no separate body scale.
+	const bool convex_poly = p_shape->get_type() == PhysicsServer3D::SHAPE_CONVEX_POLYGON;
+	const Vector3 scale = (convex_poly && !Math::is_zero_approx(p_transform.basis.determinant()))
+			? p_transform.basis.get_scale()
+			: p_transform.basis.get_scale_abs();
+
+	// Links simulate, so the REG-0014 rule applies: concave geometries
+	// (triangle mesh/heightfield/plane) must be query-only on them.
+	physx::PxShapeFlags flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE |
+			physx::PxShapeFlag::eSIMULATION_SHAPE;
+	if (!p_shape->is_convex()) {
+		flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
+	}
+
+	PhysXServer3D *server = PhysXServer3D::get_singleton();
+	physx::PxShape *shape = p_shape->create_shape(
+			server->get_physics(),
+			physx::PxVec3(scale.x, scale.y, scale.z),
+			server->get_default_material(),
+			flags);
+	ERR_FAIL_NULL_MSG(shape, "PhysX: failed to create articulation link shape.");
+	shape->setLocalPose(physx_to_px(p_transform) * p_shape->get_local_pose());
+	rec->link->attachShape(*shape);
+	// The link owns the shape after attach (refcount 2 -> 1 on release).
+	shape->release();
+	rec->shape = shape;
+	_apply_link_filter(*rec);
+
+	// Geometry changed: recompute mass properties at the stored density.
+	physx::PxRigidBodyExt::updateMassAndInertia(*rec->link, rec->density);
+}
+
+void PhysXArticulation3D::set_link_collision_layer(int p_link_index, uint32_t p_layer) {
+	LinkRecord *rec = _record(p_link_index);
+	ERR_FAIL_NULL_MSG(rec, "PhysX: articulation link layer on invalid link index.");
+	rec->collision_layer = p_layer;
+	_apply_link_filter(*rec);
+}
+
+void PhysXArticulation3D::set_link_collision_mask(int p_link_index, uint32_t p_mask) {
+	LinkRecord *rec = _record(p_link_index);
+	ERR_FAIL_NULL_MSG(rec, "PhysX: articulation link mask on invalid link index.");
+	rec->collision_mask = p_mask;
+	_apply_link_filter(*rec);
+}
+
+uint32_t PhysXArticulation3D::get_link_collision_layer(int p_index) const {
+	const LinkRecord *rec = _record(p_index);
+	return rec ? rec->collision_layer : 0;
+}
+
+uint32_t PhysXArticulation3D::get_link_collision_mask(int p_index) const {
+	const LinkRecord *rec = _record(p_index);
+	return rec ? rec->collision_mask : 0;
+}
+
+Dictionary PhysXArticulation3D::get_link_velocity(int p_index) const {
+	Dictionary d;
+	physx::PxArticulationLink *link = const_cast<PhysXArticulation3D *>(this)->_link(p_index);
+	if (!link) {
+		return d;
+	}
+	const physx::PxVec3 lv = link->getLinearVelocity();
+	const physx::PxVec3 av = link->getAngularVelocity();
+	d["linear"] = Vector3(lv.x, lv.y, lv.z);
+	d["angular"] = Vector3(av.x, av.y, av.z);
+	return d;
 }
 
 void PhysXArticulation3D::set_drive(int p_link_index, int p_axis,
@@ -142,6 +233,8 @@ void PhysXArticulation3D::set_drive(int p_link_index, int p_axis,
 	physx::PxArticulationLink *link = _link(p_link_index);
 	ERR_FAIL_NULL_MSG(link, "PhysX: articulation drive on invalid link index.");
 	auto *joint = static_cast<physx::PxArticulationJointReducedCoordinate *>(link->getInboundJoint());
+	// The base link has no inbound joint — drives/limits only apply to child links.
+	ERR_FAIL_NULL_MSG(joint, "PhysX: articulation drive on the base link (no inbound joint).");
 	const physx::PxArticulationAxis::Enum axis = _map_axis(p_axis);
 
 	// A driven axis must be unlocked; the drive spring then pulls it toward
@@ -158,6 +251,8 @@ void PhysXArticulation3D::set_limit(int p_link_index, int p_axis, float p_low, f
 	physx::PxArticulationLink *link = _link(p_link_index);
 	ERR_FAIL_NULL_MSG(link, "PhysX: articulation limit on invalid link index.");
 	auto *joint = static_cast<physx::PxArticulationJointReducedCoordinate *>(link->getInboundJoint());
+	// The base link has no inbound joint — drives/limits only apply to child links.
+	ERR_FAIL_NULL_MSG(joint, "PhysX: articulation limit on the base link (no inbound joint).");
 	const physx::PxArticulationAxis::Enum axis = _map_axis(p_axis);
 	joint->setMotion(axis, physx::PxArticulationMotion::eLIMITED);
 	joint->setLimitParams(axis, physx::PxArticulationLimit(p_low, p_high));
@@ -207,5 +302,30 @@ physx::PxArticulationLink *PhysXArticulation3D::_link(int p_index) const {
 	if (p_index < 0 || p_index >= (int)links.size()) {
 		return nullptr;
 	}
-	return links[p_index];
+	return links[p_index].link;
+}
+
+PhysXArticulation3D::LinkRecord *PhysXArticulation3D::_record(int p_index) {
+	if (p_index < 0 || p_index >= (int)links.size()) {
+		return nullptr;
+	}
+	return &links[p_index];
+}
+
+const PhysXArticulation3D::LinkRecord *PhysXArticulation3D::_record(int p_index) const {
+	if (p_index < 0 || p_index >= (int)links.size()) {
+		return nullptr;
+	}
+	return &links[p_index];
+}
+
+void PhysXArticulation3D::_apply_link_filter(LinkRecord &p_rec) const {
+	if (!p_rec.shape) {
+		return;
+	}
+	physx::PxFilterData filter_data;
+	filter_data.word0 = p_rec.collision_layer;
+	filter_data.word1 = p_rec.collision_mask;
+	p_rec.shape->setSimulationFilterData(filter_data);
+	p_rec.shape->setQueryFilterData(filter_data);
 }

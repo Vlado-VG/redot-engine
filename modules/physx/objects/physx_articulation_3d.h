@@ -39,13 +39,16 @@
 #include "core/math/transform_3d.h"
 #include "core/math/vector3.h"
 #include "core/templates/local_vector.h"
+#include "core/variant/dictionary.h"
 
 namespace physx {
 class PxArticulationReducedCoordinate;
 class PxArticulationLink;
+class PxShape;
 } // namespace physx
 
 class PhysXSpace3D;
+class PhysXShape3D;
 
 class PhysXArticulation3D : public PhysXRIDOwner {
 public:
@@ -83,13 +86,46 @@ public:
 	/// True while any link of the articulation is awake.
 	bool is_sleeping() const;
 
+	/// Replaces the link's collision shape with a per-link instance of the
+	/// shared PhysXShape3D blueprint, placed at p_transform. Concave shapes
+	/// degrade to query-only on links (links simulate — REG-0014). Mass
+	/// properties are recomputed from all attached shapes at the link's
+	/// stored density.
+	void set_link_shape(int p_link_index, PhysXShape3D *p_shape, const Transform3D &p_transform);
+
+	/// Per-link collision filtering (PxShape filter data word0/word1); the
+	/// module's filter shader and pair-callback semantics apply unchanged.
+	void set_link_collision_layer(int p_link_index, uint32_t p_layer);
+	void set_link_collision_mask(int p_link_index, uint32_t p_mask);
+	uint32_t get_link_collision_layer(int p_index) const;
+	uint32_t get_link_collision_mask(int p_index) const;
+
+	/// Linear + angular world velocity of the link ("linear"/"angular" keys).
+	Dictionary get_link_velocity(int p_index) const;
+
 private:
+	/// One link of the articulation: the PhysX link (owned by the
+	/// articulation — releasing it releases the links), its collision shape
+	/// (a per-link PxShape owned by the link after attach), and the Godot-side
+	/// filter/mass state used to (re)configure it.
+	struct LinkRecord {
+		physx::PxArticulationLink *link = nullptr;
+		physx::PxShape *shape = nullptr;
+		uint32_t collision_layer = 1;
+		uint32_t collision_mask = 1;
+		float density = 1.0f;
+	};
+
 	PhysXSpace3D *space = nullptr;
 	physx::PxArticulationReducedCoordinate *px_articulation = nullptr;
-	LocalVector<physx::PxArticulationLink *> links;
+	LocalVector<LinkRecord> links;
 
 	void _destroy();
 	physx::PxArticulationLink *_link(int p_index) const;
+	LinkRecord *_record(int p_index);
+	const LinkRecord *_record(int p_index) const;
+	/// Writes the record's layer/mask into its shape's filter data.
+	void _apply_link_filter(LinkRecord &p_rec) const;
 };
 
 #endif // PHYSX_ARTICULATION_3D_H
