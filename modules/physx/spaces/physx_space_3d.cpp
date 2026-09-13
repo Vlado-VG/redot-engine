@@ -236,11 +236,10 @@ void PhysXSpace3D::step(float p_step) {
     if (stepping) {
         WARN_PRINT_ONCE("PhysX: step() called with a solve in flight; fetching it first.");
         px_scene->fetchResults(true);
-        _finish_step();
         stepping = false;
+        _finish_step();
     }
 
-    stepping = true;
     last_step = p_step;
 
     // Reset the debug-contact buffer for this step (onContact refills it).
@@ -282,10 +281,16 @@ void PhysXSpace3D::step(float p_step) {
     // return with the solve in flight; sync() — called by the engine at the
     // START of the next tick, before scripts — does the fetch and the whole
     // post-solve pipeline, so the solve overlaps the rest of this frame.
+    // stepping marks the exact simulate→fetch span: pre-step hooks run before
+    // it (queries there see the idle scene), and _finish_step runs after it is
+    // cleared — _finish_step itself issues scene queries (CPU soft bodies), and
+    // a re-entrant sync() while stepping is still set would recurse.
+    stepping = true;
+    px_scene->simulate(p_step);
     if (!PhysXServer3D::get_singleton()->is_async_stepping()) {
         px_scene->fetchResults(true);
-        _finish_step();
         stepping = false;
+        _finish_step();
     }
 }
 
@@ -294,8 +299,11 @@ void PhysXSpace3D::sync() {
         return;
     }
     px_scene->fetchResults(true);
-    _finish_step();
+    // Clear stepping BEFORE _finish_step: the post pipeline issues scene
+    // queries (CPU soft bodies), and a re-entrant sync() while stepping is
+    // still set would fetch-and-recurse.
     stepping = false;
+    _finish_step();
 }
 
 // Everything after fetchResults, shared by the sync and async paths. Runs on

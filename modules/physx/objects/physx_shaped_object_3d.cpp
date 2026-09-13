@@ -156,9 +156,15 @@ void PhysXShapedObject3D::shape_changed(PhysXShape3D *p_shape) {
             }
             if (record.px_shape) {
                 record.px_shape->setContactOffset(p_shape->get_margin());
+                // Re-apply the space rest offset: setContactOffset above resets
+                // the generation distance to the margin, which would leave
+                // restOffset >= contactOffset (invalid) when the space mapped
+                // CONTACT_MAX_ALLOWED_PENETRATION onto this shape.
+                physx_apply_space_rest_offset(record.px_shape, p_shape->get_margin(), space);
             }
             if (record.detection_shape) {
                 record.detection_shape->setContactOffset(p_shape->get_margin());
+                physx_apply_space_rest_offset(record.detection_shape, p_shape->get_margin(), space);
             }
         }
     }
