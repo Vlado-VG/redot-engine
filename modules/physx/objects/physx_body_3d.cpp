@@ -969,8 +969,17 @@ void PhysXBody3D::set_shape_disabled(int p_shape_idx, bool p_disabled) {
     if (shapes[p_shape_idx].px_shape) {
         // A body shape is a simulation shape (not a trigger). Disabling it
         // means removing it from both simulation and queries until re-enabled.
+        // Re-enabling must NOT restore eSIMULATION_SHAPE on a concave shape
+        // attached to a non-kinematic dynamic body: those shapes were created
+        // query-only because PhysX forbids mesh/heightfield/plane simulation
+        // shapes on dynamic actors (REG-0014).
+        physx::PxRigidDynamic *dyn = get_px_dynamic();
+        const bool sim_allowed = dyn == nullptr ||
+                (dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) ||
+                !shapes[p_shape_idx].shareable_shape ||
+                shapes[p_shape_idx].shareable_shape->is_convex();
         shapes[p_shape_idx].px_shape->setFlag(
-            physx::PxShapeFlag::eSIMULATION_SHAPE, !p_disabled);
+            physx::PxShapeFlag::eSIMULATION_SHAPE, !p_disabled && sim_allowed);
         shapes[p_shape_idx].px_shape->setFlag(
             physx::PxShapeFlag::eSCENE_QUERY_SHAPE, !p_disabled);
     }

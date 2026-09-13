@@ -75,6 +75,9 @@ internal static class BodyTests {
         s.Add("PHYSX-BODY-053", "CCD on: fast sphere is blocked by thin wall", CcdOnBlocks);
         s.Add("PHYSX-BODY-054", "CCD on: multiple speeds and diagonal impacts stay this side", CcdSpeedsAndDiagonal);
         s.Add("PHYSX-BODY-055", "CCD flag toggling changes behavior of same body", CcdToggle);
+        // --- mode round-trip / shape-flag regressions ---
+        s.Add("PHYSX-BODY-056", "static->rigid round-trip keeps convex shapes colliding (rebuild_shapes)", ModeRoundTripKeepsConvexCollision);
+        s.Add("PHYSX-BODY-057", "disable/re-enable: convex restores collision, concave stays query-only on dynamic", DisabledShapeRoundTrip);
     }
 
     // ------------------------------------------------------------------ modes
@@ -147,6 +150,74 @@ internal static class BodyTests {
         yield return Wait.Frames(40);
         Assert.ExpectNear(w.Pos(b).Origin.Y, 0.4f, 0.25f, "body stays rested after mode cycles");
         Assert.Expect(PhysxWorld.Finite(w.Pos(b)) && PhysxWorld.Finite(w.Vel(b)), "state finite after mode cycles");
+    }
+
+    // Static <-> dynamic switches recreate the PxRigidActor, and rebuild_shapes()
+    // re-creates every PxShape against it. The convex box must come back as a
+    // SIMULATION shape each time — a body that was ever static still collides
+    // after the switch (and does not fall through the floor).
+    static IEnumerator ModeRoundTripKeepsConvexCollision() {
+        using var w = new PhysxWorld();
+        var b = w.MakeBody(w.Box(0.5f), new Vector3(0, 6, 0), mode: PhysicsServer3D.BodyMode.Static);
+        yield return Wait.Frames(10);
+        Assert.ExpectNear(w.Pos(b).Origin.Y, 6f, 1e-3f, "static phase: frozen mid-air");
+
+        // static -> rigid #1: first actor recreation.
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Rigid);
+        yield return Wait.UntilOrFail(() => w.Pos(b).Origin.Y < 0.7f, 240, "lands after static->rigid");
+        yield return Wait.Frames(90); // settle (or fall through with the regression)
+        float y1 = w.Pos(b).Origin.Y;
+        Assert.Expect(y1 > 0.2f, $"rests above floor after static->rigid (y={y1})");
+        Assert.ExpectNear(y1, 0.5f, 0.25f, "rest height matches box half-extent");
+
+        // rigid -> static -> rigid #2: second actor recreation round-trip.
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Static);
+        yield return Wait.Frames(10);
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Rigid);
+        yield return Wait.Frames(120);
+        float y2 = w.Pos(b).Origin.Y;
+        Assert.Expect(y2 > 0.2f, $"still rests above floor after rigid->static->rigid (y={y2})");
+        Assert.Expect(y2 < 1.0f, $"did not launch after round-trip (y={y2})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)) && PhysxWorld.Finite(w.Vel(b)), "state finite after round-trip");
+    }
+
+    // set_shape_disabled strips eSIMULATION_SHAPE+eSCENE_QUERY_SHAPE; re-enabling
+    // must restore them — except on a concave shape attached to a non-kinematic
+    // dynamic body, where PhysX forbids the simulation flag (REG-0014): that one
+    // comes back query-only (still ray-hittable, still non-solid).
+    static IEnumerator DisabledShapeRoundTrip() {
+        using var w = new PhysxWorld();
+
+        // Convex: disable mid-air (no collision, body keeps falling), re-enable,
+        // and the body must land on the floor again.
+        var b = w.MakeBody(w.Box(0.5f), new Vector3(0, 8, 0));
+        yield return Wait.Frames(5);
+        PhysicsServer3D.BodySetShapeDisabled(b, 0, true);
+        yield return Wait.Frames(30);
+        Assert.Expect(w.Pos(b).Origin.Y < 7.5f, "disabled shape: body falls uncollided");
+        PhysicsServer3D.BodySetShapeDisabled(b, 0, false);
+        yield return Wait.UntilOrFail(() => w.Pos(b).Origin.Y < 0.7f, 240, "lands after re-enable");
+        yield return Wait.Frames(90);
+        float y = w.Pos(b).Origin.Y;
+        Assert.ExpectNear(y, 0.5f, 0.25f, "convex re-enable restores collision (rests on floor)");
+
+        // Concave on a dynamic body: created query-only (REG-0014). A
+        // disable/re-enable cycle must keep it query-only (ray still hits) and
+        // must never make the falling body solid.
+        var quad = w.Concave(
+            new Vector3(-1, 0, -1), new Vector3(1, 0, -1), new Vector3(-1, 0, 1),
+            new Vector3(-1, 0, 1), new Vector3(1, 0, -1), new Vector3(1, 0, 1));
+        var c = w.MakeBody(quad, new Vector3(5, 6, 5));
+        yield return Wait.Frames(5);
+        PhysicsServer3D.BodySetShapeDisabled(c, 0, true);
+        yield return Wait.Frames(5);
+        PhysicsServer3D.BodySetShapeDisabled(c, 0, false);
+        yield return Wait.Frames(5);
+        float qy = w.Pos(c).Origin.Y;
+        var hit = w.Ray(new Vector3(5, qy + 1, 5), new Vector3(5, qy - 1, 5));
+        Assert.Expect(hit.Count > 0, "re-enabled concave shape is still queryable (ray hits)");
+        yield return Wait.Frames(90);
+        Assert.Expect(w.Pos(c).Origin.Y < 0f, $"concave body on dynamic actor never becomes solid (y={w.Pos(c).Origin.Y})");
     }
 
     // ------------------------------------------------------------------ states

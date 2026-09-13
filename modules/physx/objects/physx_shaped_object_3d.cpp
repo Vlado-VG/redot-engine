@@ -353,21 +353,27 @@ void PhysXShapedObject3D::rebuild_shapes() {
 	physx::PxPhysics &physics = PhysXServer3D::get_singleton()->get_physics();
 	physx::PxMaterial *material = _get_shape_material();
 
-	// Determine if this is a non-kinematic dynamic body — same logic as add_shape()
-	// so concave shapes get the correct flags during rebuild after a mode switch.
-	bool concave_on_dynamic = false;
-	physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
+	// Is this actor a non-kinematic dynamic body? The per-shape is_convex()
+	// check happens inside the loop (exactly like add_shape()): concave shapes
+	// on such actors must be created query-only, but convex shapes must keep
+	// eSIMULATION_SHAPE — otherwise a body that went through an actor-recreating
+	// mode switch (static ↔ dynamic) would lose simulation on ALL of its shapes
+	// and fall through the world.
 	physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>();
-	if (dyn && !(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
-		concave_on_dynamic = true;
-		shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
-	}
+	const bool dynamic_non_kinematic = dyn && !(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC);
 
 	for (AttachedShape &record : shapes) {
 		// The old px_shape was released when the previous PxActor was released.
 		record.px_shape = nullptr;
 		if (!record.shareable_shape) {
 			continue;
+		}
+
+		// Per-shape flags (REG-0014): only concave geometries on a non-kinematic
+		// dynamic actor degrade to query-only.
+		physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
+		if (dynamic_non_kinematic && !record.shareable_shape->is_convex()) {
+			shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
 		}
 
 		// Body scale + per-shape transform scale, per record (each attached
