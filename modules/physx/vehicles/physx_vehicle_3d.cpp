@@ -1493,6 +1493,14 @@ void PhysXVehicle3D::allocate_wheel_buffers(int p_count) {
 	in_wheel_drive_torque.resize(p_count);
 	in_wheel_brake_torque.resize(p_count);
 	in_wheel_steer_angle.resize(p_count);
+	// The steer-angle cache must match the wheel count immediately:
+	// vehicle_get_wheel_steer_angles() reads it before the first
+	// write_commands() has ever run (scripts poll it between
+	// vehicle_set_wheel_count() and the first completed step).
+	computed_steer_angles.resize(p_count);
+	for (float &angle : computed_steer_angles) {
+		angle = 0.0f;
+	}
 	for (int i = old_count; i < p_count; i++) {
 		wheel_flags[i] = WheelFlags();
 		in_wheel_drive_torque[i] = 0.0f;
@@ -1526,6 +1534,17 @@ void PhysXVehicle3D::apply_wheel_params(int p_idx, const Dictionary &p_params) {
 	if (p_params.has("suspension_travel")) sp.suspensionTravelDist = (float)(double)p_params["suspension_travel"];
 	if (p_params.has("local_pose")) {
 		physx::PxTransform shape_pose = _to_px_transform((Transform3D)p_params["local_pose"]);
+		// vehicle2's rigid-body frame is the chassis CENTER-OF-MASS frame,
+		// while the caller specifies the wheel attachment in the chassis
+		// actor (body) frame. Convert so the suspension raycasts land where
+		// the caller positioned them; without this, any chassis whose COM is
+		// offset from the body origin (every real vehicle with asymmetric
+		// collision shapes) casts its wheel rays from a displaced position
+		// and the wheels miss the ground.
+		if (chassis_actor) {
+			const physx::PxTransform com = chassis_actor->getCMassLocalPose();
+			shape_pose = com.getInverse() * shape_pose;
+		}
 		sp.suspensionAttachment = shape_pose;
 		v2->wheel_shape_local_poses[p_idx] = shape_pose;
 		v2->wheel_local_poses[p_idx].localPose = shape_pose;

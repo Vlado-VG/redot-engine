@@ -274,8 +274,6 @@ void PhysXSpace3D::step(float p_step) {
         vehicle->update(p_step);
     }
 
-    px_scene->simulate(p_step);
-
     // Synchronous mode (default): simulate + block in the same call — the
     // historic behavior. Async mode (physics/physx_3d/simulation/async_step):
     // return with the solve in flight; sync() — called by the engine at the
