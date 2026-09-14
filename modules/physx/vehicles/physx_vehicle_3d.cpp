@@ -1350,10 +1350,16 @@ void PhysXVehicle3D::write_commands() {
 		if (wheelbase > 1e-4f && track > 1e-4f && Math::abs(delta) > 1e-4f) {
 			// Pure Ackermann: both steered wheels point at the same turn center.
 			// cot(inner) = cot(delta) - track/(2*wheelbase) (inner steers more).
-			const float cot_delta = Math::cos(delta) / Math::sin(delta);
+			// Work on |delta| and re-apply the sign: cot(delta) is negative for
+			// a right-hand (negative) command, and atan2(1, negative) returns a
+			// second-quadrant angle (~pi) which would steer the wheels clean
+			// around. Plain atan(1/x) on positive x stays in the right quadrant;
+			// positive-steer results are unchanged (atan2(1, x>0) == atan(1/x)).
+			const float adelta = Math::abs(delta);
+			const float cot = Math::cos(adelta) / Math::sin(adelta);
 			const float half_track_over_L = (0.5f * track) / wheelbase;
-			const float inner = Math::atan2(1.0f, cot_delta - half_track_over_L);
-			const float outer = Math::atan2(1.0f, cot_delta + half_track_over_L);
+			const float inner = Math::atan(1.0f / MAX(cot - half_track_over_L, 0.001f));
+			const float outer = Math::atan(1.0f / MAX(cot + half_track_over_L, 0.001f));
 			const float p = CLAMP(ackermann_percent, 0.0f, 100.0f) / 100.0f;
 			// Turn direction: delta > 0 yaws the vehicle toward its -X side
 			// (frame lng = -Z, lat = -X; validated by PHYSX-VEHI-014, which
@@ -1364,7 +1370,8 @@ void PhysXVehicle3D::write_commands() {
 				if (wheel_flags[i].steer) {
 					const bool wheel_on_neg_x = v2->wheel_shape_local_poses[i].p.x < 0.0f;
 					const bool is_inner = (wheel_on_neg_x == turn_toward_neg_x);
-					const float target = delta + p * ((is_inner ? inner : outer) - delta);
+					const float target = (delta > 0.0f ? 1.0f : -1.0f) *
+							(adelta + p * ((is_inner ? inner : outer) - adelta));
 					computed_steer_angles[i] = target;
 					v2->steer_response_params.wheelResponseMultipliers[i] = target * steer_inv;
 				} else {

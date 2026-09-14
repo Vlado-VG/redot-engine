@@ -29,6 +29,7 @@ internal static class VehicleTests {
         s.Add("PHYSX-VEHI-016", "Ackermann inner wheel matches the measured turn side", AckermannTurnDirection);
         s.Add("PHYSX-VEHI-017", "2-wheeler balance assist keeps the bike upright", TwoWheelerBalances);
         s.Add("PHYSX-VEHI-018", "balance telemetry reports lean/roll-rate/assist", BalanceTelemetry);
+        s.Add("PHYSX-VEHI-019", "Ackermann negative steer mirrors left-turn geometry, yaws toward +X", AckermannNegative);
     }
 
     static (Rid chassis, Rid vehicle) MakeVehicle(PhysxWorld w, int archetype = 0, float mass = 800f) {
@@ -235,7 +236,7 @@ internal static class VehicleTests {
     }
 
     // ------------------------------------------------------------------
-    // Ackermann steering (PHYSX-VEHI-014/015/016)
+    // Ackermann steering (PHYSX-VEHI-014/015/016/019)
     // ------------------------------------------------------------------
 
     static IEnumerator AckermannAngles() {
@@ -301,6 +302,40 @@ internal static class VehicleTests {
         Assert.Expect(inner > outer,
                 $"inner wheel steers more than the outer on the measured turn side " +
                 $"(inner={inner:F4} outer={outer:F4} turnedNegX={turnedTowardNegX})");
+    }
+
+    // Regression for the right-hand-steer quadrant bug: the Ackermann pair was
+    // computed with atan2(1, cot(delta)), and cot(delta) goes negative for a
+    // right command, producing second-quadrant (~pi) wheel angles that spun
+    // the car instead of turning it. MakeVehicle wheel order: 0 = left-front,
+    // 1 = right-front.
+    static IEnumerator AckermannNegative() {
+        using var w = new PhysxWorld();
+        var (chassis, v) = MakeVehicle(w);
+        VehicleApi.SetAckermannParams(v, new Godot.Collections.Dictionary {
+            ["enabled"] = true,
+            ["percent"] = 100.0f,
+        });
+        VehicleApi.SetControlInputs(v, 0f, 0f, -0.5f, 0f);
+        yield return Wait.Frames(2);
+        var angles = VehicleApi.GetWheelSteerAngles(v);
+        Assert.Expect(angles.Length == 4, $"4 per-wheel steer angles (got {angles.Length})");
+        Assert.Expect(Mathf.Abs(angles[0]) < 0.5f && Mathf.Abs(angles[1]) < 0.5f,
+                $"steer angles stay sane for a right command (l={angles[0]:F3} r={angles[1]:F3})");
+        float mean = 0.5f * (angles[0] + angles[1]);
+        Assert.Expect(Mathf.Abs(mean + 0.3f) < 0.02f,
+                $"mean road-wheel angle tracks the commanded -0.3 rad (mean={mean:F4})");
+        Assert.Expect(Mathf.Abs(angles[1]) > Mathf.Abs(angles[0]),
+                $"inner wheel is on the turn side (+X) (l={angles[0]:F4} r={angles[1]:F4})");
+        // End-to-end: driving forward with a held right command must yaw the
+        // chassis toward +X.
+        yield return Wait.Frames(20);
+        VehicleApi.SetControlInputs(v, 1f, 0f, 0f, 0f);
+        yield return Wait.Frames(90);
+        VehicleApi.SetControlInputs(v, 0.6f, 0f, -1f, 0f);
+        yield return Wait.Frames(90);
+        var fwd = -w.Pos(chassis).Basis.Z;
+        Assert.Expect(fwd.X > 0.1f, $"right command yaws the chassis toward +X (fwd.X={fwd.X:F2})");
     }
 
     // ------------------------------------------------------------------
