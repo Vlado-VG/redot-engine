@@ -1,4 +1,4 @@
-// Areas: lifecycle, shape bookkeeping, monitoring behavior (enter/exit via
+﻿// Areas: lifecycle, shape bookkeeping, monitoring behavior (enter/exit via
 // managed delegates), filtering, and — most importantly — measured space
 // overrides (gravity/damping modes, priority) rather than getter round-trips.
 
@@ -24,6 +24,7 @@ internal static class AreaTests {
         s.Add("PHYSX-AREA-013", "monitor callback removed: no further events", MonitorCallbackCleared);
         s.Add("PHYSX-AREA-014", "area shape add/remove/clear bookkeeping", ShapeBookkeeping);
         s.Add("PHYSX-AREA-015", "area body leaves area when falling through", ExitByFalling);
+        s.Add("PHYSX-AREA-016", "monitoring-only moving area keeps a sleeping body asleep", MonitoringMoveKeepsSleep);
     }
 
     static IEnumerator AreaPlumbing() {
@@ -238,5 +239,29 @@ internal static class AreaTests {
         var b = w.MakeBody(w.Box(0.3f), new Vector3(0, 5.2f, 0));
         yield return Wait.UntilOrFail(() => exits >= 1 && w.Pos(b).Origin.Y < 2f, 400, "body falls out of area");
         Assert.Expect(exits >= 1, "exit fired when body left the volume");
+    }
+    // F-13: a monitoring-only area sweeping across a sleeping body must track
+    // the overlap (monitor callbacks keep firing) WITHOUT waking it.
+    static IEnumerator MonitoringMoveKeepsSleep() {
+        using var w = new PhysxWorld();
+        var b = w.MakeBody(w.Sphere(0.25f), new Vector3(0, 3, 0));
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Sleeping, true);
+
+        int events = 0;
+        var area = w.MakeArea(w.Box(1f, 2f, 1f), new Vector3(0, 3, 0));
+        PhysicsServer3D.AreaSetMonitorCallback(area, Callable.From(
+            (Variant s, Variant r, Variant i, Variant a, Variant b2) => { events++; }));
+
+        // Sweep the area across the sleeping body and back: MakeArea baked the
+        // position into the shape's LOCAL transform, so the sweep pose carries
+        // only the x offset.
+        for (int f = 0; f < 90; f++) {
+            float x = -3f + (f % 30) * 0.2f;
+            PhysicsServer3D.AreaSetTransform(area, new Transform3D(Basis.Identity, new Vector3(x, 0, 0)));
+            yield return Wait.Frame();
+        }
+        Assert.Expect(events > 0, $"monitoring still tracks the sleeping body ({events} events)");
+        bool asleep = (bool)PhysicsServer3D.BodyGetState(b, PhysicsServer3D.BodyState.Sleeping);
+        Assert.Expect(asleep, "sleeping body stays asleep under a monitoring-only moving area");
     }
 }

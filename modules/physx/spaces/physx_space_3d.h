@@ -319,6 +319,12 @@ private:
     LocalVector<TriggerEvent> pending_trigger_events;
     bool flushing_callbacks = false;
 
+    // Bodies that were ACTIVE during the previous step (F-11 sync gating):
+    // bodies in this list that are no longer active just fell asleep and get
+    // one final sync. Tracking the *active* set (not the synced set) is what
+    // makes the final sync happen exactly once. Cleaned in unregister_body().
+    LocalVector<PhysXBody3D *> prev_active_bodies;
+
     // Debug-contact buffer for the "Visible Collision Shapes" overlay.
     // Reset (count = 0) at the start of each step; filled by onContact.
     Vector<Vector3> debug_contacts_buffer;

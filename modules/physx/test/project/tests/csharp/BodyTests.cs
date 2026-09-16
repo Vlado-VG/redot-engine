@@ -1,4 +1,4 @@
-// Bodies: modes and transitions, state access cross-checks, force/impulse
+﻿// Bodies: modes and transitions, state access cross-checks, force/impulse
 // integration (analytic where possible), parameter behavior (mass, gravity
 // scale, damping, restitution, friction, COM, inertia), axis locks, sleeping,
 // and CCD. Round-trip-only params are marked as plumbing in their IDs.
@@ -83,6 +83,7 @@ internal static class BodyTests {
         s.Add("PHYSX-BODY-060", "scaled sphere rests at the scaled radius; inertia finite", ScaledSphereRest);
         s.Add("PHYSX-BODY-061", "mirrored body scale flips asymmetric convex collision", MirroredConvexCollision);
         s.Add("PHYSX-BODY-062", "scaled area covers the scaled volume (gravity override)", ScaledAreaGravityOverride);
+        s.Add("PHYSX-BODY-063", "sleeping body emits no state-sync callbacks until woken", SleepGatesStateSync);
     }
 
     // ------------------------------------------------------------------ modes
@@ -960,5 +961,23 @@ internal static class BodyTests {
             $"inside the scaled zero-g area: no fall (y={w.Pos(inside).Origin.Y:F2})");
         Assert.Expect(w.Pos(outside).Origin.Y < 4.5f,
             $"control body outside the scaled area falls (y={w.Pos(outside).Origin.Y:F2})");
+    }
+    // F-11: a continuously sleeping body must not receive state-sync callbacks
+    // (zero per-step cost); waking resumes them.
+    static IEnumerator SleepGatesStateSync() {
+        using var w = new PhysxWorld();
+        var b = w.MakeBody(w.Sphere(0.25f), new Vector3(0, 3, 0));
+        int syncs = 0;
+        PhysicsServer3D.BodySetStateSyncCallback(b, Callable.From((Variant state) => { syncs++; }));
+        yield return Wait.Frames(10); // falling, awake
+        Assert.Expect(syncs > 0, "awake body syncs");
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Sleeping, true);
+        yield return Wait.Frames(2);
+        syncs = 0;
+        yield return Wait.Frames(30);
+        Assert.Expect(syncs == 0, $"continuously sleeping body emits no state syncs (got {syncs})");
+        PhysicsServer3D.BodyApplyCentralImpulse(b, new Vector3(0.3f, 0, 0));
+        yield return Wait.Frames(5);
+        Assert.Expect(syncs > 0, "waking body resumes state syncs");
     }
 }

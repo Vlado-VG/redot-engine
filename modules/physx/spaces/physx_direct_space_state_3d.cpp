@@ -917,6 +917,13 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
 
     constexpr int MAX_RECOVER_ITERATIONS = 4;
     constexpr float MIN_PENETRATION_THRESHOLD = 1e-5f;
+    // godot_physics_3d contract (godot_space_3d.cpp): the margin floors at
+    // 1e-4, derives a contact-depth slack (margin * 0.05) below which
+    // penetration counts as rest separation rather than a stuck body, and
+    // each recovery pass applies only 40% of the remaining MTD.
+    const float effective_margin = MAX(p_margin, 0.0001f);
+    const float min_contact_depth = effective_margin * 0.05f;
+    const float recovery_scale = 0.4f;
 
     Vector3 total_recovery;
     bool recovered = false;
@@ -1031,10 +1038,13 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                         hit_geom.any(), hit_pose
                     );
 
-                    if (is_pen && penetration_depth > MIN_PENETRATION_THRESHOLD) {
+                    // Penetration shallower than the margin-derived slack is
+                    // rest separation, not a stuck body -- leave it alone.
+                    const float effective_depth = penetration_depth - min_contact_depth;
+                    if (is_pen && effective_depth > MIN_PENETRATION_THRESHOLD) {
                         penetrating_in_this_iter = true;
                         Vector3 recovery_dir(mtd_dir.x, mtd_dir.y, mtd_dir.z);
-                        Vector3 pen_vector = recovery_dir * penetration_depth;
+                        Vector3 pen_vector = recovery_dir * effective_depth;
 
                         if (step_recovery.length_squared() == 0.0f) {
                             step_recovery = pen_vector;
@@ -1054,7 +1064,7 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
             break;
         }
 
-        total_recovery += step_recovery;
+        total_recovery += step_recovery * recovery_scale;
         recovered = true;
     }
 

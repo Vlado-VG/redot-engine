@@ -194,8 +194,17 @@ void PhysXArea3D::set_transform(const Transform3D &p_transform) {
 	// forbidden while a solve is in flight (async stepping). Skip it
 	// mid-flight: the kinematic target still applies, and bodies at the
 	// destination wake through normal solver interaction.
+	// Gated on override presence (F-13): the wake exists so gravity/damp
+	// overrides apply promptly at the destination — a pure monitoring area
+	// imposes nothing on the bodies it sweeps over, so waking them (and
+	// paying the overlap query per move) is pure overhead that keeps
+	// sleeping stacks from ever settling. Wind is unaffected: sleeping
+	// bodies receive it from their own pre-step, and the trigger pairs
+	// driving the overlap lists are re-evaluated by the kinematic move.
 	if (!space || !space->is_stepping()) {
-		_wake_overlapping_dynamic_bodies(pose);
+		if (has_gravity_override() || has_linear_damp_override() || has_angular_damp_override()) {
+			_wake_overlapping_dynamic_bodies(pose);
+		}
 	}
 }
 

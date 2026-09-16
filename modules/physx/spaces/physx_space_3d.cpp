@@ -26,6 +26,7 @@
 
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
+#include "core/templates/hash_set.h"
 
 // Refcount of spaces currently recording debug contacts. The simulation filter
 // shader is stateless, so it reads a module-global flag; we keep it accurate by
@@ -350,9 +351,57 @@ void PhysXSpace3D::_finish_step() {
         sb->step(last_step, gravity);
     }
 
-    // Post-step: derive kinematic velocities and fire state-sync callbacks so
-    // Godot nodes read the new transforms.
+    // Post-step sync, gated on actual activity (F-11): state-sync callbacks
+    // and kinematic velocity derivation only run for bodies whose simulation
+    // state changed this step -- the active actors, every kinematic (Godot
+    // fires their state callback every tick, and AnimatableBody3D's platform
+    // velocity must decay to zero when a moving platform stops), and the
+    // bodies synced last step that are no longer active (they just fell
+    // asleep; one final sync delivers the resting pose to the node).
+    // Continuously sleeping bodies cost zero callbacks -- a RigidBody3D's
+    // node sync only resumes when the body wakes.
+    LocalVector<PhysXBody3D *> sync_bodies;
+    HashSet<PhysXBody3D *> sync_set;
+    auto push_sync = [&](PhysXBody3D *body) {
+        if (body && !sync_set.has(body)) {
+            sync_set.insert(body);
+            sync_bodies.push_back(body);
+        }
+    };
+    LocalVector<PhysXBody3D *> now_active;
+    if (px_scene) {
+        physx::PxU32 nb_active = 0;
+        physx::PxActor **active = px_scene->getActiveActors(nb_active);
+        active_objects = (int)nb_active;
+        for (physx::PxU32 i = 0; i < nb_active; i++) {
+            if (!active[i] || !active[i]->userData) {
+                continue;
+            }
+            const PhysXActorUserData *ud = static_cast<const PhysXActorUserData *>(active[i]->userData);
+            if (ud->object && ud->object->get_type() == PhysXObject3D::OBJECT_TYPE_BODY) {
+                PhysXBody3D *body = static_cast<PhysXBody3D *>(ud->object);
+                push_sync(body);
+                now_active.push_back(body);
+            }
+        }
+    } else {
+        active_objects = 0;
+    }
     for (PhysXBody3D *body : bodies) {
+        if (body->get_mode() == PhysicsServer3D::BODY_MODE_KINEMATIC) {
+            push_sync(body);
+        }
+    }
+    for (PhysXBody3D *body : prev_active_bodies) {
+        // Newly asleep: fire the callback once more so the node sees the
+        // final resting pose. prev_active_bodies is replaced by the CURRENT
+        // active set below, so this fires exactly once per sleep transition
+        // -- not once per tick for the rest of the body's life.
+        push_sync(body);
+    }
+    prev_active_bodies = now_active;
+
+    for (PhysXBody3D *body : sync_bodies) {
         body->on_post_step(last_step);
     }
 
@@ -362,14 +411,8 @@ void PhysXSpace3D::_finish_step() {
         vehicle->post_step(last_step);
     }
 
-    // Active-actor count for INFO_ACTIVE_OBJECTS (reflects the solve that
-    // just completed; in async mode it is read one phase later than the
-    // historic inline path).
-    if (px_scene) {
-        physx::PxU32 nb_active = 0;
-        px_scene->getActiveActors(nb_active);
-        active_objects = (int)nb_active;
-    }
+    // INFO_ACTIVE_OBJECTS now comes from the same getActiveActors() query the
+    // sync gate above consumed (reflects the solve that just completed).
 }
 
 void PhysXSpace3D::set_active(bool p_active) { active = p_active; }
@@ -552,8 +595,14 @@ void PhysXSpace3D::unregister_body(PhysXBody3D *p_body) {
     for (unsigned int i = 0; i < bodies.size(); i++) {
         if (bodies[i] == p_body) {
             bodies.remove_at(i);
-            return;
+            break;
         }
+    }
+    // Drop the body from the previous-active list too (it may be about to
+    // die): prev_active_bodies must never hold a dangling wrapper pointer.
+    const int64_t sync_idx = prev_active_bodies.find(p_body);
+    if (sync_idx != -1) {
+        prev_active_bodies.remove_at_unordered(sync_idx);
     }
 }
 

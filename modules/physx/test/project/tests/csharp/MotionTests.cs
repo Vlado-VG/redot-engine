@@ -1,4 +1,4 @@
-// Motion (body_test_motion): sweeps used by character controllers — hit
+﻿// Motion (body_test_motion): sweeps used by character controllers — hit
 // fractions, normals, collider ids, depenetration recovery, slopes, corners,
 // and multi-collision results.
 
@@ -22,6 +22,8 @@ internal static class MotionTests {
         s.Add("PHYSX-MOVE-011", "sweep across tiled concave floor seam blocks at the surface, not the seam", SweepMeshSeam);
         s.Add("PHYSX-MOVE-012", "sweep into concave wall seam reports the face normal at contact", SweepMeshWallNormal);
         s.Add("PHYSX-MOVE-013", "mesh-hit normal matches rest_info on the same setup", SweepMeshNormalMatchesRestInfo);
+        s.Add("PHYSX-MOVE-014", "recovery ignores rest-separation within the margin slack", RecoverMarginSlack);
+        s.Add("PHYSX-MOVE-015", "recovery applies 0.4 per pass (partial per call)", RecoverScaled);
     }
 
     static IEnumerator SweepHitsFloor() {
@@ -199,6 +201,52 @@ internal static class MotionTests {
         var restWall = w.RestInfo(w.Sphere(0.5f), new Transform3D(Basis.Identity, new Vector3(4.6f, 0.55f, 0)));
         Assert.Expect(restWall.Count > 0 && restWall["normal"].AsVector3().X < -0.9f,
             "rest_info normal -X on mesh wall (agrees with sweep)");
+        yield return Wait.Frame();
+    }
+    // godot_physics contract (godot_space_3d.cpp): recovery ignores penetration
+    // shallower than margin * 0.05 -- that is rest separation, not a stuck
+    // body -- so body_test_motion must report a clean, unmodified motion.
+    static IEnumerator RecoverMarginSlack() {
+        using var w = new PhysxWorld(false);
+        var wall = w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(0, 5, 0));
+        var body = w.MakeKinematic(w.Box(0.4f), new Vector3(3, 5, 0));
+        // Embedded 0.002 into the wall face at x = 0.5: center 0.5 + 0.4 - 0.002.
+        // Margin 0.1 -> slack 0.005 -> this overlap is within the slack.
+        var from = new Transform3D(Basis.Identity, new Vector3(0.898f, 5, 0));
+        var p = new PhysicsTestMotionParameters3D {
+            From = from,
+            Motion = new Vector3(0.01f, 0, 0),
+            RecoveryAsCollision = false,
+            Margin = 0.1f,
+        };
+        var r = new PhysicsTestMotionResult3D();
+        PhysicsServer3D.BodyTestMotion(body, p, r);
+        Assert.ExpectNear(r.GetTravel().X, 0.01f, 1e-4f,
+            $"slack-covered penetration is not recovered (travel.x={r.GetTravel().X:F4})");
+        Assert.Expect(r.GetCollisionCount() == 0, "slack-covered overlap is not reported as a collision");
+        yield return Wait.Frame();
+    }
+
+    // godot_physics contract: each recovery pass applies 40% of the remaining
+    // MTD (4 passes), so one call recovers most -- but never all -- of a deep
+    // embedment. Embedded 0.2 -> expect roughly 0.2 * (1 - 0.6^4) ~ 0.174.
+    static IEnumerator RecoverScaled() {
+        using var w = new PhysxWorld(false);
+        var wall = w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(0, 5, 0));
+        var body = w.MakeKinematic(w.Box(0.4f), new Vector3(3, 5, 0));
+        // Embedded 0.2 into the wall face at x = 0.5: center 0.5 + 0.4 - 0.2.
+        var from = new Transform3D(Basis.Identity, new Vector3(0.7f, 5, 0));
+        var p = new PhysicsTestMotionParameters3D {
+            From = from,
+            Motion = new Vector3(0.01f, 0, 0),
+            RecoveryAsCollision = false,
+            Margin = 0.01f,
+        };
+        var r = new PhysicsTestMotionResult3D();
+        PhysicsServer3D.BodyTestMotion(body, p, r);
+        float recovered = r.GetTravel().X - 0.01f;
+        Assert.Expect(recovered > 0.12f && recovered < 0.195f,
+            $"0.4-scaled recovery recovers part of the embedment ({recovered:F3} of 0.2)");
         yield return Wait.Frame();
     }
 }
