@@ -111,12 +111,28 @@ int PhysXArticulation3D::add_link(int p_parent_index,
 		parent_link = links[p_parent_index].link;
 	}
 
+	// SDK rule (PxArticulationReducedCoordinate.h): creating a link is not
+	// allowed while the articulation is in a scene -- remove it around the
+	// createLink call and re-add afterwards, so building a chain while
+	// attached to a space works instead of failing with a null link.
+	physx::PxScene *scene = px_articulation->getScene();
+	if (scene) {
+		scene->removeArticulation(*px_articulation);
+	}
+
 	// The link's pose is relative to its parent; the base link's pose is in
 	// world space (parent_frame carries the chain layout, the child frame the
 	// inbound joint anchor inside the new link).
 	physx::PxArticulationLink *link = px_articulation->createLink(
 			parent_link, physx_to_px(p_child_frame));
-	ERR_FAIL_NULL_V(link, -1);
+	if (!link) {
+		// Restore the scene membership even on failure -- the articulation
+		// stays usable.
+		if (scene) {
+			scene->addArticulation(*px_articulation);
+		}
+		ERR_FAIL_NULL_V(link, -1);
+	}
 
 	// Box collision shape so the link interacts with the world; mass
 	// properties derive from it at the requested density.
@@ -141,11 +157,20 @@ int PhysXArticulation3D::add_link(int p_parent_index,
 		joint->setChildPose(physx::PxTransform(physx::PxIdentity));
 	}
 
+	// The default box shape carries the recorded default filter (layer 1 /
+	// mask 1) so a fresh link actually collides -- zeroed filter data would
+	// read as "collides with nothing" until the user called the layer/mask
+	// setters explicitly.
 	LinkRecord rec;
 	rec.link = link;
 	rec.shape = shape;
 	rec.density = MAX(p_density, 0.001f);
 	links.push_back(rec);
+	_apply_link_filter(rec);
+
+	if (scene) {
+		scene->addArticulation(*px_articulation);
+	}
 	// Per-link mass properties are set by updateMassAndInertia() above; the
 	// reduced-coordinate solver aggregates them when the articulation is added
 	// to a scene.
@@ -281,13 +306,15 @@ void PhysXArticulation3D::set_fix_base(bool p_fix) {
 }
 
 void PhysXArticulation3D::wake_up() {
-	if (px_articulation) {
+	// wakeUp/putToSleep are only valid for articulations in a scene (SDK
+	// contract); a detached articulation is implicitly at rest anyway.
+	if (px_articulation && px_articulation->getScene()) {
 		px_articulation->wakeUp();
 	}
 }
 
 void PhysXArticulation3D::put_to_sleep() {
-	if (px_articulation) {
+	if (px_articulation && px_articulation->getScene()) {
 		px_articulation->putToSleep();
 	}
 }
@@ -310,6 +337,11 @@ Transform3D PhysXArticulation3D::get_link_transform(int p_index) const {
 
 bool PhysXArticulation3D::is_sleeping() const {
 	if (!px_articulation) {
+		return true;
+	}
+	// isSleeping() is only valid for articulations in a scene (SDK contract);
+	// a detached articulation never simulates, so report it as sleeping.
+	if (!px_articulation->getScene()) {
 		return true;
 	}
 	return px_articulation->isSleeping();

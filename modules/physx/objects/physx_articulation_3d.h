@@ -7,8 +7,9 @@
  * and is simulated as a single actor inside a PxScene. This skeleton wires
  * the full lifecycle (create / add links / drives / limits / free) plus
  * world-pose readback for rendering. It is NOT a complete feature set:
- *tendons, mimics, aggregates, per-link collision filtering and link-level
- * velocity queries are not exposed yet (marked TODO).
+ * tendons, mimics, aggregates and per-link shape transforms beyond the box
+ * placeholder are not exposed yet (marked TODO). Per-link collision
+ * filtering and link-level velocity queries ARE exposed (see the API list).
  *
  * API surface (via PhysXServer3D, all indices 0-based):
  *   articulation_create()                       -> RID
@@ -83,7 +84,7 @@ public:
 	int get_link_count() const;
 	/// World-space pose of the link (poll for rendering).
 	Transform3D get_link_transform(int p_index) const;
-	/// True while any link of the articulation is awake.
+	/// True while the articulation is sleeping (all links at rest).
 	bool is_sleeping() const;
 
 	/// Replaces the link's collision shape with a per-link instance of the

@@ -2455,9 +2455,11 @@ void PhysXServer3D::init() {
  * @brief Tears down the PhysX SDK in reverse init order.
  *
  * Wrappers must be freed BEFORE releasing PxPhysics, so their PxActors are
- * removed from still-valid scenes. The order is: joints â†’ bodies â†’ areas â†’
- * shapes â†’ spaces. This prevents use-after-free when body/area destructors
- * call _destroy_actor which accesses their space.
+ * removed from still-valid scenes. The order is: joints -> vehicles ->
+ * bodies -> areas -> soft bodies -> articulations -> fluids -> cloths ->
+ * shapes -> spaces (vehicles borrow the chassis PxRigidDynamic; bodies/
+ * areas need their spaces alive when their destructors call
+ * _destroy_actor, which accesses space->remove_actor()).
  */
 void PhysXServer3D::finish() {
 	// Free wrappers before releasing PxPhysics, so their PxActors are removed

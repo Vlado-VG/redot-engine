@@ -1,4 +1,4 @@
-// Access to the module-specific vehicle2 API (PhysXServer3D inner singleton).
+﻿// Access to the module-specific vehicle2 API (PhysXServer3D inner singleton).
 //
 // The vehicle methods exist only on the inner PhysXServer3D class (they are not
 // part of PhysicsServer3D). On a C#-enabled build of this engine the generated
@@ -120,6 +120,7 @@ public static class VehicleApi {
     public static void SetWheelCount(Rid vehicle, int count) => Call("vehicle_set_wheel_count", vehicle, count);
     public static int AddWheel(Rid vehicle) => Call("vehicle_add_wheel", vehicle).AsInt32();
     public static void SetWheelParams(Rid vehicle, int idx, Godot.Collections.Dictionary p) => Call("vehicle_set_wheel_params", vehicle, idx, p);
+    public static void SetWheelDriveTorque(Rid vehicle, int idx, float torque) => Call("vehicle_set_wheel_drive_torque", vehicle, idx, torque);
     public static void SetControlInputs(Rid v, float throttle, float brake, float steer, float handbrake)
         => Call("vehicle_set_control_inputs", v, throttle, brake, steer, handbrake);
     public static void SetGearCommand(Rid v, int gear) => Call("vehicle_set_gear_command", v, gear);

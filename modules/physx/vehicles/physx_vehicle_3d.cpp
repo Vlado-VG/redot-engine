@@ -1153,6 +1153,9 @@ void PhysXVehicle3D::_rebuild() {
 	if (space) {
 		space->unregister_vehicle(this);
 	}
+	if (v2) {
+		physx::PxVehicleConstraintsDestroy(v2->physx_constraints);
+	}
 	delete v2;
 	v2 = nullptr;
 
@@ -1166,6 +1169,25 @@ void PhysXVehicle3D::_rebuild() {
 	v2 = (archetype == ARCHETYPE_DIRECT_DRIVE)
 			? build_direct_drive(*px_physics, *chassis_actor, wheel_count)
 			: build_engine_drive(*px_physics, *chassis_actor, wheel_count);
+
+	// Re-apply the cached tuning: the fresh v2 carries defaults, but the
+	// per-wheel and EngineDrive configuration the user applied before the
+	// wheel-count change must survive the re-assembly.
+	for (int i = 0; i < wheel_count && i < (int)cached_wheel_params.size(); i++) {
+		if (!cached_wheel_params[i].is_empty()) {
+			apply_wheel_params(i, cached_wheel_params[i]);
+		}
+	}
+	if (archetype == ARCHETYPE_ENGINE_DRIVE && v2) {
+		if (!cached_engine_params.is_empty()) set_engine_params(cached_engine_params);
+		if (!cached_clutch_params.is_empty()) set_clutch_params(cached_clutch_params);
+		if (!cached_gearbox_params.is_empty()) set_gearbox_params(cached_gearbox_params);
+		if (!cached_autobox_params.is_empty()) set_autobox_params(cached_autobox_params);
+		if (!cached_differential_params.is_empty()) set_differential_params(cached_differential_params);
+	}
+
+	physx::PxVehicleConstraintsCreate(v2->axle_description, *px_physics, *chassis_actor,
+			v2->physx_constraints);
 
 	_update_response_params();
 
@@ -1572,6 +1594,14 @@ void PhysXVehicle3D::allocate_wheel_buffers(int p_count) {
 }
 
 void PhysXVehicle3D::apply_wheel_params(int p_idx, const Dictionary &p_params) {
+	// Cache for _rebuild re-apply (see cached_wheel_params' own note).
+	if (p_idx >= 0) {
+		if (p_idx >= (int)cached_wheel_params.size()) {
+			cached_wheel_params.resize(p_idx + 1);
+		}
+		cached_wheel_params[p_idx] = p_params;
+	}
+
 	if (!v2 || p_idx < 0 || p_idx >= wheel_count) {
 		return;
 	}
@@ -1826,6 +1856,7 @@ void PhysXVehicle3D::set_engine_params(const Dictionary &p_params) {
 	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
 		return;
 	}
+	cached_engine_params = p_params;
 	if (p_params.has("moi")) v2->engine_params.moi = (float)(double)p_params["moi"];
 	if (p_params.has("peak_torque")) v2->engine_params.peakTorque = (float)(double)p_params["peak_torque"];
 	if (p_params.has("idle_omega")) v2->engine_params.idleOmega = (float)(double)p_params["idle_omega"];
@@ -1849,6 +1880,7 @@ void PhysXVehicle3D::set_clutch_params(const Dictionary &p_params) {
 	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
 		return;
 	}
+	cached_clutch_params = p_params;
 	if (p_params.has("max_response")) v2->clutch_response_params.maxResponse = (float)(double)p_params["max_response"];
 	if (p_params.has("estimate_iterations")) v2->clutch_params.estimateIterations = (int)p_params["estimate_iterations"];
 	if (p_params.has("accuracy_mode")) {
@@ -1862,6 +1894,7 @@ void PhysXVehicle3D::set_gearbox_params(const Dictionary &p_params) {
 	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
 		return;
 	}
+	cached_gearbox_params = p_params;
 	if (p_params.has("neutral_gear")) v2->gearbox_params.neutralGear = (int)p_params["neutral_gear"];
 	if (p_params.has("final_ratio")) v2->gearbox_params.finalRatio = (float)(double)p_params["final_ratio"];
 	if (p_params.has("switch_time")) v2->gearbox_params.switchTime = (float)(double)p_params["switch_time"];
@@ -1884,6 +1917,7 @@ void PhysXVehicle3D::set_autobox_params(const Dictionary &p_params) {
 	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
 		return;
 	}
+	cached_autobox_params = p_params;
 	const int cap = (int)physx::PxVehicleGearboxParams::eMAX_NB_GEARS;
 	if (p_params.has("up_ratio")) {
 		const float v = (float)(double)p_params["up_ratio"];
@@ -1904,6 +1938,7 @@ void PhysXVehicle3D::set_differential_params(const Dictionary &p_params) {
 	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
 		return;
 	}
+	cached_differential_params = p_params;
 	// Optional 4-wheel limited-slip biases/targets (0 = open). The per-wheel
 	// drive split (RWD/FWD/6x4) is handled in _update_response_params() from
 	// WheelFlags.traction, independent of these biases.

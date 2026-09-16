@@ -31,6 +31,8 @@ internal static class VehicleTests {
         s.Add("PHYSX-VEHI-018", "balance telemetry reports lean/roll-rate/assist", BalanceTelemetry);
         s.Add("PHYSX-VEHI-019", "Ackermann negative steer mirrors left-turn geometry, yaws toward +X", AckermannNegative);
         s.Add("PHYSX-VEHI-020", "surface_frictions grip table survives freeing the ground body", SurfaceFrictionsGroundFree);
+        s.Add("PHYSX-VEHI-021", "counter-rotating wheel torques yaw the chassis (skid steer)", SkidSteerYaws);
+        s.Add("PHYSX-VEHI-022", "vehicle follows the chassis into a new space", ChassisSpaceFollow);
     }
 
     static (Rid chassis, Rid vehicle) MakeVehicle(PhysxWorld w, int archetype = 0, float mass = 800f) {
@@ -439,5 +441,55 @@ internal static class VehicleTests {
                 "simulation healthy after freeing a surface_frictions ground body");
         Assert.Expect(VehicleApi.GetWheelCount(v) == 4, "vehicle still valid after ground free");
         Assert.Expect(PhysxWorld.Finite(w.Pos(chassis)), "chassis state stays finite after ground free");
+    }
+    // Signed per-wheel drive: left wheels forward (+), right wheels backward
+    // (-) must spin the chassis in place (tank turn) instead of clamping every
+    // wheel to the dominant direction.
+    static IEnumerator SkidSteerYaws() {
+        using var w = new PhysxWorld();
+        var (chassis, v) = MakeVehicle(w);
+        yield return Wait.Frames(25); // settle on wheels
+        float yaw0 = w.Pos(chassis).Basis.GetRotationQuaternion().GetEuler().Y;
+        // Wheels 0,1 = front axle (i%2 pattern: 0/1 left-right? MakeVehicle
+        // places x = -0.7 + 1.4*(i%2) -> even = left, odd = right).
+        for (int i = 0; i < 4; i++) {
+            float dir = (i % 2 == 0) ? 1f : -1f; // left forward, right backward
+            VehicleApi.SetWheelDriveTorque(v, i, 900f * dir);
+        }
+        yield return Wait.Frames(120);
+        float yaw1 = w.Pos(chassis).Basis.GetRotationQuaternion().GetEuler().Y;
+        float dyaw = yaw1 - yaw0;
+        dyaw = Mathf.Abs(Mathf.Atan2(Mathf.Sin(dyaw), Mathf.Cos(dyaw)));
+        Assert.Expect(dyaw > 0.25f, $"counter-rotating wheels yaw the chassis (dyaw={dyaw:F2} rad)");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(chassis)), "skid-steering state finite");
+        for (int i = 0; i < 4; i++) {
+            VehicleApi.SetWheelDriveTorque(v, i, 0f);
+        }
+    }
+
+    // The vehicle must follow its chassis into a new space: after
+    // body_set_space(chassis, other), driving still produces motion in the
+    // chassis's (new) world -- the vehicle's update loop re-homed with it.
+    static IEnumerator ChassisSpaceFollow() {
+        using var w = new PhysxWorld();
+        var ground = w.MakeStatic(w.Box(40f, 0.5f, 40f), new Vector3(0, -0.5f, 0));
+        var (chassis, v) = MakeVehicle(w);
+        yield return Wait.Frames(25);
+
+        // Move the chassis to a fresh space; the vehicle must follow. The
+        // ground moves with it so the wheels still have something to grip.
+        var otherSpace = PhysicsServer3D.SpaceCreate();
+        PhysicsServer3D.SpaceSetActive(otherSpace, true);
+        PhysicsServer3D.BodySetSpace(ground, otherSpace);
+        PhysicsServer3D.BodySetSpace(chassis, otherSpace);
+        yield return Wait.Frames(5);
+
+        float z0 = w.Pos(chassis).Origin.Z;
+        VehicleApi.SetControlInputs(v, 1f, 0f, 0f, 0f);
+        yield return Wait.Frames(120);
+        float dz = w.Pos(chassis).Origin.Z - z0;
+        Assert.Expect(Mathf.Abs(dz) > 1.5f,
+            $"vehicle still drives after the chassis moved spaces (|dz|={Mathf.Abs(dz):F2} m)");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(chassis)), "chassis state finite after space move");
     }
 }

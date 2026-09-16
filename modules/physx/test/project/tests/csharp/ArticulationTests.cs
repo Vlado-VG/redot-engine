@@ -1,4 +1,4 @@
-// Reduced-coordinate articulations (module API on the inner PhysXServer3D):
+﻿// Reduced-coordinate articulations (module API on the inner PhysXServer3D):
 // chain building, drives, per-link shapes and filtering, velocity readback.
 // Link indices are 0-based; joint types 0 FIX / 2 REVOLUTE; drive types
 // 0 FORCE / 1 ACCELERATION; axes 0 TWIST / 1 SWING1 / 2 SWING2 / 3 X / 4 Y / 5 Z.
@@ -15,6 +15,7 @@ internal static class ArticulationTests {
         s.Add("PHYSX-ART-003", "set_link_shape replaces the box (sphere rests on the new shape)", LinkShapeReplaces);
         s.Add("PHYSX-ART-004", "link velocity matches finite difference of the transform", LinkVelocityFiniteDifference);
         s.Add("PHYSX-ART-P-005", "link layer/mask round-trip [plumbing]", LinkFilterRoundtrip);
+        s.Add("PHYSX-ART-006", "links can be added while the articulation is in a space", AttachThenBuild);
     }
 
     /// <summary>Fixed-base two-link chain: base box at p_basePos, link 1 hanging
@@ -55,7 +56,11 @@ internal static class ArticulationTests {
         var art = Chain(w, new Vector3(0, 2, 0), new Vector3(0.5f, 0.1f, 0.5f)); // platform top ~1.6
         // Godot's layer test is an asymmetric OR: zeroing only the link's MASK
         // still leaves (link.layer & sphere.mask) matching. Zero both so no
-        // direction of the test can select the pair.
+        // direction of the test can select the pair. Both links get the zero
+        // filter: with solid defaults, the sphere would otherwise rest on the
+        // base post instead of testing the child platform's mask.
+        ArticulationApi.SetLinkCollisionLayer(art, 0, 0);
+        ArticulationApi.SetLinkCollisionMask(art, 0, 0);
         ArticulationApi.SetLinkCollisionLayer(art, 1, 0);
         ArticulationApi.SetLinkCollisionMask(art, 1, 0);
         ArticulationApi.SetSpace(art, w.Space);
@@ -73,6 +78,11 @@ internal static class ArticulationTests {
         var art = Chain(w, new Vector3(0, 2, 0), new Vector3(0.5f, 0.1f, 0.5f));
         var box = w.Box(0.5f, 0.1f, 0.5f);
         ArticulationApi.SetLinkShape(art, 1, box, Transform3D.Identity);
+        // The base link's default box is solid now (default layer/mask 1/1);
+        // move its shape aside so the center drop path reaches the child
+        // platform the test actually exercises.
+        ArticulationApi.SetLinkShape(art, 0, w.Box(0.1f, 0.5f, 0.1f),
+            new Transform3D(Basis.Identity, new Vector3(0.9f, 0, 0)));
         ArticulationApi.SetSpace(art, w.Space);
         ArticulationApi.Wake(art);
         yield return Wait.Frames(10);
@@ -120,6 +130,32 @@ internal static class ArticulationTests {
         ArticulationApi.SetLinkCollisionMask(art, 1, 0x40u);
         Assert.Expect(ArticulationApi.GetLinkCollisionLayer(art, 1) == 0x20u, "layer round-trip");
         Assert.Expect(ArticulationApi.GetLinkCollisionMask(art, 1) == 0x40u, "mask round-trip");
+        PhysicsServer3D.FreeRid(art);
+        yield return Wait.Frame();
+    }
+    // The SDK forbids createLink on an in-scene articulation; the wrapper now
+    // removes/re-adds the articulation around the call, so building a chain
+    // after articulation_set_space must succeed and stay simulated.
+    static IEnumerator AttachThenBuild() {
+        using var w = new PhysxWorld();
+        var art = ArticulationApi.Create();
+        ArticulationApi.SetSpace(art, w.Space);
+        int baseIdx = ArticulationApi.AddLink(art, -1, Transform3D.Identity,
+            new Transform3D(Basis.Identity, new Vector3(0, 4, 0)), 0 /*FIX*/, 1000f,
+            new Vector3(0.5f, 0.5f, 0.5f));
+        Assert.Expect(baseIdx == 0, $"base link created while attached (idx={baseIdx})");
+        int child = ArticulationApi.AddLink(art, baseIdx,
+            new Transform3D(Basis.Identity, new Vector3(0, -0.5f, 0)),
+            new Transform3D(Basis.Identity, new Vector3(0, 0.5f, 0)),
+            2 /*REVOLUTE*/, 1000f, new Vector3(0.3f, 0.3f, 0.3f));
+        Assert.Expect(child == 1, $"child link created while attached (idx={child})");
+        Assert.Expect(ArticulationApi.GetLinkCount(art) == 2, "both links registered");
+        ArticulationApi.SetFixBase(art, true);
+        ArticulationApi.Wake(art);
+        yield return Wait.Frames(30);
+        var t = ArticulationApi.GetLinkTransform(art, child);
+        Assert.Expect(PhysxWorld.Finite(t.Origin), "link transforms finite after in-scene build");
+        Assert.Expect(t.Origin.Y < 4.2f, "child link hangs below the base (scene is simulating)");
         PhysicsServer3D.FreeRid(art);
         yield return Wait.Frame();
     }

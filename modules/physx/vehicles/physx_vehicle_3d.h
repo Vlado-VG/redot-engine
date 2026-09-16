@@ -172,6 +172,18 @@ private:
 	//   Per-wheel role flags (steer / traction / brake / front).
 	LocalVector<WheelFlags> wheel_flags;
 
+	// --- rebuild-surviving configuration cache ---
+	// v2-resident tuning (per-wheel params, EngineDrive drivetrain params) is
+	// destroyed with v2 on _rebuild (a wheel-count change). These Godot-side
+	// caches hold the last-applied Dictionaries so _rebuild can re-apply the
+	// configuration instead of silently resetting it to defaults.
+	LocalVector<Dictionary> cached_wheel_params;
+	Dictionary cached_engine_params;
+	Dictionary cached_clutch_params;
+	Dictionary cached_gearbox_params;
+	Dictionary cached_autobox_params;
+	Dictionary cached_differential_params;
+
 	// --- tuning cache: written by server (vehicle_set_response_params), applied
 	// in _update_response_params(); -1 = built-in default ---
 	float tune_drive_torque = -1.0f;     // DirectDrive: per-wheel drive torque at full throttle (Nm).
