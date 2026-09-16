@@ -58,6 +58,12 @@ public:
     // behavior.
     void step(float p_step);
     void sync();
+    /// Fetches an in-flight solve immediately (no-op when idle) so structural
+    /// scene mutations become legal again: actor/joint/articulation add-remove-
+    /// release, shape attach/detach and scene queries are all forbidden while
+    /// simulate() is outstanding. Mutation entry points that cannot be deferred
+    /// call this first — mutating frames lose the async overlap by design.
+    void ensure_synced() { sync(); }
     bool is_stepping() const { return stepping; }
     float get_last_step() const { return last_step; }
     /// Active-actor count of the last completed solve (INFO_ACTIVE_OBJECTS).

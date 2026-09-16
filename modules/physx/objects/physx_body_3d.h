@@ -295,7 +295,11 @@ private:
     bool body_added_to_scene = false;
 
     void _create_actor();
-    void _destroy_actor();
+    /// Destroys the actor. p_space routes the release when the body's own
+    /// space pointer is already gone (destructor path after set_space(nullptr))
+    /// — routing through the (former) space queues the remove+release until
+    /// after an in-flight fetch instead of releasing into a live solve.
+    void _destroy_actor(PhysXSpace3D *p_space = nullptr);
     /// Full re-apply: surface params + mass properties (setMass + inertia/COM
     /// re-derived from the shapes). Used by creation, mode switches and the
     /// mass-affecting parameters.

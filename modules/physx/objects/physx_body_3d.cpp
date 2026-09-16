@@ -52,6 +52,11 @@ PhysXBody3D::~PhysXBody3D() {
 		memdelete(direct_state);
 		direct_state = nullptr;
 	}
+	// Cache the space before set_space(nullptr) clears it: the actor release
+	// below must route through the (former) space so an async mid-flight
+	// destroy queues remove+release until after the fetch instead of releasing
+	// into a live solve (mirrors ~PhysXArea3D).
+	PhysXSpace3D *previous_space = space;
 	// Emit exit events for all overlapping areas before the body is destroyed —
 	// trigger events may not fire when the body is freed while overlapping an
 	// area, and Godot must receive these events to clean up its state.
@@ -75,7 +80,7 @@ PhysXBody3D::~PhysXBody3D() {
 		overlapping_areas.clear();
 		space->unregister_body(this);
 	}
-	_destroy_actor();
+	_destroy_actor(previous_space);
 }
 
 physx::PxRigidDynamic *PhysXBody3D::get_px_dynamic() const {
@@ -128,15 +133,20 @@ void PhysXBody3D::_create_actor() {
 	}
 }
 
-void PhysXBody3D::_destroy_actor() {
+void PhysXBody3D::_destroy_actor(PhysXSpace3D *p_space) {
 	if (px_actor) {
-		// Route the release through the space: in async stepping a mid-flight
-		// destroy (deferred call, node free) queues both the scene removal and
-		// the release until after the fetch -- releasing into a live solve
-		// would free an actor the solver still references.
-		if (space) {
-			space->remove_actor(px_actor);
-			space->release_actor(px_actor);
+		// Route the release through a space (the current one, or the one the
+		// body just left): in async stepping a mid-flight destroy queues both
+		// the scene removal and the release until after the fetch — releasing
+		// into a live solve would free an actor the solver still references.
+		// The remove is skipped when the actor was never added to the scene
+		// (no shapes yet), since PhysX errors on removing an absent actor.
+		PhysXSpace3D *routing = p_space ? p_space : space;
+		if (routing && body_added_to_scene) {
+			routing->remove_actor(px_actor);
+		}
+		if (routing) {
+			routing->release_actor(px_actor);
 		} else {
 			px_actor->release();
 		}
@@ -236,6 +246,13 @@ void PhysXBody3D::set_mode(PhysicsServer3D::BodyMode p_mode) {
 	// Switching between Static and Dynamic requires recreating the actor,
 	// because PxRigidStatic and PxRigidDynamic are distinct types.
 	if (was_static != is_static) {
+		// Recreation mutates the scene (actor remove+release, shape re-attach)
+		// and reads back the current pose/velocity — all forbidden while a
+		// solve is in flight (async stepping). Fetch first; mutating frames
+		// lose the async overlap by design.
+		if (space) {
+			space->ensure_synced();
+		}
 		physx::PxTransform cached_pose(physx::PxIdentity);
 		// Velocity is only meaningful on the old dynamic actor; statics have
 		// none. Cache it now (before _destroy_actor releases the old actor) so

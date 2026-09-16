@@ -56,7 +56,10 @@ PhysXArticulation3D::~PhysXArticulation3D() {
 
 void PhysXArticulation3D::_destroy() {
 	if (px_articulation) {
+		// removeArticulation() mutates the scene — fetch an in-flight solve
+		// first (async stepping).
 		if (space) {
+			space->ensure_synced();
 			if (PxScene *scene = space->get_px_scene()) {
 				scene->removeArticulation(*px_articulation);
 			}
@@ -70,6 +73,14 @@ void PhysXArticulation3D::_destroy() {
 void PhysXArticulation3D::set_space(PhysXSpace3D *p_space) {
 	if (space == p_space) {
 		return;
+	}
+	// addArticulation/removeArticulation below mutate the scene — fetch any
+	// in-flight solve on both spaces first (async stepping).
+	if (space) {
+		space->ensure_synced();
+	}
+	if (p_space) {
+		p_space->ensure_synced();
 	}
 	if (space && px_articulation) {
 		if (PxScene *scene = space->get_px_scene()) {
@@ -147,6 +158,12 @@ void PhysXArticulation3D::set_link_shape(int p_link_index, PhysXShape3D *p_shape
 	ERR_FAIL_NULL_MSG(p_shape, "PhysX: articulation_set_link_shape passed an invalid shape.");
 	if (!rec->link || !px_articulation) {
 		return;
+	}
+
+	// detachShape/attachShape below mutate the scene's broadphase — fetch an
+	// in-flight solve first (async stepping).
+	if (space) {
+		space->ensure_synced();
 	}
 
 	if (rec->shape) {

@@ -106,6 +106,11 @@ void PhysXShapedObject3D::nullify_shape(PhysXShape3D *p_shape) {
 }
 
 void PhysXShapedObject3D::detach_shape(PhysXShape3D *p_shape) {
+    // Detaches PxShape instances from the actor (broadphase mutation) — fetch
+    // an in-flight solve first (async stepping).
+    if (space) {
+        space->ensure_synced();
+    }
 	for (int i = shapes.size() - 1; i >= 0; i--) {
 		AttachedShape &record = shapes[i];
 		if (record.shareable_shape == p_shape && (record.px_shape || record.detection_shape)) {
@@ -194,6 +199,12 @@ void PhysXShapedObject3D::shape_changed(PhysXShape3D *p_shape) {
  * this point (refcount drops from 2 to 1).
  */
 void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_transform, bool p_disabled) {
+    // attachShape() below mutates the scene's broadphase — forbidden while a
+    // solve is in flight (async stepping). Fetch first; mutating frames lose
+    // the async overlap by design.
+    if (space) {
+        space->ensure_synced();
+    }
     AttachedShape record;
     record.shareable_shape = p_shape;
     record.relative_transform = p_transform;
@@ -283,6 +294,12 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
 
 void PhysXShapedObject3D::remove_shape(int p_index) {
     ERR_FAIL_INDEX(p_index, (int)shapes.size());
+
+    // detachShape() below removes the shape from the scene's broadphase —
+    // forbidden while a solve is in flight (async stepping). Fetch first.
+    if (space) {
+        space->ensure_synced();
+    }
 
 	AttachedShape &record = shapes[p_index];
 

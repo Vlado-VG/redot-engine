@@ -1851,6 +1851,23 @@ RID PhysXServer3D::joint_create() {
 	return rid;
 }
 
+// Joint creation inserts a PxConstraint into the owning scene(s) (and
+// joint_make_* first releases the previous joint's constraint) — both are
+// forbidden while a solve is in flight (async stepping). Resolved purely from
+// RIDs and called BEFORE any pointer is cached, so everything below resolves
+// fresh state after the fetch and needs no re-validation.
+static void _physx_sync_spaces_for_joint(RID p_body_a, RID p_body_b) {
+	for (const RID &rid : { p_body_a, p_body_b }) {
+		if (!rid.is_valid()) {
+			continue;
+		}
+		PhysXBody3D *body = PhysXServer3D::get_singleton()->get_body(rid);
+		if (body && body->get_space()) {
+			body->get_space()->ensure_synced();
+		}
+	}
+}
+
 void PhysXServer3D::joint_clear(RID p_joint) {
 	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
 	ERR_FAIL_NULL(joint);
@@ -1858,6 +1875,9 @@ void PhysXServer3D::joint_clear(RID p_joint) {
 }
 
 void PhysXServer3D::joint_make_pin(RID p_joint, RID p_body_a, const Vector3 &p_local_a, RID p_body_b, const Vector3 &p_local_b) {
+	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
+	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
+
     PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
     ERR_FAIL_NULL(joint);
 
@@ -1933,6 +1953,9 @@ Vector3 PhysXServer3D::pin_joint_get_local_b(RID p_joint) const {
 }
 
 void PhysXServer3D::joint_make_hinge(RID p_joint, RID p_body_a, const Transform3D &p_hinge_a, RID p_body_b, const Transform3D &p_hinge_b) {
+	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
+	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
+
 	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
@@ -1962,6 +1985,9 @@ void PhysXServer3D::joint_make_hinge(RID p_joint, RID p_body_a, const Transform3
 }
 
 void PhysXServer3D::joint_make_hinge_simple(RID p_joint, RID p_body_a, const Vector3 &p_pivot_a, const Vector3 &p_axis_a, RID p_body_b, const Vector3 &p_pivot_b, const Vector3 &p_axis_b) {
+	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
+	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
+
 	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
@@ -2020,6 +2046,9 @@ bool PhysXServer3D::hinge_joint_get_flag(RID p_joint, PhysicsServer3D::HingeJoin
 }
 
 void PhysXServer3D::joint_make_slider(RID p_joint, RID p_body_a, const Transform3D &p_local_ref_a, RID p_body_b, const Transform3D &p_local_ref_b) {
+	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
+	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
+
 	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
@@ -2061,6 +2090,9 @@ real_t PhysXServer3D::slider_joint_get_param(RID p_joint, PhysicsServer3D::Slide
 }
 
 void PhysXServer3D::joint_make_cone_twist(RID p_joint, RID p_body_a, const Transform3D &p_local_ref_a, RID p_body_b, const Transform3D &p_local_ref_b) {
+	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
+	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
+
 	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
@@ -2102,6 +2134,9 @@ real_t PhysXServer3D::cone_twist_joint_get_param(RID p_joint, PhysicsServer3D::C
 }
 
 void PhysXServer3D::joint_make_generic_6dof(RID p_joint, RID p_body_a, const Transform3D &p_local_ref_a, RID p_body_b, const Transform3D &p_local_ref_b) {
+	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
+	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
+
 	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
@@ -2242,6 +2277,19 @@ void PhysXServer3D::free(RID p_rid) {
 	if (body_owner.owns(p_rid)) {
 		PhysXBody3D *b = body_owner.get_or_null(p_rid);
 
+		// Fetch an in-flight solve before teardown: everything below releases
+		// the actor, its joints and its vehicles — structural scene mutations
+		// that are forbidden mid-solve (async stepping). The fetch fires
+		// state-sync callbacks, so re-validate the RID in case one of them
+		// freed this body re-entrantly.
+		if (b->get_space()) {
+			b->get_space()->ensure_synced();
+		}
+		if (!body_owner.owns(p_rid)) {
+			return;
+		}
+		b = body_owner.get_or_null(p_rid);
+
 		// Detach from the space first (godot-physics parity): unregisters the
 		// body, removes the actor from the scene, and queues body_exited
 		// events for overlapping areas while the body is still alive.
@@ -2257,6 +2305,18 @@ void PhysXServer3D::free(RID p_rid) {
 	}
 	if (area_owner.owns(p_rid)) {
 		PhysXArea3D *a = area_owner.get_or_null(p_rid);
+
+		// Same mid-solve concern as the body branch: ~PhysXArea3D detaches its
+		// shapes (broadphase mutation) and releases the trigger actor, and the
+		// fetch may fire callbacks that free this area re-entrantly.
+		if (a->get_space()) {
+			a->get_space()->ensure_synced();
+		}
+		if (!area_owner.owns(p_rid)) {
+			return;
+		}
+		a = area_owner.get_or_null(p_rid);
+
 		area_owner.free(p_rid);
 		memdelete(a);
 		return;
@@ -2281,6 +2341,13 @@ void PhysXServer3D::free(RID p_rid) {
 	}
 	if (space_owner.owns(p_rid)) {
 		PhysXSpace3D *sp = space_owner.get_or_null(p_rid);
+
+		// Tearing a space down mid-solve: the default-area teardown below
+		// detaches shapes INLINE (its space pointer is already cleared by the
+		// detach loop, so its own gate cannot fire), and ~PhysXSpace3D releases
+		// the PxScene. Fetch the in-flight solve up front; the queued actor ops
+		// are applied by that fetch, making every teardown step below legal.
+		sp->ensure_synced();
 
 		// Detach all bodies from this space before deleting it,
 		// because their destructors may reference the space.

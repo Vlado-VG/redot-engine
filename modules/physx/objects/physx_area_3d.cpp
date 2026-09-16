@@ -179,7 +179,13 @@ void PhysXArea3D::set_transform(const Transform3D &p_transform) {
 	// bodies wake for another reason. Wake the bodies overlapping the area's
 	// NEW world AABB via a single batched overlap query — cheaper and more
 	// correct than walking every dynamic actor in the scene.
-	_wake_overlapping_dynamic_bodies(pose);
+	// The wake pass reads actor bounds and runs a scene overlap query — both
+	// forbidden while a solve is in flight (async stepping). Skip it
+	// mid-flight: the kinematic target still applies, and bodies at the
+	// destination wake through normal solver interaction.
+	if (!space || !space->is_stepping()) {
+		_wake_overlapping_dynamic_bodies(pose);
+	}
 }
 
 void PhysXArea3D::_wake_overlapping_dynamic_bodies(const physx::PxTransform &p_target_pose) const {
@@ -296,6 +302,12 @@ void PhysXArea3D::set_shape_transform(int p_shape_idx, const Transform3D &p_tran
 
 void PhysXArea3D::set_shape_disabled(int p_shape_idx, bool p_disabled) {
 	ERR_FAIL_INDEX(p_shape_idx, get_shape_count());
+
+	// The detection-shape sync below can attach/detach PxShapes (broadphase
+	// mutation) — fetch an in-flight solve first (async stepping).
+	if (space) {
+		space->ensure_synced();
+	}
 
 	if (p_disabled == shapes[p_shape_idx].disabled) {
 		return;
@@ -563,6 +575,12 @@ void PhysXArea3D::remove_overlapping_area(PhysXArea3D *p_area) {
 }
 
 void PhysXArea3D::_update_shapes() {
+	// Detection-shape create/destroy below attach/detach PxShapes (broadphase
+	// mutation) — fetch an in-flight solve first (async stepping).
+	if (space) {
+		space->ensure_synced();
+	}
+
 	// Re-apply collision filter data to all shapes (layer/mask/IS_AREA).
 	update_shapes_collision_filter();
 

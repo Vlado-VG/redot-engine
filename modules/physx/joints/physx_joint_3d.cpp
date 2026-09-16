@@ -5,6 +5,8 @@
 
 #include "physx_joint_3d.h"
 #include "../physx_conversions.h"
+#include "../shapes/physx_user_data.h"
+#include "../spaces/physx_space_3d.h"
 
 #include "core/error/error_macros.h"
 #include "core/math/math_funcs.h"
@@ -17,6 +19,21 @@
 #include "extensions/PxPrismaticJoint.h"
 #include "extensions/PxD6Joint.h"
 #include "extensions/PxJointLimit.h"
+
+// Releasing a PxJoint removes its PxConstraint from the owning scene —
+// forbidden while a solve is in flight (async stepping). The joint stores raw
+// PxRigidActor pointers (no PhysXBody3D back-pointer), so each side's space is
+// resolved through the actor userData bridge. No-op when idle or scene-less.
+static void _physx_sync_joint_actor_spaces(physx::PxRigidActor *p_a, physx::PxRigidActor *p_b) {
+	for (physx::PxRigidActor *actor : { p_a, p_b }) {
+		if (actor && actor->userData) {
+			const auto *ud = static_cast<const PhysXActorUserData *>(actor->userData);
+			if (ud->object && ud->object->get_space()) {
+				ud->object->get_space()->ensure_synced();
+			}
+		}
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Static helpers — convert between Godot and PhysX types
@@ -188,6 +205,11 @@ void PhysXJoint3D::adopt(physx::PxJoint *p_joint, JointKind p_kind,
 // Release — release the PhysX joint reference
 // ---------------------------------------------------------------------------
 void PhysXJoint3D::release() {
+	// The PxConstraint removal below mutates the scene — fetch an in-flight
+	// solve first (async stepping). Re-entrancy note: a callback fired by the
+	// fetch can at worst release this wrapper again; the px_joint null-out
+	// below makes a nested release() a safe no-op.
+	_physx_sync_joint_actor_spaces(body_a, body_b);
 	if (px_joint) {
 		// Wake the connected dynamics before destroying the constraint: a body
 		// that fell asleep while constrained has gravity integration skipped
