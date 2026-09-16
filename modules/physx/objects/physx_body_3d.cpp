@@ -10,6 +10,7 @@
 
 #include "physx_body_3d.h"
 #include "physx_direct_body_state_3d.h"
+#include "../joints/physx_joint_3d.h"
 #include "../physx_server.h"
 #include "../physx_project_settings.h"
 #include "../spaces/physx_space_3d.h"
@@ -51,6 +52,16 @@ PhysXBody3D::~PhysXBody3D() {
 	if (direct_state) {
 		memdelete(direct_state);
 		direct_state = nullptr;
+	}
+	// Connected joints drop the PxJoint (which references this body's actor)
+	// and unlink themselves; the joint wrappers survive with their RIDs and
+	// cached parameters, matching what the Joint3D nodes hold.
+	{
+		const LocalVector<PhysXJoint3D *> js = joints; // copy: body_removed unlinks
+		for (PhysXJoint3D *joint : js) {
+			joint->body_removed(this);
+		}
+		joints.clear();
 	}
 	// Cache the space before set_space(nullptr) clears it: the actor release
 	// below must route through the (former) space so an async mid-flight
@@ -266,13 +277,6 @@ void PhysXBody3D::set_mode(PhysicsServer3D::BodyMode p_mode) {
 				cached_ang_vel = old_dyn->getAngularVelocity();
 			}
 		}
-
-	// Release any joints that reference this body before recreating the
-	// actor — the joint's body_a/body_b pointers would dangle on the
-	// old actor and crash on the new one.
-	if (px_actor) {
-		PhysXServer3D::get_singleton()->release_joints_for_actor(px_actor);
-	}
 
 		// Preserve space membership across recreation.
 		PhysXSpace3D *cached_space = space;
@@ -1287,6 +1291,13 @@ void PhysXBody3D::_add_to_scene() {
 	}
 	space->add_actor(px_actor);
 	body_added_to_scene = true;
+	// Dormant joints configured against this body can now come alive: the
+	// rebuild is idempotent and quietly stays dormant for the ones that still
+	// lack a dynamic actor. This also covers the fresh actor after a
+	// static<->dynamic mode switch (set_mode -> rebuild_shapes -> here).
+	for (PhysXJoint3D *joint : joints) {
+		joint->rebuild();
+	}
 }
 
 void PhysXBody3D::_on_shape_removed() {

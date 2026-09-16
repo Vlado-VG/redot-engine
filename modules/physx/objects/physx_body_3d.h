@@ -26,6 +26,7 @@ namespace physx {
 }
 
 class PhysXArea3D;
+class PhysXJoint3D;
 class PhysXSpace3D;
 class PhysXDirectBodyState3D;
 
@@ -126,6 +127,20 @@ public:
     void remove_collision_exception(const RID &p_excepted_body);
     void get_collision_exceptions(List<RID> *p_exceptions) const;
     const HashSet<RID> &get_collision_exception_set() const;
+
+    // --- Joint links (joints register/unregister themselves; the body
+    // notifies them when its actor is recreated or the body is destroyed) ---
+    void add_joint(PhysXJoint3D *p_joint) {
+        if (!joints.has(p_joint)) {
+            joints.push_back(p_joint);
+        }
+    }
+    void remove_joint(PhysXJoint3D *p_joint) {
+        const int64_t idx = joints.find(p_joint);
+        if (idx != -1) {
+            joints.remove_at_unordered(idx);
+        }
+    }
 
     // --- Kinematic body velocity ---
     Vector3 get_kinematic_linear_velocity() const { return kinematic_linear_velocity; }
@@ -283,6 +298,12 @@ private:
 
     /// Areas overlapping this body, maintained by onTrigger().
     LocalVector<PhysXArea3D *> overlapping_areas;
+
+    /// Joints connected to this body (they register on make and unlink on
+    /// release/destruction). Notified so the PxJoint can be rebuilt when this
+    /// body's actor is recreated (static<->dynamic mode switch, scene entry)
+    /// and destroyed when the body goes away.
+    LocalVector<PhysXJoint3D *> joints;
 
     // Kinematic velocity tracking (AnimatableBody3D / sync_to_physics)
     Vector3 kinematic_linear_velocity;

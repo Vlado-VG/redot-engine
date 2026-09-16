@@ -570,9 +570,6 @@ public:
 	virtual void free(RID p_rid) override;
 
 	// --- Internal helpers (called by bodies/joints/vehicles during lifecycle) ---
-	/// Releases all joints that reference the given PxRigidActor before
-	/// recreating or deleting it. Called by PhysXBody3D::set_mode() and free().
-	void release_joints_for_actor(physx::PxRigidActor *p_actor) const;
 	/// Releases all vehicles that have the given body as chassis before
 	/// freeing it. Called by free() to prevent dangling chassis pointers.
 	void release_vehicles_for_body(PhysXBody3D *p_body) const;

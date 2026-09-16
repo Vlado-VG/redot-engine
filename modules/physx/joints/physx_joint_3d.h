@@ -14,6 +14,16 @@
  *   JOINT_TYPE_CONE_TWIST→ PxD6Joint (swing/twist configured)
  *   JOINT_TYPE_6DOF      → PxD6Joint (fully configurable)
  *
+ * Lifecycle model: the wrapper references the two Godot-side bodies
+ * (PhysXBody3D, not raw actors) and keeps the COMPLETE Godot-side joint
+ * configuration cached. Every setter stores into that cache first, then pushes
+ * to the live PxJoint if one exists — so parameters set while the joint is
+ * detached (body freed, static↔dynamic actor recreation, transient single-body
+ * configuration) are preserved and re-applied verbatim when the PxJoint can be
+ * recreated (bodies notify their joints on actor recreation / scene entry).
+ * The wrapper's RID therefore stays valid for its whole lifetime regardless of
+ * what happens to the connected bodies.
+ *
  * Godot-specific parameters that have no PhysX equivalent:
  *   - PinJoint: PIN_JOINT_BIAS, PIN_JOINT_DAMPING, PIN_JOINT_IMPULSE_CLAMP
  *     Stored on the wrapper for round-trip get_param, but have no/negligible
@@ -47,10 +57,12 @@
 #include "extensions/PxD6Joint.h"
 #include "extensions/PxJointLimit.h"
 
+class PhysXBody3D;
+
 namespace physx {
-	class PxJoint;
-	class PxRigidActor;
-	class PxPhysics;
+class PxJoint;
+class PxRigidActor;
+class PxPhysics;
 }
 
 /**
@@ -149,6 +161,32 @@ struct G6DOFJointAxisParams {
 	real_t angular_spring_equilibrium_point = 0.0f;
 };
 
+/**
+ * @brief Per-axis 6DOF enable flags (Godot's G6DOF_JOINT_FLAG_*).
+ *
+ * These mirror the D6 motion/drive state the flags produce, so a rebuild can
+ * restore the exact axis configuration from cache alone.
+ */
+struct G6DOFJointAxisFlags {
+	bool linear_limit = false;
+	bool angular_limit = false;
+	bool linear_motor = false;
+	bool angular_motor = false;
+	bool linear_spring = false;
+	bool angular_spring = false;
+};
+
+/**
+ * @brief Last-pushed per-axis D6 drive configuration, so a rebuild restores
+ * the same drive (spring- or motor-style) the setters last applied.
+ */
+struct G6DOFDriveState {
+	bool active = false;
+	float stiffness = 0.0f;
+	float damping = 0.0f;
+	float force = 0.0f;
+};
+
 class PhysXJoint3D : public PhysXRIDOwner {
 public:
 	/// Identifies which PhysX joint subclass we wrap.
@@ -163,17 +201,45 @@ public:
 
 private:
 	physx::PxJoint *px_joint = nullptr;
-	JointKind kind = JOINT_KIND_PIN;
-	physx::PxRigidActor *body_a = nullptr;
-	physx::PxRigidActor *body_b = nullptr;
+	// Survives body teardown / actor recreation (release() is what resets it).
+	JointKind kind = JOINT_KIND_NONE;
+	PhysXBody3D *body_a = nullptr;
+	PhysXBody3D *body_b = nullptr;
+	// Cached make_* frames — restored verbatim on rebuild. For hinge joints the
+	// server composes the Godot Z→PhysX X axis rotation into these, so the
+	// cached frames are always exactly what the PxJoint needs.
+	physx::PxTransform frame_a = physx::PxTransform(physx::PxIdentity);
+	physx::PxTransform frame_b = physx::PxTransform(physx::PxIdentity);
 
-	// Godot-side parameter storage — only used when the parameter has no
-	// PhysX equivalent or when we need round-trip get_param.
+	// --- Godot-side parameter cache: the source of truth for every value the
+	// setters receive; pushed to the live PxJoint by _apply_params(). ---
 	PinJointParams pin_params;
 	HingeJointParams hinge_params;
 	SliderJointParams slider_params;
+	// The slider's limit constraint is enabled the first time a linear limit
+	// upper/lower is set (matching the setter behavior); tracked so a rebuild
+	// doesn't enable limits on a fresh slider that never had them.
+	bool slider_limit_enabled = false;
 	ConeTwistJointParams cone_twist_params;
-	G6DOFJointAxisParams g6dof_params[6]; // per-axis
+	// Fresh cone-twist D6 motions come LIMITED with wide SDK-default cones;
+	// the clamped limits are only pushed once a parameter was actually set.
+	bool cone_limits_set = false;
+	G6DOFJointAxisParams g6dof_params[6];
+	G6DOFJointAxisFlags g6dof_flags[6];
+	G6DOFDriveState g6dof_lin_drives[6];
+	G6DOFDriveState g6dof_ang_drives[6];
+	// Cached 6DOF drive velocity — accumulated across all axes
+	physx::PxVec3 cached_g6dof_lin_drive_vel{0.0f, 0.0f, 0.0f};
+	physx::PxVec3 cached_g6dof_ang_drive_vel{0.0f, 0.0f, 0.0f};
+
+	// true = Godot's Joint3D default (exclude_nodes_from_collision) and the
+	// PhysX constraint default; _apply_params() pushes it on (re)creation.
+	bool collisions_disabled = true;
+
+	/// Solver priority, stored for round-trip access. PhysX 5.x exposes no
+	/// per-constraint solver priority, so the value is not applied to the
+	/// PxConstraint.
+	int solver_priority = 0;
 
 	// --- Private helpers (deduplicate limit/drive reconfiguration) ---
 	/// Rebuilds and applies the hinge angular limit from hinge_params.
@@ -190,15 +256,22 @@ private:
 	/// Applies the g6dof angular limit to the correct PhysX limit slot
 	/// (twist -> setTwistLimit, swing -> setSwingLimit) for the given axis.
 	void _apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::Axis p_axis);
-
-	// Cached 6DOF drive velocity — accumulated across all axes
-	physx::PxVec3 cached_g6dof_lin_drive_vel{0.0f, 0.0f, 0.0f};
-	physx::PxVec3 cached_g6dof_ang_drive_vel{0.0f, 0.0f, 0.0f};
-
-	/// Solver priority, stored for round-trip access. PhysX 5.x exposes no
-	/// per-constraint solver priority, so the value is not applied to the
-	/// PxConstraint.
-	int solver_priority = 0;
+	/// Godot axis (X/Y/Z) -> D6 linear axis (eX/eY/eZ).
+	static physx::PxD6Axis::Enum _px_linear_axis(Vector3::Axis p_axis);
+	/// Godot axis (X/Y/Z) -> D6 angular axis (eTWIST/eSWING1/eSWING2).
+	static physx::PxD6Axis::Enum _px_angular_axis(Vector3::Axis p_axis);
+	/// Pushes the full cached configuration into the live PxJoint (no-op
+	/// without one). Called after creation/rebuild.
+	void _apply_params();
+	/// Releases the live PxJoint (fetch-safe via the bodies' spaces, waking the
+	/// connected dynamics first). Cache and body links are untouched.
+	void _destroy_px_joint();
+	/// Creates the PxJoint from the cached kind/body/frame configuration.
+	/// Returns null (quietly — the joint stays dormant) when the current
+	/// configuration can't drive a PhysX constraint yet: no bodies, no dynamic
+	/// actor (the transient static-only state while a Joint3D node assigns its
+	/// node paths one at a time).
+	physx::PxJoint *_create();
 
 public:
 	PhysXJoint3D() = default;
@@ -212,30 +285,36 @@ public:
 			physx::PxRigidActor *p_body_b,
 			const physx::PxTransform &p_local_b);
 
-	// --- Adoption ---
-	void adopt(physx::PxJoint *p_joint, JointKind p_kind,
-			physx::PxRigidActor *p_a, physx::PxRigidActor *p_b);
-
+	// --- Configuration entry (server: joint_make_*) ---
+	/// (Re)configures this RID for a type/body pair and tries to create the
+	/// PxJoint. Cached parameters survive the call and are re-applied onto the
+	/// fresh PxJoint; a configuration without a dynamic actor stays dormant
+	/// until a body notifies (rebuild) or the next make() call.
+	void make(PhysicsServer3D::JointType p_type, JointKind p_kind,
+			PhysXBody3D *p_body_a, const physx::PxTransform &p_local_a,
+			PhysXBody3D *p_body_b, const physx::PxTransform &p_local_b);
+	/// Recreates the PxJoint from the cached configuration when possible.
+	/// Idempotent: no-op while a PxJoint is live. Called by the connected
+	/// bodies on actor recreation and scene entry.
+	void rebuild();
+	/// The given body is being deleted: drop the PxJoint, unlink that body and
+	/// keep the wrapper (RID + cached params) fully valid. The joint stays
+	/// dormant until a future make() call reconfigures it.
+	void body_removed(PhysXBody3D *p_body);
 	// --- Release ---
+	/// Full teardown: PxJoint, body links and kind. Cached parameters are
+	/// reset by reconfiguration (make), matching Godot's joint_clear semantics.
 	void release();
 
 	// --- Identity ---
 	JointKind get_kind() const { return kind; }
 	physx::PxJoint *get_px_joint() const { return px_joint; }
-	physx::PxRigidActor *get_body_a() const { return body_a; }
-	physx::PxRigidActor *get_body_b() const { return body_b; }
+	PhysXBody3D *get_body_a() const { return body_a; }
+	PhysXBody3D *get_body_b() const { return body_b; }
 
 	// --- 6DOF drive velocity caching (per-axis motors must not overwrite each other) ---
 	void cache_g6dof_drive_velocity(const physx::PxVec3 &p_lin, const physx::PxVec3 &p_ang);
 	void apply_cached_g6dof_drive_velocity(physx::PxD6Joint *p_d6);
-
-	// --- 6DOF linear axis mapping helper ---
-	static physx::PxD6Axis::Enum _px_linear_axis(Vector3::Axis p_axis);
-	static physx::PxD6Axis::Enum _px_angular_axis(Vector3::Axis p_axis);
-
-	// --- Internal state (for joint_make_* to take ownership) ---
-	void set_body_a(physx::PxRigidActor *p_actor, const physx::PxTransform &p_local_a);
-	void set_body_b(physx::PxRigidActor *p_actor, const physx::PxTransform &p_local_b);
 
 	// --- Static helpers for joint creation (used by physx_server.cpp) ---
 	static physx::PxTransform compute_joint_frame(const physx::PxVec3 &p_pivot, const physx::PxVec3 &p_axis);
@@ -243,13 +322,7 @@ public:
 	static physx::PxVec3 to_physx_vec3(const Vector3 &p_vec);
 	static Vector3 to_godot_vec3(const physx::PxVec3 &p_vec);
 
-	// --- Local frame access ---
-	void set_local_a(const physx::PxTransform &p_transform);
-	void set_local_b(const physx::PxTransform &p_transform);
-	physx::PxTransform get_local_a_transform() const;
-	physx::PxTransform get_local_b_transform() const;
-
-	// --- Solver priority (PxConstraint solver priority) ---
+	// --- Solver priority (stored; PhysX has no per-constraint priority) ---
 	void set_solver_priority(int p_priority);
 	int get_solver_priority() const;
 

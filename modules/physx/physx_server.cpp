@@ -1889,31 +1889,10 @@ void PhysXServer3D::joint_make_pin(RID p_joint, RID p_body_a, const Vector3 &p_l
     ERR_FAIL_NULL_MSG(body_a, "PhysX: pin joint body_a is not a rigid body.");
     PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-    physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
-    ERR_FAIL_NULL(px_actor_a);
-    physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
-
-    // PhysX joints require at least one dynamic rigid actor; Joint3D
-    // transiently configures the joint as soon as the first node path is
-    // set (the other side still unset, i.e. the world frame). Skip that
-    // transient static/world configuration without an error -- the joint
-    // is re-created once both node paths are assigned.
-    if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
-        print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
-        return;
-    }
-
     physx::PxTransform local_a(physx::PxVec3(p_local_a.x, p_local_a.y, p_local_a.z));
     physx::PxTransform local_b(physx::PxVec3(p_local_b.x, p_local_b.y, p_local_b.z));
 
-    // Release any existing joint (joint_make_* may reconfigure an existing RID).
-    joint->release();
-
-    physx::PxJoint *pxj = PhysXJoint3D::create_px_joint(get_physics(), PhysicsServer3D::JOINT_TYPE_PIN,
-                                                         px_actor_a, local_a, px_actor_b, local_b);
-    ERR_FAIL_NULL_MSG(pxj, "PhysX: failed to create pin joint.");
-
-    joint->adopt(pxj, PhysXJoint3D::JOINT_KIND_PIN, px_actor_a, px_actor_b);  // new helper: takes ownership
+    joint->make(PhysicsServer3D::JOINT_TYPE_PIN, PhysXJoint3D::JOINT_KIND_PIN, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::pin_joint_set_param(RID p_joint, PhysicsServer3D::PinJointParam p_param, real_t p_value) {
@@ -1952,6 +1931,9 @@ Vector3 PhysXServer3D::pin_joint_get_local_b(RID p_joint) const {
 	return joint->get_local_b();
 }
 
+// godot_physics_3d hinge axis (frame local Z) -> PhysX revolute axis (frame local X).
+static const physx::PxQuat HINGE_Z_TO_X(-physx::PxHalfPi, physx::PxVec3(0.0f, 1.0f, 0.0f));
+
 void PhysXServer3D::joint_make_hinge(RID p_joint, RID p_body_a, const Transform3D &p_hinge_a, RID p_body_b, const Transform3D &p_hinge_b) {
 	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
 	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
@@ -1963,25 +1945,17 @@ void PhysXServer3D::joint_make_hinge(RID p_joint, RID p_body_a, const Transform3
 	// body_b optional â€” anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
-	ERR_FAIL_NULL(px_actor_a);
-	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
-	// PhysX joints require at least one dynamic rigid actor; Joint3D
-	// transiently configures the joint as soon as the first node path is
-	// set (the other side still unset, i.e. the world frame). Skip that
-	// transient static/world configuration without an error -- the joint
-	// is re-created once both node paths are assigned.
-	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
-		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
-		return;
-	}
+	// godot_physics_3d (the reference contract) constrains the transform-
+	// variant hinge about the joint frame's local Z axis; PhysX revolute
+	// joints rotate about the frame's local X. Composing this rotation into
+	// both frames maps Godot's hinge axis onto PhysX's without touching the
+	// pivot geometry. -90deg about +Y maps the PhysX frame X axis onto the
+	// Godot frame +Z, preserving the right-hand sign of limits and motor
+	// velocities (verified: a +4 motor target spins +Z, not -Z).
+	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_hinge_a) * physx::PxTransform(HINGE_Z_TO_X);
+	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_hinge_b) * physx::PxTransform(HINGE_Z_TO_X);
 
-	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_hinge_a);
-	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_hinge_b);
-
-	physx::PxJoint *pxj = PhysXJoint3D::create_px_joint(get_physics(), PhysicsServer3D::JOINT_TYPE_HINGE, px_actor_a, local_a, px_actor_b, local_b);
-	ERR_FAIL_NULL_MSG(pxj, "PhysX: failed to create hinge joint.");
-	joint->adopt(pxj, PhysXJoint3D::JOINT_KIND_HINGE, px_actor_a, px_actor_b);
+	joint->make(PhysicsServer3D::JOINT_TYPE_HINGE, PhysXJoint3D::JOINT_KIND_HINGE, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::joint_make_hinge_simple(RID p_joint, RID p_body_a, const Vector3 &p_pivot_a, const Vector3 &p_axis_a, RID p_body_b, const Vector3 &p_pivot_b, const Vector3 &p_axis_b) {
@@ -1995,19 +1969,9 @@ void PhysXServer3D::joint_make_hinge_simple(RID p_joint, RID p_body_a, const Vec
 	// body_b optional â€” anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
-	ERR_FAIL_NULL(px_actor_a);
-	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
-	// PhysX joints require at least one dynamic rigid actor; Joint3D
-	// transiently configures the joint as soon as the first node path is
-	// set (the other side still unset, i.e. the world frame). Skip that
-	// transient static/world configuration without an error -- the joint
-	// is re-created once both node paths are assigned.
-	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
-		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
-		return;
-	}
-
+	// The simple variant's axis lands directly on the PhysX revolute X
+	// (compute_joint_frame builds the frame with the axis on X), so no Z->X
+	// remap is needed here -- unlike the transform variant above.
 	physx::PxVec3 pivot_a(p_pivot_a.x, p_pivot_a.y, p_pivot_a.z);
 	physx::PxVec3 pivot_b(p_pivot_b.x, p_pivot_b.y, p_pivot_b.z);
 	physx::PxVec3 axis_a(p_axis_a.x, p_axis_a.y, p_axis_a.z);
@@ -2016,9 +1980,7 @@ void PhysXServer3D::joint_make_hinge_simple(RID p_joint, RID p_body_a, const Vec
 	physx::PxTransform local_a = PhysXJoint3D::compute_joint_frame(pivot_a, axis_a);
 	physx::PxTransform local_b = PhysXJoint3D::compute_joint_frame(pivot_b, axis_b);
 
-	physx::PxJoint *pxj = PhysXJoint3D::create_px_joint(get_physics(), PhysicsServer3D::JOINT_TYPE_HINGE, px_actor_a, local_a, px_actor_b, local_b);
-	ERR_FAIL_NULL_MSG(pxj, "PhysX: failed to create hinge joint.");
-	joint->adopt(pxj, PhysXJoint3D::JOINT_KIND_HINGE, px_actor_a, px_actor_b);
+	joint->make(PhysicsServer3D::JOINT_TYPE_HINGE, PhysXJoint3D::JOINT_KIND_HINGE, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::hinge_joint_set_param(RID p_joint, PhysicsServer3D::HingeJointParam p_param, real_t p_value) {
@@ -2056,25 +2018,10 @@ void PhysXServer3D::joint_make_slider(RID p_joint, RID p_body_a, const Transform
 	// body_b optional â€” anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
-	ERR_FAIL_NULL(px_actor_a);
-	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
-	// PhysX joints require at least one dynamic rigid actor; Joint3D
-	// transiently configures the joint as soon as the first node path is
-	// set (the other side still unset, i.e. the world frame). Skip that
-	// transient static/world configuration without an error -- the joint
-	// is re-created once both node paths are assigned.
-	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
-		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
-		return;
-	}
-
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_local_ref_b);
 
-	physx::PxJoint *pxj = PhysXJoint3D::create_px_joint(get_physics(), PhysicsServer3D::JOINT_TYPE_SLIDER, px_actor_a, local_a, px_actor_b, local_b);
-	ERR_FAIL_NULL_MSG(pxj, "PhysX: failed to create slider joint.");
-	joint->adopt(pxj, PhysXJoint3D::JOINT_KIND_SLIDER, px_actor_a, px_actor_b);
+	joint->make(PhysicsServer3D::JOINT_TYPE_SLIDER, PhysXJoint3D::JOINT_KIND_SLIDER, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::slider_joint_set_param(RID p_joint, PhysicsServer3D::SliderJointParam p_param, real_t p_value) {
@@ -2100,25 +2047,10 @@ void PhysXServer3D::joint_make_cone_twist(RID p_joint, RID p_body_a, const Trans
 	// body_b optional â€” anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
-	ERR_FAIL_NULL(px_actor_a);
-	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
-	// PhysX joints require at least one dynamic rigid actor; Joint3D
-	// transiently configures the joint as soon as the first node path is
-	// set (the other side still unset, i.e. the world frame). Skip that
-	// transient static/world configuration without an error -- the joint
-	// is re-created once both node paths are assigned.
-	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
-		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
-		return;
-	}
-
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_local_ref_b);
 
-	physx::PxJoint *pxj = PhysXJoint3D::create_px_joint(get_physics(), PhysicsServer3D::JOINT_TYPE_CONE_TWIST, px_actor_a, local_a, px_actor_b, local_b);
-	ERR_FAIL_NULL_MSG(pxj, "PhysX: failed to create cone/twist joint.");
-	joint->adopt(pxj, PhysXJoint3D::JOINT_KIND_CONE_TWIST, px_actor_a, px_actor_b);
+	joint->make(PhysicsServer3D::JOINT_TYPE_CONE_TWIST, PhysXJoint3D::JOINT_KIND_CONE_TWIST, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::cone_twist_joint_set_param(RID p_joint, PhysicsServer3D::ConeTwistJointParam p_param, real_t p_value) {
@@ -2144,37 +2076,13 @@ void PhysXServer3D::joint_make_generic_6dof(RID p_joint, RID p_body_a, const Tra
 	// body_b optional â€” anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-	physx::PxRigidActor *px_actor_a = body_a->get_px_actor();
-	ERR_FAIL_NULL(px_actor_a);
-	physx::PxRigidActor *px_actor_b = body_b ? body_b->get_px_actor() : nullptr;
-	// PhysX joints require at least one dynamic rigid actor; Joint3D
-	// transiently configures the joint as soon as the first node path is
-	// set (the other side still unset, i.e. the world frame). Skip that
-	// transient static/world configuration without an error -- the joint
-	// is re-created once both node paths are assigned.
-	if (!(px_actor_a && px_actor_a->is<physx::PxRigidDynamic>()) && !(px_actor_b && px_actor_b->is<physx::PxRigidDynamic>())) {
-		print_verbose("PhysX: joint skipped -- no dynamic actor yet (waiting for Joint3D to assign both nodes).");
-		return;
-	}
-
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
 	physx::PxTransform local_b = PhysXShapedObject3D::to_physx_transform(p_local_ref_b);
 
-	physx::PxJoint *pxj = PhysXJoint3D::create_px_joint(get_physics(), PhysicsServer3D::JOINT_TYPE_6DOF, px_actor_a, local_a, px_actor_b, local_b);
-	ERR_FAIL_NULL_MSG(pxj, "PhysX: failed to create 6DOF joint.");
-	joint->adopt(pxj, PhysXJoint3D::JOINT_KIND_6DOF, px_actor_a, px_actor_b);
-
-	// Godot semantics: a fresh 6DOF joint has every axis FREE â€” limits apply
-	// only where G6DOF_JOINT_FLAG_ENABLE_*_LIMIT is set (default false).
-	// PxD6Joint's own default is all-LOCKED, which would silently weld the
-	// bodies together.
-	physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(pxj);
-	d6->setMotion(physx::PxD6Axis::eX, physx::PxD6Motion::eFREE);
-	d6->setMotion(physx::PxD6Axis::eY, physx::PxD6Motion::eFREE);
-	d6->setMotion(physx::PxD6Axis::eZ, physx::PxD6Motion::eFREE);
-	d6->setMotion(physx::PxD6Axis::eTWIST, physx::PxD6Motion::eFREE);
-	d6->setMotion(physx::PxD6Axis::eSWING1, physx::PxD6Motion::eFREE);
-	d6->setMotion(physx::PxD6Axis::eSWING2, physx::PxD6Motion::eFREE);
+	// Godot semantics: a fresh 6DOF joint has every axis FREE (limits apply
+	// only where the enable flags say so) -- the wrapper's _apply_params()
+	// pushes that from the cached flags, both now and after any rebuild.
+	joint->make(PhysicsServer3D::JOINT_TYPE_6DOF, PhysXJoint3D::JOINT_KIND_6DOF, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::generic_6dof_joint_set_param(RID p_joint, Vector3::Axis p_axis, PhysicsServer3D::G6DOFJointAxisParam p_param, real_t p_value) {
@@ -2295,8 +2203,9 @@ void PhysXServer3D::free(RID p_rid) {
 		// events for overlapping areas while the body is still alive.
 		b->set_space(nullptr);
 
-		// Release any joints/vehicles that reference this body before deleting it.
-		release_joints_for_actor(b->get_px_actor());
+		// Vehicles referencing this body as chassis are released here; joints
+		// are notified from ~PhysXBody3D (body_removed) so their wrappers --
+		// and the RIDs the Joint3D nodes hold -- stay valid.
 		release_vehicles_for_body(b);
 		// Drop grip-table references from surviving vehicles: memdelete(b) below
 		// releases the body's PxMaterial, which those tables hold raw pointers to.
@@ -2677,20 +2586,6 @@ void PhysXServer3D::flush_queries() {
 		PhysXSpace3D *space = space_owner.get_or_null(rid);
 		if (space) {
 			space->flush_pending_callbacks();
-		}
-	}
-}
-
-void PhysXServer3D::release_joints_for_actor(physx::PxRigidActor *p_actor) const {
-	// Release any joints that reference the given PxRigidActor before
-	// recreating or deleting it â€” the joint's body_a/body_b pointers
-	// would dangle on the old actor and crash on the new one.
-	LocalVector<RID> joints = joint_owner.get_owned_list();
-	for (int i = (int)joints.size() - 1; i >= 0; i--) {
-		PhysXJoint3D *j = joint_owner.get_or_null(joints[i]);
-		if (j->get_body_a() == p_actor || j->get_body_b() == p_actor) {
-			joint_owner.free(joints[i]);
-			memdelete(j);
 		}
 	}
 }

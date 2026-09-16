@@ -1,4 +1,4 @@
-// Joints: every implemented type (pin, hinge, slider, cone-twist, 6dof) with
+﻿// Joints: every implemented type (pin, hinge, slider, cone-twist, 6dof) with
 // *measured* constraint behavior — allowed vs forbidden degrees of freedom,
 // limits enforced, motor driven — plus destruction order torture, chains,
 // closed loops, and load stress. Setter/getter round-trips only where the
@@ -40,6 +40,9 @@ internal static class JointTests {
         s.Add("PHYSX-JOINT-026", "pin joint to static body: pendulum swings below pivot", PendulumSwings);
         s.Add("PHYSX-JOINT-027", "many joints (30) on one body stay finite", ManyJointsOneBody);
         s.Add("PHYSX-JOINT-028", "6dof: linear spring drives to the equilibrium point", SixDofSpringEquilibrium);
+        s.Add("PHYSX-JOINT-029", "freeing a body keeps the joint RID and getters valid", JointSurvivesBodyFree);
+        s.Add("PHYSX-JOINT-030", "static->dynamic mode change resurrects a dormant hinge about Z", DormantHingeResurrects);
+        s.Add("PHYSX-JOINT-031", "params set before first make round-trip after make", ParamsBeforeMakeRoundtrip);
     }
 
     static (Rid a, Rid b, Rid j) MakePinnedPair(PhysxWorld w, Vector3 pos) {
@@ -104,21 +107,22 @@ internal static class JointTests {
     static IEnumerator HingeAllowsAxis() {
         using var w = new PhysxWorld(false);
         var (a, b, j) = MakeHingedPair(w);
-        // Hinge with identity frames rotates about local X (Godot hinge axis).
-        PhysicsServer3D.BodyApplyTorqueImpulse(b, new Vector3(3, 0, 0));
+        // godot_physics_3d contract: the transform-variant hinge rotates about
+        // the joint frame's local Z. Identity frames -> world Z.
+        PhysicsServer3D.BodyApplyTorqueImpulse(b, new Vector3(0, 0, 3));
         yield return Wait.Frames(10);
-        float wx = Math.Abs(w.AngVel(b).X);
-        Assert.Expect(wx > 0.3f, $"torque about hinge axis produces spin ({wx:F2})");
+        float wz = Math.Abs(w.AngVel(b).Z);
+        Assert.Expect(wz > 0.3f, $"torque about hinge axis produces spin ({wz:F2})");
         yield return Wait.Frames(60);
         Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite while spinning on hinge");
     }
     static IEnumerator HingeBlocksPerp() {
         using var w = new PhysxWorld(false);
         var (a, b, j) = MakeHingedPair(w);
-        PhysicsServer3D.BodyApplyTorqueImpulse(b, new Vector3(0, 4, 0)); // perpendicular torque
+        PhysicsServer3D.BodyApplyTorqueImpulse(b, new Vector3(4, 0, 0)); // perpendicular torque (about the frame X)
         yield return Wait.Frames(10);
-        float wy = Math.Abs(w.AngVel(b).Y);
-        Assert.Expect(wy < 0.25f, $"hinge resists perpendicular spin (wy={wy:F2})");
+        float wx = Math.Abs(w.AngVel(b).X);
+        Assert.Expect(wx < 0.25f, $"hinge resists perpendicular spin (wx={wx:F2})");
     }
     static IEnumerator HingeLimit() {
         using var w = new PhysxWorld(false);
@@ -133,7 +137,8 @@ internal static class JointTests {
         PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorMaxImpulse, 40f);
         yield return Wait.Frames(120);
         var q = w.Pos(b).Basis.GetRotationQuaternion();
-        // The arm extends along +x from pivot; swing about hinge X axis is limited to ±0.3 rad.
+        // Swing about the hinge Z axis is limited to ±0.3 rad (measured in the
+        // XY plane around the pivot).
         float swing = Math.Abs(Mathf.Atan2(w.Pos(b).Origin.Y - 5f, w.Pos(b).Origin.X));
         Assert.Expect(swing < 0.65f, $"hinge limit clamps swing (measured {swing:F2} rad, limit 0.3 + solver slack)");
         Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite at limit");
@@ -146,8 +151,8 @@ internal static class JointTests {
         PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity, 4f);
         PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorMaxImpulse, 50f);
         yield return Wait.Frames(90);
-        Assert.Expect(Mathf.Abs(w.AngVel(b).X) > 1.5f,
-            $"motor drives hinge toward target velocity (wx={w.AngVel(b).X:F2}, target 4)");
+        Assert.Expect(Mathf.Abs(w.AngVel(b).Z) > 1.5f,
+            $"motor drives hinge toward target velocity (wz={w.AngVel(b).Z:F2}, target 4)");
     }
     static IEnumerator SliderDof() {
         using var w = new PhysxWorld(false);
@@ -495,5 +500,67 @@ internal static class JointTests {
         Assert.ExpectNear(q.AngleTo(Quaternion.Identity), 0.3f, 0.12f,
             $"angular spring settles at the equilibrium angle (got {q.AngleTo(Quaternion.Identity):F3})");
         Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite");
+    }
+    // Freeing a connected body must leave the joint wrapper alive: the RID the
+    // Joint3D node holds stays valid, getters keep working, and teardown is
+    // error-free (no "RID not found" noise).
+    static IEnumerator JointSurvivesBodyFree() {
+        using var w = new PhysxWorld(false);
+        var (a, b, j) = MakePinnedPair(w, new Vector3(0, 8, 0));
+        PhysicsServer3D.FreeRid(b); // joint loses one side; the wrapper must survive
+        yield return Wait.Frame();
+        Assert.Expect(PhysicsServer3D.JointGetType(j) == PhysicsServer3D.JointType.Pin,
+            "joint type still reported after the connected body was freed");
+        PhysicsServer3D.PinJointSetParam(j, PhysicsServer3D.PinJointParam.Bias, 0.25f);
+        Assert.ExpectNear(PhysicsServer3D.PinJointGetParam(j, PhysicsServer3D.PinJointParam.Bias), 0.25f, 1e-4f,
+            "param round-trip on a joint whose body was freed");
+        yield return Wait.Frames(20);
+        Assert.Expect(PhysxWorld.Finite(w.Pos(a)), "other body state finite; engine healthy");
+    }
+
+    // A hinge made between two static bodies is dormant (no dynamic actor for
+    // the constraint). Switching one body to rigid must resurrect it about the
+    // same Z axis, with the parameters configured while dormant intact.
+    static IEnumerator DormantHingeResurrects() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.3f), new Vector3(0, 5, 0));
+        var b = w.MakeStatic(w.Box(0.25f, 1.0f, 0.25f), new Vector3(0.75f, 5f, 0));
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeHinge(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.HingeJointSetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor, true);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity, 4f);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorMaxImpulse, 50f);
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Rigid);
+        yield return Wait.Frames(90);
+        Assert.Expect(Mathf.Abs(w.AngVel(b).Z) > 1.0f,
+            $"resurrected hinge motor spins about Z (wz={w.AngVel(b).Z:F2})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "resurrected hinge state finite");
+    }
+
+    // Parameters configured before the PxJoint exists (fresh RID, dormant
+    // configuration) must survive the make and remain readable afterwards.
+    static IEnumerator ParamsBeforeMakeRoundtrip() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.3f), new Vector3(0, 5, 0));
+        var b = w.MakeStatic(w.Box(0.25f, 1.0f, 0.25f), new Vector3(0.75f, 5f, 0));
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.LimitUpper, 0.4f);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity, 6f);
+        PhysicsServer3D.HingeJointSetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor, true);
+        PhysicsServer3D.JointMakeHinge(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Rigid);
+        yield return Wait.Frame();
+        Assert.ExpectNear(PhysicsServer3D.HingeJointGetParam(j, PhysicsServer3D.HingeJointParam.LimitUpper), 0.4f, 1e-4f,
+            "limit upper set before make survives");
+        Assert.ExpectNear(PhysicsServer3D.HingeJointGetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity), 6f, 1e-4f,
+            "motor target set before make survives");
+        Assert.Expect(PhysicsServer3D.HingeJointGetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor),
+            "motor flag set before make survives");
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorMaxImpulse, 30f);
+        yield return Wait.Frames(60);
+        Assert.Expect(Mathf.Abs(w.AngVel(b).Z) > 0.5f,
+            $"pre-configured motor drives the hinge about Z (wz={w.AngVel(b).Z:F2})");
     }
 }
