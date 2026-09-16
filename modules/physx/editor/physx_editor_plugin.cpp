@@ -33,10 +33,24 @@
 #include "../nodes/physx_cloth_3d.h"
 #include "../nodes/physx_particle_fluid_3d.h"
 
+#ifdef GODOT_PHYSX_BLAST
+#include "../blast/physx_destructible_3d.h"
+#include "physx_blast_asset_inspector_plugin.h"
+#include "physx_blast_context_menu_plugin.h"
+#include "physx_blast_fracture_dialog.h"
+#include "physx_blast_icons.h"
+#endif
+
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/scene/3d/node_3d_editor_plugin.h"
 #include "editor/settings/editor_settings.h"
 #include "scene/3d/physics/area_3d.h"
+
+#ifdef GODOT_PHYSX_BLAST
+#include "editor/editor_node.h"
+#include "editor/editor_string_names.h"
+#include "editor/inspector/editor_context_menu_plugin.h"
+#endif
 
 PhysXParticleFluid3DGizmoPlugin::PhysXParticleFluid3DGizmoPlugin() {
 	helper.instantiate();
@@ -299,6 +313,53 @@ void PhysXCloth3DGizmoPlugin::commit_handle(const EditorNode3DGizmo *p_gizmo, in
 	ur->commit_action();
 }
 
+#ifdef GODOT_PHYSX_BLAST
+bool PhysXDestructible3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
+	return Object::cast_to<PhysXDestructible3D>(p_spatial) != nullptr;
+}
+
+String PhysXDestructible3DGizmoPlugin::get_gizmo_name() const {
+	return "PhysXDestructible3D";
+}
+
+int PhysXDestructible3DGizmoPlugin::get_priority() const {
+	return -1;
+}
+
+bool PhysXDestructible3DGizmoPlugin::is_selectable_when_hidden() const {
+	return true;
+}
+
+void PhysXDestructible3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
+	PhysXDestructible3D *destructible = Object::cast_to<PhysXDestructible3D>(p_gizmo->get_node_3d());
+	p_gizmo->clear();
+	const Ref<TriangleMesh> tm = destructible->generate_triangle_mesh();
+	if (tm.is_valid()) {
+		p_gizmo->add_collision_triangles(tm);
+	}
+	// Manual selection-box outline -- the node is not a VisualInstance3D, so
+	// the editor won't draw this on its own. The is_selected() gate matches
+	// the real dashed selection box's own behavior (only visible while the
+	// node is actually selected) -- without it this drew unconditionally on
+	// every instance, all the time.
+	const AABB aabb = destructible->get_aabb();
+	if (p_gizmo->is_selected() && aabb.size != Vector3()) {
+		Vector<Vector3> lines;
+		for (int i = 0; i < 12; i++) {
+			Vector3 a, b;
+			aabb.get_edge(i, a, b);
+			lines.push_back(a);
+			lines.push_back(b);
+		}
+		p_gizmo->add_lines(lines, get_material("selection_box", p_gizmo));
+	}
+}
+
+PhysXDestructible3DGizmoPlugin::PhysXDestructible3DGizmoPlugin() {
+	create_material("selection_box", Color(1.0, 0.8, 0.2));
+}
+#endif
+
 PhysXEditorPlugin::PhysXEditorPlugin() {
 	Ref<PhysXParticleFluid3DGizmoPlugin> fluid_gizmo;
 	fluid_gizmo.instantiate();
@@ -307,4 +368,33 @@ PhysXEditorPlugin::PhysXEditorPlugin() {
 	Ref<PhysXCloth3DGizmoPlugin> cloth_gizmo;
 	cloth_gizmo.instantiate();
 	Node3DEditor::get_singleton()->add_gizmo_plugin(cloth_gizmo);
+
+#ifdef GODOT_PHYSX_BLAST
+	Ref<PhysXDestructible3DGizmoPlugin> destructible_gizmo;
+	destructible_gizmo.instantiate();
+	Node3DEditor::get_singleton()->add_gizmo_plugin(destructible_gizmo);
+
+	blast_fracture_dialog = memnew(PhysXBlastFractureDialog);
+	EditorNode::get_singleton()->get_gui_base()->add_child(blast_fracture_dialog);
+
+	Ref<PhysXBlastFractureMenuPlugin> blast_scene_tree_menu;
+	blast_scene_tree_menu.instantiate(EditorContextMenuPlugin::CONTEXT_SLOT_SCENE_TREE, blast_fracture_dialog);
+	EditorContextMenuPluginManager::get_singleton()->add_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_SCENE_TREE, blast_scene_tree_menu);
+
+	Ref<PhysXBlastFractureMenuPlugin> blast_filesystem_menu;
+	blast_filesystem_menu.instantiate(EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, blast_fracture_dialog);
+	EditorContextMenuPluginManager::get_singleton()->add_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, blast_filesystem_menu);
+
+	Ref<EditorInspectorPluginPhysXBlastAsset> blast_asset_inspector;
+	blast_asset_inspector.instantiate();
+	add_inspector_plugin(blast_asset_inspector);
+
+	// Otherwise PhysXBlastAsset falls back to the engine's generic
+	// Resource/"blank paper" icon everywhere (FileSystem dock, Inspector
+	// header) since nothing in the editor theme matches its class name.
+	Ref<Texture2D> blast_asset_icon = physx_blast_asset_make_icon();
+	if (blast_asset_icon.is_valid()) {
+		EditorNode::get_singleton()->get_editor_theme()->set_icon("PhysXBlastAsset", EditorStringName(EditorIcons), blast_asset_icon);
+	}
+#endif
 }

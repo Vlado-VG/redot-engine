@@ -33,6 +33,8 @@ modules/physx/test/
     gdscript/
       gdscript_binding_tests.gd   BINDING-VALIDATION SUITE (GDScript, smaller)
       physx_vehicle_bridge.gd     GDScript bridge for module vehicle API
+      blast_smoke_test.gd         standalone Blast smoke test (authoring + destructible)
+                                  run: --script res://gdscript/blast_smoke_test.gd
   run_suite.py                    CI driver: tiers, crash detection, JSON merge
   README.md                       this file
 ```

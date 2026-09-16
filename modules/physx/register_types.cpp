@@ -22,6 +22,12 @@
 #include "nodes/physx_granular_3d.h"
 #include "nodes/physx_particle_fluid_3d.h"
 
+#ifdef GODOT_PHYSX_BLAST
+#include "blast/physx_blast_asset.h"
+#include "blast/physx_blast_authoring.h"
+#include "blast/physx_destructible_3d.h"
+#endif
+
 #ifdef TOOLS_ENABLED
 #include "editor/physx_editor_plugin.h"
 #endif
@@ -67,6 +73,11 @@ void initialize_physx_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<PhysXCloth3D>();
 		ClassDB::register_class<PhysXGranular3D>();
 		ClassDB::register_class<PhysXParticleFluid3D>();
+#ifdef GODOT_PHYSX_BLAST
+		ClassDB::register_class<PhysXDestructible3D>();
+		ClassDB::register_class<PhysXBlastAsset>();
+		ClassDB::register_class<PhysXBlastAuthoring>();
+#endif
 	}
 
 #ifdef TOOLS_ENABLED

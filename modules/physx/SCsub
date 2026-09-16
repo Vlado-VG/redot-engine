@@ -128,6 +128,72 @@ if env["platform"] == "windows":
             Copy("$TARGET", "$SOURCE"),
         )
 
+# --- Blast (NvBlast + authoring/shaders extensions) --------------------------
+# Runtime mesh fracture/destruction. Prebuilt Blast 5.x SDK in
+# thirdparty/blast, vendor layout:
+#   include/<subdirs>/          headers
+#   lib/windows/x86_64/release  import .lib stubs (Blast's own build ships as
+#                               DLLs, so these are only import stubs)
+#   bin/windows/x86_64/release  runtime DLLs, copied next to the built binary
+#                               like PhysXGpu_64.dll above
+# Disable with `blast=no` -- the module then builds exactly as before, with no
+# Blast support compiled in (all Blast code is GODOT_PHYSX_BLAST-guarded).
+# Non-Windows platforms have no library wiring here yet; on them Blast
+# compiles out entirely.
+blast_enabled = ARGUMENTS.get("blast", "yes") not in ("no", "0", "false", "False")
+blast_dir = Dir("#thirdparty/blast")
+if blast_enabled and env["platform"] == "windows":
+    blast_inc = blast_dir.Dir("include")
+    # Blast's headers #include each other with flat names (e.g.
+    # NvBlastExtAuthoring.h does #include "NvBlastExtAuthoringTypes.h"),
+    # assuming same-directory resolution -- one root CPPPATH entry isn't
+    # enough, each leaf subdirectory needs its own entry.
+    for _blast_subdir in (
+        "extensions/assetutils",
+        "extensions/authoring",
+        "extensions/authoringCommon",
+        "extensions/serialization",
+        "extensions/shaders",
+        "extensions/stress",
+        "globals",
+        "lowlevel",
+        "shared/NvFoundation",
+        "toolkit",
+    ):
+        env_physx.Append(CPPPATH=[blast_inc.Dir(_blast_subdir).abspath])
+
+    env_physx.Append(CPPDEFINES=["GODOT_PHYSX_BLAST"])
+
+    # Low-level API, the authoring extension (offline fracture authoring), and
+    # the shaders extension (pre-built radial/falloff damage programs). NvBlastTk/
+    # serialization/stress aren't linked -- nothing in the module uses them.
+    blast_libs = ["NvBlast", "NvBlastGlobals", "NvBlastExtAuthoring", "NvBlastExtShaders"]
+    env.PrependUnique(LIBPATH=[blast_dir.Dir("lib/windows/x86_64/release").abspath])
+    env.Append(LINKFLAGS=[x + ".lib" for x in blast_libs])
+    # Copy the full runtime DLL set: NvBlastExtAuthoring.dll may pull in the
+    # other NvBlast DLLs at load time, and a missing one fails the engine load.
+    blast_dll_dir = blast_dir.Dir("bin/windows/x86_64/release")
+    for dll_name in [
+        "NvBlast.dll",
+        "NvBlastExtAssetUtils.dll",
+        "NvBlastExtAuthoring.dll",
+        "NvBlastExtSerialization.dll",
+        "NvBlastExtShaders.dll",
+        "NvBlastExtStress.dll",
+        "NvBlastExtTkSerialization.dll",
+        "NvBlastGlobals.dll",
+        "NvBlastTk.dll",
+    ]:
+        env.Command(
+            File("#bin/" + dll_name),
+            blast_dll_dir.File(dll_name),
+            Copy("$TARGET", "$SOURCE"),
+        )
+
+    env_physx.add_source_files(env.modules_sources, "blast/*.cpp")
+elif blast_enabled and env["platform"] != "windows":
+    print("physx: blast=yes has no library wiring for platform '%s' yet; building without Blast." % env["platform"])
+
 # MLS-MPM compute-fluid shaders (cross-vendor fallback for the PhysX GPU path).
 # Every pass #include's mpm_fluid_inc.glsl, which GLSL_HEADER does not see, so
 # bind the dependency to each .gen.h target *by name* (a Glob here only catches

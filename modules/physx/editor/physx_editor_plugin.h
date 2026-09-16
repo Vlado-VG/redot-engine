@@ -34,6 +34,10 @@
 #include "editor/scene/3d/gizmos/gizmo_3d_helper.h"
 #include "editor/scene/3d/node_3d_editor_gizmos.h"
 
+#ifdef GODOT_PHYSX_BLAST
+class PhysXBlastFractureDialog;
+#endif
+
 // Viewport gizmo for PhysXParticleFluid3D: a wireframe box for the spawn region
 // (with drag handles), a ring for the emission radius and an arrow for the
 // emission velocity.
@@ -81,8 +85,34 @@ public:
 	PhysXCloth3DGizmoPlugin();
 };
 
+#ifdef GODOT_PHYSX_BLAST
+// Viewport gizmo for PhysXDestructible3D: registers chunk 0's real
+// per-triangle collision geometry for viewport click-to-select (the same
+// mechanism MeshInstance3DGizmoPlugin uses) and draws the dashed selection
+// box outline manually -- the node deliberately isn't a VisualInstance3D
+// (see its class doc comment), so the editor won't draw one on its own.
+class PhysXDestructible3DGizmoPlugin : public EditorNode3DGizmoPlugin {
+	GDCLASS(PhysXDestructible3DGizmoPlugin, EditorNode3DGizmoPlugin);
+
+public:
+	bool has_gizmo(Node3D *p_spatial) override;
+	String get_gizmo_name() const override;
+	int get_priority() const override;
+	bool is_selectable_when_hidden() const override;
+	void redraw(EditorNode3DGizmo *p_gizmo) override;
+
+	PhysXDestructible3DGizmoPlugin();
+};
+#endif
+
 class PhysXEditorPlugin : public EditorPlugin {
 	GDCLASS(PhysXEditorPlugin, EditorPlugin);
+
+#ifdef GODOT_PHYSX_BLAST
+	// Owned as a child of the editor's GUI base; both context-menu plugins
+	// target this one shared dialog instance.
+	PhysXBlastFractureDialog *blast_fracture_dialog = nullptr;
+#endif
 
 public:
 	PhysXEditorPlugin();
