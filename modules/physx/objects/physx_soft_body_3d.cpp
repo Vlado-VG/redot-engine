@@ -429,9 +429,12 @@ void PhysXSoftBody3D::apply_point_impulse(int p_point_index, const Vector3 &p_im
 	if (solver.is_pinned((int)v)) {
 		return;
 	}
-	// impulse = mass * dv; solver mass is areal, approximate per-vertex via total.
-	const float inv_n = 1.0f / (float)MAX(solver.vertex_count(), 1);
-	const float inv_mass = (float)solver.vertex_count() / MAX((float)total_mass, 0.001f) * inv_n;
+	// Per-vertex mass is total_mass / N (the solver distributes it evenly), so
+	// the velocity kick of a point impulse is impulse * N / total_mass. The
+	// previous expression multiplied and divided by N, cancelling to
+	// impulse / total_mass -- an N-times-too-weak nudge on any real mesh.
+	const float n = (float)MAX(solver.vertex_count(), 1);
+	const float inv_mass = n / MAX((float)total_mass, 0.001f);
 	solver.velocities_mut()[v] += p_impulse * inv_mass;
 }
 
@@ -536,14 +539,18 @@ void PhysXSoftBody3D::_refresh_contacts() {
 		if (!ss->rest_info(params, &info)) {
 			continue;
 		}
-		// rest_info reports info.point = query_center - normal * penetration, so
-		// penetration = (pos - info.point) . normal (> 0 while overlapping). Cache
-		// the actual surface plane -- point on the surface + its outward normal --
-		// so _resolve_contacts() can keep the vertex on the outside all frame
-		// even as it moves.
-		const float penetration = (pos[i] - info.point).dot(info.normal);
+		// This backend's rest_info reports info.point as the closest point ON
+		// the collider's surface to the query center and info.normal as the
+		// outward push direction. The sphere's penetration is therefore
+		// radius minus the center's distance to that surface point, and the
+		// surface plane _resolve_contacts() needs is exactly (info.point,
+		// info.normal). The old projection formula misread the contract and
+		// cached a plane ~radius above the surface, so resting vertices
+		// hovered and deep ones stayed stuck.
+		const float dist_to_surface = pos[i].distance_to(info.point);
+		const float penetration = radius - dist_to_surface;
 		contact_n[i] = info.normal;
-		contact_p[i] = pos[i] + info.normal * penetration; // point on the surface
+		contact_p[i] = info.point;
 		contact_hit[i] = 1;
 		if (penetration > 0.0f) {
 			contact_count++;
