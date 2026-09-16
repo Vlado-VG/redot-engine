@@ -73,7 +73,10 @@ private:
 		RID shape;
 		double spawn_time = 0.0;
 		float size = 0.1; // full edge length / diameter, for the render transform's scale
+		uint64_t id = 0; // stable id (get_active_chunk_bodies -> apply_chunk_impulse)
 	};
+
+	uint64_t next_chunk_id = 1; // 0 is never handed out, so 0 reads as "no chunk"
 
 	int chunk_count = 14; // spawned per spawn_at() call
 	float chunk_size_min = 0.06;
@@ -151,10 +154,13 @@ public:
 		Vector3 velocity;
 		Vector3 half_extents; // box: half size; sphere: x = radius
 		bool sphere = false;
-		int index = -1; // pass back to apply_chunk_impulse()
+		// Stable across recycles (unlike the array slot): pass it back to
+		// apply_chunk_impulse(). A chunk freed before the call is a no-op,
+		// never an impulse aimed at the wrong chunk.
+		uint64_t id = 0;
 	};
 	void get_active_chunk_bodies(LocalVector<ChunkBody> &r_out) const;
-	void apply_chunk_impulse(int p_index, const Vector3 &p_impulse);
+	void apply_chunk_impulse(uint64_t p_chunk_id, const Vector3 &p_impulse);
 
 	void set_emitting(bool p_v);
 	bool is_emitting() const { return emitting; }

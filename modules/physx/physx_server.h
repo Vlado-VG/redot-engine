@@ -576,6 +576,11 @@ public:
 	/// Releases all vehicles that have the given body as chassis before
 	/// freeing it. Called by free() to prevent dangling chassis pointers.
 	void release_vehicles_for_body(PhysXBody3D *p_body) const;
+	/// Drops all vehicles' "surface_frictions" grip-table entries that were
+	/// resolved from the given body's material. Called by free() before the
+	/// body (and its PxMaterial) is destroyed — non-chassis ground bodies are
+	/// referenced by the grip table without any other lifetime link.
+	void invalidate_vehicles_surface_pairs(PhysXBody3D *p_body) const;
 
 	virtual void set_active(bool p_active) override;
 

@@ -55,6 +55,12 @@ void PhysXGPUCloth3D::_destroy_surface() {
 		surface = nullptr;
 	}
 	if (shape) {
+		// The explicit release is REQUIRED even after the surface release:
+		// PxDeformableSurface derives from PxActor (NOT PxRigidActor), and
+		// PxActor::release() does not destroy attached shapes. Skipping this
+		// release leaks the exclusive shape into PxPhysics::release(), where
+		// ~NpShape then runs against this already-released material and
+		// crashes at shutdown.
 		shape->release();
 		shape = nullptr;
 	}

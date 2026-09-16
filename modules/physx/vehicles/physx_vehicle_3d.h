@@ -222,6 +222,11 @@ private:
 	PhysXBody3D *chassis_body = nullptr;
 	physx::PxRigidDynamic *chassis_actor = nullptr;
 
+	/// Drops every "surface_frictions" grip-table entry that was resolved from
+	/// p_body's material — called by the server when that body is freed, before
+	/// its PxMaterial is released (the stored raw pointers would dangle).
+	void invalidate_surface_pairs_for_body(const PhysXBody3D *p_body);
+
 	// --- vehicle2 guts (compiler firewall; defined in .cpp) ---
 	struct Vehicle2State;
 	Vehicle2State *v2 = nullptr;

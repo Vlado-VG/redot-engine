@@ -105,16 +105,20 @@ void PhysXChunkEmitter3D::get_active_chunk_bodies(LocalVector<ChunkBody> &r_out)
 		const float h = chunks[i].size * 0.5f;
 		cb.half_extents = Vector3(h, h, h);
 		cb.sphere = is_sphere;
-		cb.index = (int)i;
+		cb.id = chunks[i].id;
 		r_out.push_back(cb);
 	}
 }
 
-void PhysXChunkEmitter3D::apply_chunk_impulse(int p_index, const Vector3 &p_impulse) {
-	if (p_index < 0 || p_index >= (int)chunks.size()) {
-		return;
+void PhysXChunkEmitter3D::apply_chunk_impulse(uint64_t p_chunk_id, const Vector3 &p_impulse) {
+	// Stable-id lookup: chunk slots shift when older chunks are recycled, so an
+	// array index captured earlier could aim the impulse at the wrong chunk.
+	for (uint32_t i = 0; i < chunks.size(); i++) {
+		if (chunks[i].id == p_chunk_id) {
+			PhysicsServer3D::get_singleton()->body_apply_central_impulse(chunks[i].body, p_impulse);
+			return;
+		}
 	}
-	PhysicsServer3D::get_singleton()->body_apply_central_impulse(chunks[p_index].body, p_impulse);
 }
 
 void PhysXChunkEmitter3D::_sync_transforms() {
@@ -190,6 +194,7 @@ void PhysXChunkEmitter3D::_spawn_one(const Vector3 &p_world_pos, const Vector3 &
 	chunk.shape = shape;
 	chunk.spawn_time = Time::get_singleton()->get_ticks_msec() / 1000.0;
 	chunk.size = size;
+	chunk.id = next_chunk_id++;
 	chunks.push_back(chunk);
 }
 
@@ -255,8 +260,18 @@ void PhysXChunkEmitter3D::_notification(int p_what) {
 				_ensure_multimesh();
 				emission_accum += get_physics_process_delta_time() * emission_rate;
 				const RID space = get_world_3d()->get_space();
+				// Normalize once per tick so the stored direction's LENGTH does
+				// not silently scale the launch speed (_spawn_one treats the
+				// direction as unit and multiplies by the impulse range) --
+				// same semantics as spawn_at().
+				Vector3 emit_dir = emission_direction;
+				if (emit_dir.length_squared() < 0.0001) {
+					emit_dir = Vector3(0, 1, 0);
+				} else {
+					emit_dir.normalize();
+				}
 				while (emission_accum >= 1.0) {
-					_spawn_one(get_global_position(), emission_direction, space);
+					_spawn_one(get_global_position(), emit_dir, space);
 					emission_accum -= 1.0;
 				}
 				while ((int)chunks.size() > max_active) {

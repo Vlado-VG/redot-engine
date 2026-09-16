@@ -233,7 +233,7 @@ static bool resolve_mpm_collider(Node3D *p_node, MPMFluidSolver::Collider &out) 
 struct ColliderSource {
 	Node3D *node = nullptr;
 	PhysXChunkEmitter3D *chunk_emitter = nullptr;
-	int chunk_index = -1;
+	uint64_t chunk_id = 0; // stable emitter-side id (survives chunk recycles)
 };
 
 void PhysXParticleFluid3D::_mpm_step(double p_delta) {
@@ -274,7 +274,7 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 		}
 		seen_pos[n->get_instance_id()] = c.position;
 		cols.push_back(c);
-		col_src.push_back(ColliderSource{ n, nullptr, -1 });
+		col_src.push_back(ColliderSource{ n, nullptr, 0 });
 	}
 
 	// Auto colliders: every non-static body overlapping the domain this step,
@@ -338,7 +338,7 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 			for (int i = 0; i < take; i++) {
 				seen_pos[acands[i].node->get_instance_id()] = acands[i].c.position;
 				cols.push_back(acands[i].c);
-				col_src.push_back(ColliderSource{ acands[i].node, nullptr, -1 });
+				col_src.push_back(ColliderSource{ acands[i].node, nullptr, 0 });
 			}
 		}
 	}
@@ -353,7 +353,7 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 		struct Cand {
 			MPMFluidSolver::Collider c;
 			PhysXChunkEmitter3D *emitter;
-			int index;
+			uint64_t chunk_id;
 			float dist2;
 		};
 		struct ClosestChunk {
@@ -375,14 +375,14 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 				c.rotation = b.xform.basis.get_rotation_quaternion();
 				c.extents = b.sphere ? Vector3(MAX(b.half_extents.x, 0.01f), 0, 0) : b.half_extents;
 				c.velocity = b.velocity;
-				cands.push_back(Cand{ c, ce, b.index, (float)rel.length_squared() });
+				cands.push_back(Cand{ c, ce, b.id, (float)rel.length_squared() });
 			}
 		}
 		cands.sort_custom<ClosestChunk>();
 		const int take = MIN((int)cands.size(), COLLIDER_BUDGET - (int)cols.size());
 		for (int i = 0; i < take; i++) {
 			cols.push_back(cands[i].c);
-			col_src.push_back(ColliderSource{ nullptr, cands[i].emitter, cands[i].index });
+			col_src.push_back(ColliderSource{ nullptr, cands[i].emitter, cands[i].chunk_id });
 		}
 	}
 
@@ -417,7 +417,7 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 			if (imp.length() > cap) {
 				imp = imp.normalized() * cap;
 			}
-			src.chunk_emitter->apply_chunk_impulse(src.chunk_index, imp);
+			src.chunk_emitter->apply_chunk_impulse(src.chunk_id, imp);
 			continue;
 		}
 		RigidBody3D *rb = Object::cast_to<RigidBody3D>(src.node);
@@ -781,21 +781,26 @@ void PhysXParticleFluid3D::spawn() {
 	// prefill (_seed_block) instead of banking a slab against one wall.
 	const Vector3 half = spawn_region_size * 0.5;
 	const float spacing = MAX(particle_size, 0.001f);
-	const Vector3i counts(
-			MAX(1, int(spawn_region_size.x / spacing)),
-			MAX(1, int(spawn_region_size.y / spacing)),
-			MAX(1, int(spawn_region_size.z / spacing)));
+	// 64-bit cell math: a large region over a small spacing would overflow the
+	// int32 product (a 10 m region at 1 mm spacing is 10^12 cells), producing a
+	// negative resize count. Per-axis counts are clamped to particle_count --
+	// the fill never emits more than that anyway -- and the product is taken
+	// before the MIN in 64 bits.
+	const int64_t cx = CLAMP(int64_t(spawn_region_size.x / spacing), int64_t(1), int64_t(particle_count));
+	const int64_t cy = CLAMP(int64_t(spawn_region_size.y / spacing), int64_t(1), int64_t(particle_count));
+	const int64_t cz = CLAMP(int64_t(spawn_region_size.z / spacing), int64_t(1), int64_t(particle_count));
+	const int cap = (int)MIN((int64_t)particle_count, cx * cy * cz);
 	const Transform3D xf = get_global_transform();
 
 	Vector<Vector3> positions;
-	positions.resize(MIN(particle_count, counts.x * counts.y * counts.z));
+	positions.resize(MAX(cap, 0));
 	Vector3 *w = positions.ptrw();
 	int n = 0;
-	const int cap = positions.size();
+	const int64_t limit = cap;
 	const float jitter = spacing * 0.2;
-	for (int iy = 0; iy < counts.y && n < cap; iy++) {
-		for (int iz = 0; iz < counts.z && n < cap; iz++) {
-			for (int ix = 0; ix < counts.x && n < cap; ix++) {
+	for (int64_t iy = 0; iy < cy && n < limit; iy++) {
+		for (int64_t iz = 0; iz < cz && n < limit; iz++) {
+			for (int64_t ix = 0; ix < cx && n < limit; ix++) {
 				Vector3 local(
 						-half.x + (ix + 0.5f) * spacing + Math::randf() * jitter,
 						-half.y + (iy + 0.5f) * spacing + Math::randf() * jitter,

@@ -112,6 +112,12 @@ struct PhysXVehicle3D::Vehicle2State {
 	// ([wheel * MAX_SURFACE_PAIRS, + nb)); filled from vehicle_set_wheel_params
 	// "surface_frictions".
 	physx::PxVehiclePhysXMaterialFriction *surface_pairs = nullptr;
+	// Parallel Godot-side table recording WHICH body each surface_pairs entry
+	// was resolved from, so entries can be invalidated when that body (and its
+	// private PxMaterial) is freed — a raw PxMaterial* here would otherwise
+	// dangle the moment the ground body dies (PhysXShapedObject3D releases the
+	// material in its destructor).
+	RID *surface_pair_bodies = nullptr;
 
 	// per-wheel state (recomputed each step)
 	physx::PxVehicleRoadGeometryState *road_geometry_states = nullptr;
@@ -680,6 +686,7 @@ void PhysXVehicle3D::Vehicle2State::allocate_arrays(int p_n) {
 	suspension_limit_params = new physx::PxVehiclePhysXSuspensionLimitConstraintParams[p_n]();
 	anti_roll_params = new physx::PxVehicleAntiRollForceParams[p_n]();
 	surface_pairs = new physx::PxVehiclePhysXMaterialFriction[p_n * MAX_SURFACE_PAIRS]();
+	surface_pair_bodies = new RID[p_n * MAX_SURFACE_PAIRS]();
 
 	road_geometry_states = new physx::PxVehicleRoadGeometryState[p_n]();
 	physx_road_geometry_states = new physx::PxVehiclePhysXRoadGeometryQueryState[p_n]();
@@ -719,6 +726,7 @@ void PhysXVehicle3D::Vehicle2State::free_arrays() {
 	_DEL(suspension_limit_params)
 	_DEL(anti_roll_params)
 	_DEL(surface_pairs)
+	_DEL(surface_pair_bodies)
 	_DEL(wheel_shape_local_poses)
 	_DEL(road_geometry_states)
 	_DEL(physx_road_geometry_states)
@@ -1576,8 +1584,12 @@ void PhysXVehicle3D::apply_wheel_params(int p_idx, const Dictionary &p_params) {
 	if (p_params.has("surface_frictions")) {
 		// Per-wheel grip table: { ground_body_rid: friction }, resolved to the
 		// ground body's PxMaterial. Surfaces not listed use defaultFriction.
+		// The RID of each source body is recorded in the parallel
+		// surface_pair_bodies table so invalidate_surface_pairs_for_body() can
+		// drop entries when a ground body (and its material) is freed.
 		const Dictionary pairs = p_params["surface_frictions"];
 		physx::PxVehiclePhysXMaterialFriction *dst = v2->surface_pairs + p_idx * MAX_SURFACE_PAIRS;
+		RID *dst_bodies = v2->surface_pair_bodies + p_idx * MAX_SURFACE_PAIRS;
 		int n = 0;
 		for (const KeyValue<Variant, Variant> &kv : pairs) {
 			if (n >= (int)MAX_SURFACE_PAIRS) {
@@ -1587,7 +1599,14 @@ void PhysXVehicle3D::apply_wheel_params(int p_idx, const Dictionary &p_params) {
 			ERR_CONTINUE_MSG(!ground, "PhysX: surface_frictions key is not a body RID.");
 			dst[n].material = ground->get_shape_material();
 			dst[n].friction = (float)(double)kv.value;
+			dst_bodies[n] = ground->get_rid();
 			n++;
+		}
+		// Stale RIDs beyond the live count must not resurface: a later call
+		// rewrites 0..n-1 wholesale, but invalidate_surface_pairs_for_body()
+		// matches on RID and would otherwise compare dead slots.
+		for (int i = n; i < (int)MAX_SURFACE_PAIRS; i++) {
+			dst_bodies[i] = RID();
 		}
 		v2->material_friction_params[p_idx].materialFrictions = dst;
 		v2->material_friction_params[p_idx].nbMaterialFrictions = n;
@@ -1600,6 +1619,33 @@ void PhysXVehicle3D::apply_wheel_params(int p_idx, const Dictionary &p_params) {
 
 	// Role flags may have changed -> re-seed the response multipliers.
 	_update_response_params();
+}
+
+void PhysXVehicle3D::invalidate_surface_pairs_for_body(const PhysXBody3D *p_body) {
+	if (!v2 || !p_body) {
+		return;
+	}
+	const RID body_rid = p_body->get_rid();
+	for (int w = 0; w < v2->nb_wheels; w++) {
+		const int base = w * MAX_SURFACE_PAIRS;
+		int nb = v2->material_friction_params[w].nbMaterialFrictions;
+		int i = 0;
+		while (i < nb) {
+			if (v2->surface_pair_bodies[base + i] == body_rid) {
+				// Compact the wheel's block, keeping order stable so the grip
+				// table stays deterministic across a ground-body free.
+				for (int j = i; j < nb - 1; j++) {
+					v2->surface_pairs[base + j] = v2->surface_pairs[base + j + 1];
+					v2->surface_pair_bodies[base + j] = v2->surface_pair_bodies[base + j + 1];
+				}
+				v2->surface_pair_bodies[base + nb - 1] = RID();
+				nb--;
+			} else {
+				i++;
+			}
+		}
+		v2->material_friction_params[w].nbMaterialFrictions = nb;
+	}
 }
 
 // ============================================================================

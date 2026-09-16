@@ -1,4 +1,4 @@
-// Vehicles (module vehicle2 wrapper): both archetypes, deterministic flat
+﻿// Vehicles (module vehicle2 wrapper): both archetypes, deterministic flat
 // track, measured driving/braking/steering behavior, wheel telemetry, and
 // chassis/vehicle destruction interplay. Access route is reported per run
 // (strongly-typed C# bindings when available, GDScript bridge otherwise).
@@ -30,6 +30,7 @@ internal static class VehicleTests {
         s.Add("PHYSX-VEHI-017", "2-wheeler balance assist keeps the bike upright", TwoWheelerBalances);
         s.Add("PHYSX-VEHI-018", "balance telemetry reports lean/roll-rate/assist", BalanceTelemetry);
         s.Add("PHYSX-VEHI-019", "Ackermann negative steer mirrors left-turn geometry, yaws toward +X", AckermannNegative);
+        s.Add("PHYSX-VEHI-020", "surface_frictions grip table survives freeing the ground body", SurfaceFrictionsGroundFree);
     }
 
     static (Rid chassis, Rid vehicle) MakeVehicle(PhysxWorld w, int archetype = 0, float mass = 800f) {
@@ -407,5 +408,36 @@ internal static class VehicleTests {
         Assert.Expect(Mathf.IsFinite(lean) && Mathf.IsFinite(rate) && Mathf.IsFinite(assist),
                 $"balance telemetry is finite (lean={lean:F4} rate={rate:F4} assist={assist:F4})");
         Assert.Expect(Mathf.Abs(lean) < 0.5f, $"settled 2-wheeler leans near upright (lean={lean:F4})");
+    }
+
+    // The "surface_frictions" grip table stores raw PxMaterial pointers
+    // resolved from ground bodies. Freeing a ground body mid-run must drop
+    // those entries server-side, not leave a dangling material pointer for the
+    // per-step suspension/tire update to consume (crashes or corrupts friction
+    // on the next step). Regression for the Phase 2 lifetime fix.
+    static IEnumerator SurfaceFrictionsGroundFree() {
+        using var w = new PhysxWorld();
+        var ground = w.MakeBody(w.Box(40f, 0.5f, 40f), new Vector3(0, -0.5f, 0),
+                mode: PhysicsServer3D.BodyMode.Static);
+        var (chassis, v) = MakeVehicle(w);
+        for (int i = 0; i < 4; i++) {
+            VehicleApi.SetWheelParams(v, i, new Godot.Collections.Dictionary {
+                ["surface_friction_default"] = 1.0f,
+                ["surface_frictions"] = new Godot.Collections.Dictionary {
+                    [ground] = 1.2f, // non-default grip while the ground lives
+                },
+            });
+        }
+        yield return Wait.Frames(30); // wheels settle onto the ground
+        VehicleApi.SetControlInputs(v, 0.8f, 0f, 0f, 0f);
+        yield return Wait.Frames(30); // drive with the grip table active
+        PhysicsServer3D.FreeRid(ground); // dangle the table pre-fix
+        yield return Wait.Frames(90); // keep simulating on the (now default) grip
+        var canary = w.MakeBody(w.Box(0.3f), new Vector3(5, 3, 0));
+        yield return Wait.Frames(30);
+        Assert.Expect(w.Pos(canary).Origin.Y < 2.5f,
+                "simulation healthy after freeing a surface_frictions ground body");
+        Assert.Expect(VehicleApi.GetWheelCount(v) == 4, "vehicle still valid after ground free");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(chassis)), "chassis state stays finite after ground free");
     }
 }

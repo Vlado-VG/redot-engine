@@ -810,6 +810,16 @@ void PhysXGPUParticleFluid3D::set_capacity(uint32_t p_capacity) {
 	capacity = p_capacity;
 	// The buffer is fixed size; drop it so the next spawn/emit rebuilds it.
 	clear();
+	// The isosurface scratch buffers (device + pinned host) are sized from the
+	// capacity at init(), while onPostSolve feeds the NEW particle-buffer
+	// capacity into the extractor — a stale extractor would overrun its
+	// buffers. Rebuild it against the new capacity (same pattern as
+	// set_foam_size). clear() left px_system alive, so _ensure_isosurface()
+	// can re-register the callback.
+	if (iso) {
+		_destroy_isosurface();
+		_ensure_isosurface();
+	}
 }
 
 void PhysXGPUParticleFluid3D::clear() {

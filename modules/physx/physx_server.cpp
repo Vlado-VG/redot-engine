@@ -2298,6 +2298,9 @@ void PhysXServer3D::free(RID p_rid) {
 		// Release any joints/vehicles that reference this body before deleting it.
 		release_joints_for_actor(b->get_px_actor());
 		release_vehicles_for_body(b);
+		// Drop grip-table references from surviving vehicles: memdelete(b) below
+		// releases the body's PxMaterial, which those tables hold raw pointers to.
+		invalidate_vehicles_surface_pairs(b);
 
 		body_owner.free(p_rid);
 		memdelete(b);
@@ -2702,6 +2705,21 @@ void PhysXServer3D::release_vehicles_for_body(PhysXBody3D *p_body) const {
 			v->release();
 			vehicle_owner.free(vehicles[i]);
 			memdelete(v);
+		}
+	}
+}
+
+void PhysXServer3D::invalidate_vehicles_surface_pairs(PhysXBody3D *p_body) const {
+	// Walk every surviving vehicle (release_vehicles_for_body already removed
+	// the chassis ones) and drop grip-table entries resolved from p_body's
+	// material. Called by free() BEFORE the body is deleted, which releases
+	// that material — the stored raw pointers would otherwise dangle and be
+	// consumed by the vehicle's per-step suspension update.
+	LocalVector<RID> vehicles = vehicle_owner.get_owned_list();
+	for (int i = (int)vehicles.size() - 1; i >= 0; i--) {
+		PhysXVehicle3D *v = vehicle_owner.get_or_null(vehicles[i]);
+		if (v) {
+			v->invalidate_surface_pairs_for_body(p_body);
 		}
 	}
 }
