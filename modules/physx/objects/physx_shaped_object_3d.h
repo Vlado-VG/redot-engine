@@ -89,6 +89,15 @@ public:
 	// attached instances of that shape and recreates their PxGeometry.
 	virtual void shape_changed(PhysXShape3D *p_shape);
 
+	// --- Body-scale refresh ---
+	// Called when the owner's transform scale changes (body_set_state
+	// TRANSFORM / area_set_transform): re-bakes every attached shape's
+	// geometry and local pose against the current body_scale. PhysX actor
+	// poses carry no scale, so godot_physics' "the whole body transform
+	// scales its shapes" behavior is produced by baking the node scale into
+	// the geometry (offsets scale too, like children of a scaled node).
+	void refresh_shape_scaling();
+
 	// --- Shape Destruction Notification ---
 	// Called by PhysXShape3D destructor to nullify the shape pointer,
 	// preventing use-after-free when the body is destroyed after the shape.

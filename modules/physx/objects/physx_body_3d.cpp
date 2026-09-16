@@ -358,6 +358,16 @@ void PhysXBody3D::set_state(PhysicsServer3D::BodyState p_state, const Variant &p
 
 	switch (p_state) {
 		case PhysicsServer3D::BODY_STATE_TRANSFORM: {
+			// Capture the node scale BEFORE the pose conversion strips it:
+			// PhysX actor poses carry no scale, so godot_physics' "the whole
+			// body transform scales its shapes" behavior is produced by baking
+			// the captured scale into every attached shape's geometry instead.
+			const Transform3D xform = p_value.operator Transform3D();
+			const Vector3 new_scale = xform.basis.get_scale();
+			if (!new_scale.is_equal_approx(body_scale)) {
+				body_scale = new_scale;
+				refresh_shape_scaling();
+			}
 			physx::PxTransform pose(physx::PxIdentity);
 			_variant_to_pxtransform(p_value, pose);
 			if (mode == PhysicsServer3D::BODY_MODE_KINEMATIC) {

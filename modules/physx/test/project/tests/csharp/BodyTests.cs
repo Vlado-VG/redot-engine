@@ -79,6 +79,10 @@ internal static class BodyTests {
         s.Add("PHYSX-BODY-056", "static->rigid round-trip keeps convex shapes colliding (rebuild_shapes)", ModeRoundTripKeepsConvexCollision);
         s.Add("PHYSX-BODY-057", "disable/re-enable: convex restores collision, concave stays query-only on dynamic", DisabledShapeRoundTrip);
         s.Add("PHYSX-BODY-058", "querying force-integration callback does not re-enter the post pipeline", QueryInIntegratorNoReentry);
+        s.Add("PHYSX-BODY-059", "static body node scale bakes into queries and collision", ScaledStaticBoxQueries);
+        s.Add("PHYSX-BODY-060", "scaled sphere rests at the scaled radius; inertia finite", ScaledSphereRest);
+        s.Add("PHYSX-BODY-061", "mirrored body scale flips asymmetric convex collision", MirroredConvexCollision);
+        s.Add("PHYSX-BODY-062", "scaled area covers the scaled volume (gravity override)", ScaledAreaGravityOverride);
     }
 
     // ------------------------------------------------------------------ modes
@@ -856,5 +860,105 @@ internal static class BodyTests {
         Assert.Expect(integrations >= 28, $"integrator ran each tick ({integrations}/30)");
         Assert.Expect(Mathf.Abs(syncs - integrations) <= 1,
             $"exactly one post pipeline per tick (state syncs={syncs}, integrations={integrations})");
+    }
+    // F-07 regression: the node scale carried on BODY_STATE_TRANSFORM must
+    // bake into the collision geometry (godot_physics scales the whole body
+    // transform). Half-extents 1 * scale (4,2,3) -> world half-extents (4,2,3).
+    static IEnumerator ScaledStaticBoxQueries() {
+        using var w = new PhysxWorld(false);
+        var b = w.MakeStatic(w.Box(1f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform,
+            new Transform3D(new Basis(new Vector3(4, 0, 0), new Vector3(0, 2, 0), new Vector3(0, 0, 3)), new Vector3(0, 5, 0)));
+        yield return Wait.Frames(2);
+
+        // Ray down onto the scaled top face (y = 5 + 2*1 = 7).
+        var hit = w.Ray(new Vector3(0, 14, 0), new Vector3(0, 0, 0));
+        Assert.Expect(hit.Count > 0, "ray hits the scaled box");
+        if (hit.Count > 0) {
+            float topY = ((Vector3)hit["position"]).Y;
+            Assert.ExpectNear(topY, 7f, 0.06f, $"scaled top face height (got {topY:F2}, expected 7.0)");
+        }
+
+        // Scaled extents: inside/outside the scaled x extent (±4).
+        Assert.Expect(w.Point(new Vector3(3.9f, 5f, 0f)).Count > 0, "point inside the scaled extent hits");
+        Assert.Expect(w.Point(new Vector3(4.1f, 5f, 0f)).Count == 0, "point outside the scaled extent misses");
+        // Unscaled half-extent would have ended at ±1: the scale took effect.
+        Assert.Expect(w.Point(new Vector3(0, 5f, 0f)).Count > 0, "point at the center hits");
+    }
+
+    // A sphere of radius 0.5 on a (2,2,2)-scaled body collides at world
+    // radius 1.0, so it comes to rest one meter above the floor; mass stays
+    // finite and the inertia tensor stays finite (mass is preserved, inertia
+    // follows the scaled geometry).
+    static IEnumerator ScaledSphereRest() {
+        using var w = new PhysxWorld(true);
+        var floor = w.MakeStatic(w.Box(20f, 0.5f, 20f), new Vector3(0, -0.5f, 0));
+        var s = w.MakeBody(w.Sphere(0.5f), new Vector3(0, 5f, 0));
+        PhysicsServer3D.BodySetState(s, PhysicsServer3D.BodyState.Transform,
+            new Transform3D(new Basis(new Vector3(2, 0, 0), new Vector3(0, 2, 0), new Vector3(0, 0, 2)), new Vector3(0, 5f, 0)));
+        PhysicsServer3D.BodySetParam(s, PhysicsServer3D.BodyParameter.Mass, 2f);
+        yield return Wait.Frames(120);
+
+        float restY = w.Pos(s).Origin.Y;
+        Assert.ExpectNear(restY, 1.0f, 0.12f, $"scaled sphere rests at world radius 1.0 (y={restY:F2})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(s)), "scaled body state finite");
+        Assert.ExpectNear(PhysicsServer3D.BodyGetParam(s, PhysicsServer3D.BodyParameter.Mass).AsSingle(), 2f, 1e-3f,
+            "mass preserved across scale bake");
+    }
+
+    // A mirrored (-x) body scale flips asymmetric convex collision geometry:
+    // an off-center hull that extends toward +x extends toward -x instead.
+    static IEnumerator MirroredConvexCollision() {
+        using var w = new PhysxWorld(false);
+        // Asymmetric hull: a box from x 0.2..1.2, y/z ±0.5 (offset toward +x).
+        var pts = new System.Collections.Generic.List<Vector3>();
+        for (int i = 0; i < 8; i++) {
+            pts.Add(new Vector3(
+                (i & 1) == 0 ? 0.2f : 1.2f,
+                (i & 2) == 0 ? -0.5f : 0.5f,
+                (i & 4) == 0 ? -0.5f : 0.5f));
+        }
+        var shape = PhysicsServer3D.ConvexPolygonShapeCreate();
+        w.AdoptShape(shape);
+        PhysicsServer3D.ShapeSetData(shape, new Vector3[] { pts[0], pts[1], pts[2], pts[3], pts[4], pts[5], pts[6], pts[7] });
+
+        var b = w.MakeStatic(shape, new Vector3(0, 0, 0));
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform,
+            new Transform3D(new Basis(new Vector3(-1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)), new Vector3(0, 0, 0)));
+        yield return Wait.Frames(2);
+
+        // Mirrored extent: x -1.2..-0.2. A ray from +x must first touch -0.2.
+        var hit = w.Ray(new Vector3(3, 0, 0), new Vector3(-3, 0, 0));
+        Assert.Expect(hit.Count > 0, "mirrored convex is hit");
+        if (hit.Count > 0) {
+            float hitX = ((Vector3)hit["position"]).X;
+            Assert.ExpectNear(hitX, -0.2f, 0.06f, $"mirrored front face at -0.2 (got {hitX:F2})");
+        }
+        // The unmirrored +x side must be empty: a +x-directed ray from the
+        // origin misses the mirrored hull entirely (it would hit the 0.2 face
+        // of the unmirrored hull).
+        Assert.Expect(w.Ray(new Vector3(0, 0, 0), new Vector3(2, 0, 0)).Count == 0,
+            "the unmirrored +x side is empty after mirroring");
+    }
+
+    // A scaled area covers the scaled volume: a 1 m box area scaled (4,4,4)
+    // replaces gravity with zero-g for anything inside ±4 of its center,
+    // while a control body outside still falls.
+    static IEnumerator ScaledAreaGravityOverride() {
+        using var w = new PhysxWorld(false);
+        var area = w.MakeArea(w.Box(1f), new Vector3(0, 6, 0));
+        PhysicsServer3D.AreaSetParam(area, PhysicsServer3D.AreaParameter.GravityOverrideMode,
+            (int)PhysicsServer3D.AreaSpaceOverrideMode.Replace);
+        PhysicsServer3D.AreaSetParam(area, PhysicsServer3D.AreaParameter.Gravity, 0f);
+        PhysicsServer3D.AreaSetMonitorable(area, true);
+
+        var inside = w.MakeBody(w.Sphere(0.25f), new Vector3(0, 6f, 0));
+        var outside = w.MakeBody(w.Sphere(0.25f), new Vector3(7, 6f, 0)); // beyond the ±4 extent
+        yield return Wait.Frames(60);
+
+        Assert.Expect(Mathf.Abs(w.Pos(inside).Origin.Y - 6f) < 0.8f,
+            $"inside the scaled zero-g area: no fall (y={w.Pos(inside).Origin.Y:F2})");
+        Assert.Expect(w.Pos(outside).Origin.Y < 4.5f,
+            $"control body outside the scaled area falls (y={w.Pos(outside).Origin.Y:F2})");
     }
 }

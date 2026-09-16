@@ -144,6 +144,17 @@ void PhysXArea3D::set_space(PhysXSpace3D *p_space) {
 void PhysXArea3D::set_transform(const Transform3D &p_transform) {
 	transform = p_transform;
 
+	// Same node-scale bake as bodies (see PhysXBody3D::set_state): the
+	// trigger/override geometry is re-baked against the captured scale, so a
+	// scaled Area3D covers the scaled volume ( PhysX actor poses carry no
+	// scale). Runs before the pose push so world bounds queried by the wake
+	// pass below already reflect the new size.
+	const Vector3 new_scale = p_transform.basis.get_scale();
+	if (!new_scale.is_equal_approx(body_scale)) {
+		body_scale = new_scale;
+		refresh_shape_scaling();
+	}
+
 	if (!px_actor) {
 		return;
 	}

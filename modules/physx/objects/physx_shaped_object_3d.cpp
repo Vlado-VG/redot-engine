@@ -105,6 +105,70 @@ void PhysXShapedObject3D::nullify_shape(PhysXShape3D *p_shape) {
 	}
 }
 
+// Re-bakes every attached shape against the CURRENT body_scale: geometry
+// (body scale * per-shape transform scale) and local-pose origins (a shape
+// offset scales with the body, like a child of a scaled Godot node). Called
+// when the owner's transform scale changes -- PhysX actor poses carry no
+// scale, so godot_physics' "the whole body transform scales its shapes"
+// behavior is produced by baking the node scale into the geometry instead of
+// rebuilding the actor.
+void PhysXShapedObject3D::refresh_shape_scaling() {
+	for (AttachedShape &record : shapes) {
+		if (!record.shareable_shape || (!record.px_shape && !record.detection_shape)) {
+			continue;
+		}
+
+		physx::PxGeometryHolder holder;
+		const Vector3 geom_scale = _shape_geometry_scale_for(record.shareable_shape, record.relative_transform);
+		physx::PxVec3 scale(geom_scale.x, geom_scale.y, geom_scale.z);
+		if (record.shareable_shape->get_physx_geometry(holder, scale)) {
+			if (record.px_shape) {
+				record.px_shape->setGeometry(holder.any());
+			}
+			if (record.detection_shape) {
+				record.detection_shape->setGeometry(holder.any());
+			}
+		}
+
+		// Local pose: scaled offset, unchanged (orthonormalized) rotation,
+		// composed with the shape's intrinsic alignment pose -- the same
+		// composition set_shape_transform() uses.
+		Transform3D final_tr = record.relative_transform;
+		final_tr.origin *= body_scale;
+		final_tr.basis.orthonormalize();
+		const physx::PxTransform composed = to_physx_transform(final_tr) * record.shareable_shape->get_local_pose();
+		if (record.px_shape) {
+			record.px_shape->setLocalPose(composed);
+		}
+		if (record.detection_shape) {
+			record.detection_shape->setLocalPose(composed);
+		}
+
+		if (record.px_shape) {
+			record.px_shape->setContactOffset(record.shareable_shape->get_margin());
+			physx_apply_space_rest_offset(record.px_shape, record.shareable_shape->get_margin(), space);
+		}
+		if (record.detection_shape) {
+			record.detection_shape->setContactOffset(record.shareable_shape->get_margin());
+			physx_apply_space_rest_offset(record.detection_shape, record.shareable_shape->get_margin(), space);
+		}
+	}
+
+	// Derived-class hook: bodies recompute the inertia tensor (it scales with
+	// the geometry); areas have nothing to do.
+	_on_shape_geometry_changed();
+
+	// Wake dynamic bodies -- the mass distribution changed. Kinematic dynamics
+	// never sleep and reject wakeUp() ("Body must be non-kinematic!").
+	if (px_actor) {
+		if (physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>()) {
+			if (!(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
+				dyn->wakeUp();
+			}
+		}
+	}
+}
+
 void PhysXShapedObject3D::detach_shape(PhysXShape3D *p_shape) {
     // Detaches PxShape instances from the actor (broadphase mutation) — fetch
     // an in-flight solve first (async stepping).
@@ -252,11 +316,16 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
 
         if (record.px_shape) {
             // Set the shape's local pose (placement * shape alignment).
-            // The placement is this shape's body-relative transform; the alignment
-            // is the shape's intrinsic axis rotation (e.g. capsule Z-90° to map
-            // PhysX's X-axis to Godot's Y-axis). create_shape() already applied
-            // the alignment once; we compose both so neither is lost.
-            const physx::PxTransform composed = to_physx_transform(p_transform) * p_shape->get_local_pose();
+            // The placement is this shape's body-relative transform, with its
+            // origin scaled by the body scale (a child offset sits at
+            // offset*scale in world space, matching a scaled Godot node); the
+            // alignment is the shape's intrinsic axis rotation (e.g. capsule
+            // Z-90° to map PhysX's X-axis to Godot's Y-axis). create_shape()
+            // already applied the alignment once; we compose both so neither
+            // is lost.
+            Transform3D placed_tr = p_transform;
+            placed_tr.origin *= body_scale;
+            const physx::PxTransform composed = to_physx_transform(placed_tr) * p_shape->get_local_pose();
             record.px_shape->setLocalPose(composed);
 
             // Apply the owner's collision filter (layer/mask/contact-notify) to this
