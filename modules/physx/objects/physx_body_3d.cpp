@@ -210,6 +210,13 @@ void PhysXBody3D::set_space(PhysXSpace3D *p_space) {
 	if (space) {
 		space->register_body(this);
 
+		// Vehicles borrowing this body as chassis follow it into the new
+		// space: a vehicle simulating in a different scene than its chassis
+		// would raycast road geometry and read gravity from the wrong PxScene.
+		for (PhysXVehicle3D *vehicle : chassis_vehicles) {
+			vehicle->set_space(space);
+		}
+
 		// Only add the actor to the scene if shapes are already attached.
 		// When the body is created, shapes aren't attached yet — we must
 		// defer scene addition until the first shape is attached so the

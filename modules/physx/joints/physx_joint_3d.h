@@ -254,7 +254,7 @@ private:
 	/// Rebuilds and applies the cone-twist swing + twist limits from cone_twist_params.
 	void _apply_cone_twist_limits();
 	/// Applies the g6dof angular limit to the correct PhysX limit slot
-	/// (twist -> setTwistLimit, swing -> setSwingLimit) for the given axis.
+	/// (twist -> setTwistLimit, swing -> setPyramidSwingLimit) for the given axis.
 	void _apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::Axis p_axis);
 	/// Godot axis (X/Y/Z) -> D6 linear axis (eX/eY/eZ).
 	static physx::PxD6Axis::Enum _px_linear_axis(Vector3::Axis p_axis);

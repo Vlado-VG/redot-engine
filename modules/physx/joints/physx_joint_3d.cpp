@@ -1020,10 +1020,10 @@ real_t PhysXJoint3D::get_cone_twist_param(PhysicsServer3D::ConeTwistJointParam p
 
 // Applies the per-axis angular limit to the correct PhysX slot:
 //   AXIS_X (twist)  -> setTwistLimit (PxJointAngularLimitPair, lower/upper)
-//   AXIS_Y (swing1) } setSwingLimit (PxJointLimitCone, yAngle/zAngle)
+//   AXIS_Y (swing1) } setPyramidSwingLimit (per-axis spans preserved)
 //   AXIS_Z (swing2) }
-// Swing1 and swing2 share a single cone limit in PhysX, so configuring either
-// axis updates the same setSwingLimit using the swing spans of both.
+// The pyramid limit keeps each swing axis's own span; an axis whose limit
+// flag is off contributes the near-full range and stays effectively free.
 void PhysXJoint3D::_apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::Axis p_axis) {
 	if (!p_d6) {
 		return;
@@ -1046,17 +1046,33 @@ void PhysXJoint3D::_apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::A
 		limit.restitution = params.angular_restitution;
 		p_d6->setTwistLimit(limit);
 	} else {
-		// Swing1 (Y) / Swing2 (Z) share a PxJointLimitCone. Use the lower of
-		// the two spans as both yAngle and zAngle extents of the cone, clamped
-		// into PhysX's valid (0, PI] range (0 = locked in Godot).
-		const real_t y_angle = g6dof_params[Vector3::AXIS_Y].angular_lower_limit;
-		const real_t z_angle = g6dof_params[Vector3::AXIS_Z].angular_lower_limit;
-		const real_t cone_extent = CLAMP(MIN(y_angle, z_angle), 1.0e-4, (real_t)Math::PI);
-		physx::PxJointLimitCone cone_limit(cone_extent, cone_extent);
-		cone_limit.stiffness = params.angular_limit_softness;
-		cone_limit.damping = params.angular_damping;
-		cone_limit.restitution = params.angular_restitution;
-		p_d6->setSwingLimit(cone_limit);
+		// Swing1 (Y) / Swing2 (Z): a per-axis pyramid limit preserves each
+		// axis's own span (a shared cone collapsed them into one symmetric
+		// extent — the MIN of the two lowers). An axis whose limit flag is
+		// OFF gets the near-full pyramid range so it stays effectively free
+		// while the other axis constrains alone; a limited axis uses its own
+		// cached span, nudged into PhysX's valid window (min/max strictly
+		// inside (-PI, PI), max >= min — a degenerate Godot range reads as
+		// locked, which is the Godot semantic).
+		auto axis_span = [&](Vector3::Axis axis) -> physx::PxVec2 {
+			if (!g6dof_flags[axis].angular_limit) {
+				return physx::PxVec2(-physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
+			}
+			const G6DOFJointAxisParams &ap = g6dof_params[axis];
+			float lo = CLAMP((float)ap.angular_lower_limit, -physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
+			float hi = CLAMP((float)ap.angular_upper_limit, -physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
+			if (hi < lo) {
+				hi = lo;
+			}
+			return physx::PxVec2(lo, hi);
+		};
+		const physx::PxVec2 y_span = axis_span(Vector3::AXIS_Y);
+		const physx::PxVec2 z_span = axis_span(Vector3::AXIS_Z);
+		physx::PxJointLimitPyramid pyramid(y_span.x, y_span.y, z_span.x, z_span.y);
+		pyramid.stiffness = params.angular_limit_softness;
+		pyramid.damping = params.angular_damping;
+		pyramid.restitution = params.angular_restitution;
+		p_d6->setPyramidSwingLimit(pyramid);
 	}
 }
 

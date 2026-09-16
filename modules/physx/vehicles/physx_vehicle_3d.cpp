@@ -33,6 +33,7 @@
 
 #include "PxPhysicsAPI.h"
 #include "vehicle/PxVehicleAPI.h"
+#include "vehicle/physxConstraints/PxVehiclePhysXConstraintHelpers.h"
 
 #include "vehicle/wheel/PxVehicleWheelParams.h"
 #include "vehicle/suspension/PxVehicleSuspensionParams.h"
@@ -842,6 +843,11 @@ bool PhysXVehicle3D::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_chas
 	if (space) {
 		space->unregister_vehicle(this);
 	}
+	if (v2) {
+		// Release the low-speed tire-model constraints before the state they
+		// reference (chassis actor, per-wheel params) goes away.
+		physx::PxVehicleConstraintsDestroy(v2->physx_constraints);
+	}
 	delete v2;
 	v2 = nullptr;
 
@@ -853,10 +859,17 @@ bool PhysXVehicle3D::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_chas
 	}
 	if (chassis_body) {
 		chassis_body->set_is_vehicle_chassis(false);
+		chassis_body->remove_chassis_vehicle(this);
 	}
 
 	chassis_actor = p_chassis;
 	chassis_body = p_chassis_body;
+	// Register for space-follow notifications: when the chassis body moves to
+	// another space (body_set_space), this vehicle re-homes with it so road
+	// geometry, gravity and the step loop come from the chassis's actual scene.
+	if (chassis_body) {
+		chassis_body->add_chassis_vehicle(this);
+	}
 
 	PhysXServer3D *server = PhysXServer3D::get_singleton();
 	physx::PxPhysics *px_physics = server ? server->try_get_physics() : nullptr;
@@ -880,6 +893,14 @@ bool PhysXVehicle3D::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_chas
 	if (chassis_body) {
 		chassis_body->set_is_vehicle_chassis(true);
 	}
+
+	// Instantiate the low-speed tire-model constraints (excess suspension
+	// compression + velocity constraints). The ConstraintComponent in the
+	// sequence only fills constraintStates -- without these PhysX-side
+	// objects the component had no simulation effect, so vehicles crept and
+	// over-compressed their suspension at low speed.
+	physx::PxVehicleConstraintsCreate(state->axle_description, *px_physics, *p_chassis,
+			state->physx_constraints);
 
 	_update_response_params();
 
@@ -911,9 +932,13 @@ void PhysXVehicle3D::release() {
 	}
 	if (chassis_body) {
 		chassis_body->set_is_vehicle_chassis(false);
+		chassis_body->remove_chassis_vehicle(this);
 	}
 	if (chassis_actor) {
 		chassis_actor->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY, false);
+	}
+	if (v2) {
+		physx::PxVehicleConstraintsDestroy(v2->physx_constraints);
 	}
 	delete v2;
 	v2 = nullptr;
@@ -1257,12 +1282,21 @@ void PhysXVehicle3D::write_commands() {
 			const float maxr = v2->throttle_response_params.maxResponse;
 			const float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
 			v2->command_state.throttle = 1.0f;
+			// The gear flips the sign of the throttle response for the whole
+			// vehicle, so it follows the DOMINANT commanded direction (the
+			// sign of the torque sum) and each wheel's multiplier carries its
+			// own sign relative to that: multiplier = t * gearSign * inv.
+			// gearSign^2 == 1 cancels out of the applied torque, so every
+			// wheel drives in ITS commanded direction -- counter-rotating
+			// wheels (skid steering) work instead of silently clamping to
+			// the dominant direction.
+			const float gear_sign = (drive_sum >= 0.0f) ? 1.0f : -1.0f;
 			v2->direct_transmission_command.gear = (drive_sum >= 0.0f)
 					? physx::PxVehicleDirectDriveTransmissionCommandState::eFORWARD
 					: physx::PxVehicleDirectDriveTransmissionCommandState::eREVERSE;
 			for (int i = 0; i < wheel_count; i++) {
 				const float t = in_wheel_drive_torque[i];
-				v2->throttle_response_params.wheelResponseMultipliers[i] = (t < 0.0f ? -t : t) * inv;
+				v2->throttle_response_params.wheelResponseMultipliers[i] = t * gear_sign * inv;
 			}
 		} else {
 			for (int i = 0; i < wheel_count; i++) {
@@ -1281,6 +1315,9 @@ void PhysXVehicle3D::write_commands() {
 			const float maxr = v2->brake_response_params[0].maxResponse;
 			const float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
 			v2->command_state.brakes[0] = 1.0f;
+			// Brake magnitude only: a brake torque resists wheel rotation, it
+			// has no direction of its own, so the sign of the command is
+			// meaningless and |t| is the intended semantics.
 			for (int i = 0; i < wheel_count; i++) {
 				const float t = in_wheel_brake_torque[i];
 				v2->brake_response_params[0].wheelResponseMultipliers[i] = (t < 0.0f ? -t : t) * inv;
@@ -1440,6 +1477,10 @@ void PhysXVehicle3D::update(float p_step) {
 	ctx.frame.vrtAxis = physx::PxVehicleAxes::ePosY;
 	ctx.scale.scale = 1.0f;
 	ctx.physxActorUpdateMode = physx::PxVehiclePhysXActorUpdateMode::eAPPLY_ACCELERATION;
+
+	// Mark the constraints dirty so the PhysX scene processes them this step
+	// (the SDK contract for PxVehicleConstraintsCreate'd objects).
+	physx::PxVehicleConstraintsDirtyStateUpdate(v2->physx_constraints);
 
 	// NOTE: gravity is NOT applied manually here. The RigidBodyComponent in
 	// the sequence integrates gravity into rigidBodyState, and the actor end
