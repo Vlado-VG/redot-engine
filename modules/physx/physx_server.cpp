@@ -1,6 +1,6 @@
-﻿/**
+/**
  * @file physx_server.cpp
- * @brief Implementation of PhysXServer3D â€” the PhysX-backed PhysicsServer3D.
+ * @brief Implementation of PhysXServer3D —the PhysX-backed PhysicsServer3D.
  */
 
 #include "physx_server.h"
@@ -53,7 +53,7 @@
 #endif
 
 // ============================================================================
-// _bind_methods â€” expose the vehicle2 API to C# / GDScript.
+// _bind_methods —expose the vehicle2 API to C# / GDScript.
 //
 // These are PhysX-specific methods (PhysicsServer3D has no vehicle virtuals),
 // so they must be explicitly bound to ClassDB here to be reachable from script.
@@ -61,7 +61,7 @@
 //
 // IMPORTANT (C# / ECS):
 //   Call these on the INNER server via PhysXServer3D.GetSingleton(), NOT on
-//   PhysicsServer3D.GetSingleton() â€” the latter returns the
+//   PhysicsServer3D.GetSingleton() —the latter returns the
 //   PhysicsServer3DWrapMT wrapper (register_types.cpp), which lacks these
 //   methods. singleton_ptr is the real PhysXServer3D (set in its ctor).
 //
@@ -73,10 +73,10 @@
 //
 // USAGE (per frame): write control inputs in _PhysicsProcess (pre-step); read
 //   telemetry (vehicle_get_wheel_states / vehicle_get_engine_state) afterwards
-//   â€” it reflects the last completed step.
+//   —it reflects the last completed step.
 // ============================================================================
 void PhysXServer3D::_bind_methods() {
-	// Singleton (static) â€” lets script reach the inner server.
+	// Singleton (static) —lets script reach the inner server.
 	ClassDB::bind_static_method("PhysXServer3D", D_METHOD("get_singleton"), &PhysXServer3D::get_singleton);
 
 	// Lifecycle.
@@ -341,7 +341,11 @@ RID PhysXServer3D::space_create() {
     // Seed with project-setting defaults so it matches the old scene gravity.
     const real_t g = GLOBAL_GET("physics/3d/default_gravity");
     def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY, g);
-    def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY_VECTOR, Vector3(0, -1, 0));
+    // Seed the direction from the project setting too -- the old hardcoded
+    // (0, -1, 0) fought a customized physics/3d/default_gravity_vector until
+    // World3D's area_set_param overwrote it a frame later.
+    def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY_VECTOR,
+            (Vector3)GLOBAL_GET("physics/3d/default_gravity_vector"));
     space->set_default_area(def);
     return rid;
 }
@@ -499,7 +503,7 @@ ObjectID PhysXServer3D::area_get_object_instance_id(RID p_area) const {
 void PhysXServer3D::area_set_param(RID p_area, PhysicsServer3D::AreaParameter p_param, const Variant &p_value) {
 	// Godot's World3D calls area_set_param(SPACE_RID, ...) to set world-default
 	// gravity/damp. The space RID isn't in the area owner, so resolve it to the
-	// space's default area first â€” matches GodotPhysicsServer3D.
+	// space's default area first —matches GodotPhysicsServer3D.
 	PhysXArea3D *area = area_owner.get_or_null(p_area);
 	if (!area) {
 		PhysXSpace3D *as_space = space_owner.get_or_null(p_area);
@@ -1942,7 +1946,7 @@ void PhysXServer3D::joint_make_hinge(RID p_joint, RID p_body_a, const Transform3
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
 	ERR_FAIL_NULL_MSG(body_a, "PhysX: hinge joint body_a is not a rigid body.");
-	// body_b optional â€” anchors to the world frame when invalid.
+	// body_b optional —anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
 	// godot_physics_3d (the reference contract) constrains the transform-
@@ -1966,7 +1970,7 @@ void PhysXServer3D::joint_make_hinge_simple(RID p_joint, RID p_body_a, const Vec
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
 	ERR_FAIL_NULL_MSG(body_a, "PhysX: hinge joint body_a is not a rigid body.");
-	// body_b optional â€” anchors to the world frame when invalid.
+	// body_b optional —anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
 	// The simple variant's axis lands directly on the PhysX revolute X
@@ -2015,7 +2019,7 @@ void PhysXServer3D::joint_make_slider(RID p_joint, RID p_body_a, const Transform
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
 	ERR_FAIL_NULL_MSG(body_a, "PhysX: slider joint body_a is not a rigid body.");
-	// body_b optional â€” anchors to the world frame when invalid.
+	// body_b optional —anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
@@ -2044,7 +2048,7 @@ void PhysXServer3D::joint_make_cone_twist(RID p_joint, RID p_body_a, const Trans
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
 	ERR_FAIL_NULL_MSG(body_a, "PhysX: cone/twist joint body_a is not a rigid body.");
-	// body_b optional â€” anchors to the world frame when invalid.
+	// body_b optional —anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
@@ -2073,7 +2077,7 @@ void PhysXServer3D::joint_make_generic_6dof(RID p_joint, RID p_body_a, const Tra
 	ERR_FAIL_NULL(joint);
 	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
 	ERR_FAIL_NULL_MSG(body_a, "PhysX: 6DOF joint body_a is not a rigid body.");
-	// body_b optional â€” anchors to the world frame when invalid.
+	// body_b optional —anchors to the world frame when invalid.
 	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
 	physx::PxTransform local_a = PhysXShapedObject3D::to_physx_transform(p_local_ref_a);
@@ -2160,7 +2164,7 @@ bool PhysXServer3D::joint_is_disabled_collisions_between_bodies(RID p_joint) con
  * implemented (area/joint/soft_body pending).
  */
 void PhysXServer3D::free(RID p_rid) {
-	// Freeing a null/invalid RID is a no-op (standard Godot convention â€” the
+	// Freeing a null/invalid RID is a no-op (standard Godot convention —the
 	// scene tree may free a RID that body_create() returned empty because PhysX
 	// wasn't initialized yet during a fresh-compile editor boot, or a RID that
 	// was already freed during a scene reload). Don't spam the log for these.
@@ -2295,14 +2299,14 @@ void PhysXServer3D::free(RID p_rid) {
 		memdelete(sp);
 		return;
 	}
-	// joint_owner â€” joints are freed here.
+	// joint_owner —joints are freed here.
 	if (joint_owner.owns(p_rid)) {
 		PhysXJoint3D *j = joint_owner.get_or_null(p_rid);
 		joint_owner.free(p_rid);
 		memdelete(j);
 		return;
 	}
-	// vehicle_owner â€” vehicles are freed here.
+	// vehicle_owner —vehicles are freed here.
 	if (vehicle_owner.owns(p_rid)) {
 		PhysXVehicle3D *v = vehicle_owner.get_or_null(p_rid);
 		v->release();
@@ -2310,7 +2314,7 @@ void PhysXServer3D::free(RID p_rid) {
 		memdelete(v);
 		return;
 	}
-	// fluid_owner â€” GPU particle fluids are freed here.
+	// fluid_owner —GPU particle fluids are freed here.
 	if (fluid_owner.owns(p_rid)) {
 		PhysXGPUParticleFluid3D *f = fluid_owner.get_or_null(p_rid);
 		f->set_space(nullptr);
@@ -2318,7 +2322,7 @@ void PhysXServer3D::free(RID p_rid) {
 		memdelete(f);
 		return;
 	}
-	// cloth_owner â€” GPU cloths are freed here.
+	// cloth_owner —GPU cloths are freed here.
 	if (cloth_owner.owns(p_rid)) {
 		PhysXGPUCloth3D *c = cloth_owner.get_or_null(p_rid);
 		c->set_space(nullptr);
@@ -2410,7 +2414,7 @@ void PhysXServer3D::init() {
 	// The CPU solver scales with worker count, so give it most of the machine
 	// (leaving a core for the main thread + render). With GPU dynamics the CPU
 	// mostly waits on the GPU each step, so extra workers only add coordination
-	// overhead â€” keep that pool small. physics/physx_3d/simulation/
+	// overhead —keep that pool small. physics/physx_3d/simulation/
 	// cpu_worker_threads overrides (0 = auto).
 	const int cpu_count = OS::get_singleton()->get_processor_count();
 	uint32_t worker_threads;
@@ -2447,7 +2451,7 @@ void PhysXServer3D::init() {
 	PhysXCustomShapeType::register_builtin_shapes();
 
 	// Default material used by every shape that doesn't specify one.
-	// Static/dynamic friction 0.5, restitution 0.1 â€” conservative defaults.
+	// Static/dynamic friction 0.5, restitution 0.1 —conservative defaults.
 	px_default_material = px_physics->createMaterial(0.5f, 0.5f, 0.1f);
 	ERR_FAIL_NULL(px_default_material);
 }
@@ -2532,7 +2536,7 @@ void PhysXServer3D::finish() {
  * calls set_active(false) once at startup (editor_node.cpp) so physics stays
  * frozen in the viewport; the running game uses a fresh server with
  * active=true. Mirrors Jolt/godot_physics_3d. Do NOT propagate this into
- * per-space state â€” World3D::get_space() re-enables individual spaces as
+ * per-space state —World3D::get_space() re-enables individual spaces as
  * worlds are (re)created, which must not override the global freeze.
  */
 void PhysXServer3D::set_active(bool p_active) {
@@ -2549,8 +2553,11 @@ void PhysXServer3D::step(real_t p_step) {
 	if (!active) {
 		return;
 	}
-	// Read live so tests and tools can toggle async stepping at runtime.
-	async_stepping = GLOBAL_GET("physics/physx_3d/simulation/async_step");
+	// Read live (once per step, deliberately uncached) so tests and tools can
+	// toggle async stepping at runtime. The static StringName removes the
+	// per-call string hashing; the setting itself stays live by design.
+	static const StringName async_step_sn("physics/physx_3d/simulation/async_step");
+	async_stepping = GLOBAL_GET(async_step_sn);
 	for (const RID &rid : space_owner.get_owned_list()) {
 		PhysXSpace3D *space = space_owner.get_or_null(rid);
 		if (space && space->is_active()) {
@@ -2579,8 +2586,8 @@ void PhysXServer3D::end_sync() {
 void PhysXServer3D::flush_queries() {
 	// Dispatch the Area3D monitor callbacks (body_entered / area_entered / ...)
 	// that were queued during the last step's onTrigger. Godot's contract is
-	// that these fire in the flush_queries() window â€” after sync(), with the
-	// world unlocked â€” so onTrigger records events instead of dispatching inline.
+	// that these fire in the flush_queries() window —after sync(), with the
+	// world unlocked —so onTrigger records events instead of dispatching inline.
 	if (!active) {
 		return;
 	}
@@ -2594,7 +2601,7 @@ void PhysXServer3D::flush_queries() {
 
 void PhysXServer3D::release_vehicles_for_body(PhysXBody3D *p_body) const {
 	// Release any vehicles that have the given body as chassis before
-	// freeing it â€” the vehicle's chassis pointer would dangle.
+	// freeing it —the vehicle's chassis pointer would dangle.
 	LocalVector<RID> vehicles = vehicle_owner.get_owned_list();
 	for (int i = (int)vehicles.size() - 1; i >= 0; i--) {
 		PhysXVehicle3D *v = vehicle_owner.get_or_null(vehicles[i]);

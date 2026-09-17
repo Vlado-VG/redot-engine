@@ -63,13 +63,12 @@ void PhysXHeightMapShape3D::set_data(const Variant &p_data) {
 	// mapping spent the range on [-max_abs, +max_abs], which for an offset
 	// terrain (e.g. heights 100..110 m) quantized ~20x coarser than needed
 	// and produced visible stair-stepping. get_local_pose() lifts the field
-	// back by the baked offset so world-space heights are unchanged.
-	const float range = MAX((float)(max_height - min_height), 0.0f);
-	if (range > 0.0f) {
-		height_scale = range / 65535.0f;
-	} else {
-		height_scale = 1.0f; // Completely flat
-	}
+	// back by the baked offset so world-space heights are unchanged. The
+	// range floors at 0.001 (flat maps): a 1.0 scale would put the samples at
+	// -32768 and the pose lift at +32769.5, whose magnitude breaks the
+	// heightfield raycast; the tiny scale keeps the lift at ~min_height.
+	const float range = MAX((float)(max_height - min_height), 0.001f);
+	height_scale = range / 65535.0f;
 
 	aabb = _calculate_aabb();
 	_release_height_field();

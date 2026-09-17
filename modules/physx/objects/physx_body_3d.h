@@ -335,6 +335,11 @@ private:
     // Used to defer scene addition until shapes are attached.
     bool body_added_to_scene = false;
 
+    // Mirrors the chassis actor's eDISABLE_GRAVITY flag so on_pre_step only
+    // writes it on an actual flip (flag writes dirty the actor in PhysX).
+    // Recreated actors start with gravity enabled, matching the initial value.
+    bool gravity_disabled_cached = false;
+
     void _create_actor();
     /// Destroys the actor. p_space routes the release when the body's own
     /// space pointer is already gone (destructor path after set_space(nullptr))

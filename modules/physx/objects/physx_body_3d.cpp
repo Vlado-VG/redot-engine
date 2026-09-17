@@ -167,6 +167,9 @@ void PhysXBody3D::_destroy_actor(PhysXSpace3D *p_space) {
 	// Reset so that a new actor (e.g., after mode switch) can be added
 	// to the scene by _add_to_scene() after shapes are rebuilt.
 	body_added_to_scene = false;
+	// A freshly created actor has gravity enabled; the cached flag must match
+	// or on_pre_step would skip the first eDISABLE_GRAVITY write.
+	gravity_disabled_cached = false;
 }
 
 void PhysXBody3D::set_space(PhysXSpace3D *p_space) {
@@ -1199,7 +1202,12 @@ void PhysXBody3D::on_pre_step(float p_step) {
 	// keep the cached totals so get_total_gravity/get_total_*_damp are correct.
 	if (is_simulated) {
 		const bool use_native = !is_vehicle_chassis && !omit_force_integration;
-		dyn->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY, !use_native);
+		// Flag writes are not free in PhysX (they dirty the actor); only push
+		// when the resolved state actually flips.
+		if (gravity_disabled_cached != !use_native) {
+			gravity_disabled_cached = !use_native;
+			dyn->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY, !use_native);
+		}
 
 		const bool apply_forces = !omit_force_integration && !dyn->isSleeping();
 		if (apply_forces) {

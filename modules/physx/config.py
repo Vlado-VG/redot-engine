@@ -1,5 +1,8 @@
 def can_build(env, platform):
-    return True
+    # PhysX ships prebuilt static libs for windows/macos/linux/android only
+    # (see SCsub's lib-path table; iOS and web have no SDK wiring yet and
+    # would fail at link time).
+    return platform in ["windows", "macos", "linuxbsd", "android"]
 
 
 def configure(env):

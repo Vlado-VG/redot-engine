@@ -734,9 +734,9 @@ void PhysXSoftBody3D::get_collision_exceptions(List<RID> *p_exceptions) const {
 }
 
 void PhysXSoftBody3D::_update_shapes() {
-	// The GPU volume bakes layer/mask into its shape at build time; a live
-	// filter change re-applies through the volume params, while the CPU solver
-	// consults the stored bits on every contact query.
+	// A live filter change re-applies through the volume params (which now
+	// also rewrite the shape's filter data), while the CPU solver consults
+	// the stored bits on every contact query.
 	if (using_gpu && volume) {
 		volume->apply_params(_gpu_params());
 	}

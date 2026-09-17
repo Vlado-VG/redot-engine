@@ -340,8 +340,13 @@ void PhysXCloth3D::_step(double p_delta) {
 		last_anchor_xform = now;
 	}
 
-	Vector3 gravity_vec = GLOBAL_GET("physics/3d/default_gravity_vector");
-	const float gravity_mag = GLOBAL_GET("physics/3d/default_gravity");
+	// Static StringNames: removes the per-tick string hashing from this
+	// every-physics-tick lookup while keeping the values live (a changed
+	// project setting takes effect on the next tick, as before).
+	static StringName s_gravity_vec_sn("physics/3d/default_gravity_vector");
+	static StringName s_gravity_mag_sn("physics/3d/default_gravity");
+	Vector3 gravity_vec = GLOBAL_GET(s_gravity_vec_sn);
+	const float gravity_mag = GLOBAL_GET(s_gravity_mag_sn);
 	if (gravity_vec == Vector3()) {
 		gravity_vec = Vector3(0, -1, 0);
 	}
