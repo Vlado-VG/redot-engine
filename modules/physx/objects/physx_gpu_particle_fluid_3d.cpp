@@ -296,9 +296,13 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		const PxU32 n = gps.mCommonData.mNumParticles;
 		if (n == 0) {
 			MutexLock lock(owner->mesh_mutex);
+			// Bump the version with the clear: version-gated consumers skip
+			// unchanged meshes, so without this an emptied fluid kept rendering
+			// its last non-empty surface forever.
 			owner->mesh_vertices.clear();
 			owner->mesh_normals.clear();
 			owner->mesh_indices.clear();
+			owner->mesh_version++;
 			return;
 		}
 

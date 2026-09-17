@@ -241,6 +241,14 @@ void PhysXSoftVolume3D::apply_params(const Params &p_params) {
 	}
 	volume->setSolverIterationCounts(MAX(p_params.solver_iterations, 1));
 	volume->setMaxLinearVelocity(p_params.max_speed);
+	// Runtime layer/mask/exception-slot changes must reach the shape's filter
+	// data too -- the deformable solver consults the simulation filter, not
+	// this material, when pairing against rigid bodies.
+	if (shape) {
+		const PxFilterData fd(p_params.collision_layer, p_params.collision_mask, p_params.exception_slot, 0);
+		shape->setSimulationFilterData(fd);
+		shape->setQueryFilterData(fd);
+	}
 }
 
 void PhysXSoftVolume3D::read_back() {

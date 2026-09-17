@@ -33,6 +33,8 @@
 #include <extensions/PxCustomGeometryExt.h>
 #include <memory> // For std::unique_ptr
 
+#include "core/templates/local_vector.h"
+
 template <typename CallbackT>
 class PhysXCustomGeometryCallback : public PhysXShape3D {
 
@@ -47,27 +49,61 @@ public:
         if (!_ensure_geometry()) {
             return false;
         }
-        
-        if (current_scale != scale) {
-            current_scale = scale;
-            _apply_scale_to_callbacks(scale);
+        // One callback instance per distinct scale: the shape blueprint is
+        // shared across bodies, and a single shared callback mutated per
+        // request made two differently-scaled owners fight over its
+        // radius/height (last write won for both). Each PxShape now holds a
+        // PxCustomGeometry bound to its own scale's instance.
+        CallbackT* cb = _callback_for_scale(scale);
+        if (!cb) {
+            return false;
         }
-        
-        holder.storeAny(geometry);
+        holder.storeAny(physx::PxCustomGeometry(*cb));
         return true;
     }
 
 protected:
     // Memory automatically managed!
     mutable std::unique_ptr<CallbackT> callbacks;
-    
+
+    // Additional per-scale instances (the primary `callbacks` anchors the
+    // geometry-initialized state; these serve owners at other scales).
+    mutable LocalVector<std::pair<physx::PxVec3, CallbackT*>> scaled_instances;
+
     mutable physx::PxCustomGeometry geometry;
     mutable bool geometry_initialized = false;
-    mutable physx::PxVec3 current_scale = physx::PxVec3(-1.0f, -1.0f, -1.0f);
 
     // Subclasses return a dynamically allocated, strongly-typed callback pointer
     virtual CallbackT* _create_callbacks() const = 0;
-    virtual void _apply_scale_to_callbacks(const physx::PxVec3& scale) const = 0;
+    virtual void _apply_scale_to_callbacks(CallbackT& cb, const physx::PxVec3& scale) const = 0;
+    // Unscaled params (radius/height) from the current data members.
+    virtual void _apply_params_to_callbacks(CallbackT& cb) const = 0;
+
+    CallbackT* _callback_for_scale(const physx::PxVec3& scale) const {
+        for (uint32_t i = 0; i < scaled_instances.size(); i++) {
+            if (scaled_instances[i].first == scale) {
+                return scaled_instances[i].second;
+            }
+        }
+        CallbackT* cb = _create_callbacks();
+        if (!cb) {
+            return nullptr;
+        }
+        _apply_scale_to_callbacks(*cb, scale);
+        scaled_instances.push_back({ scale, cb });
+        return cb;
+    }
+
+    // Re-push the current data (then each instance's own scale) into every
+    // live instance -- called by derived set_data() implementations.
+    void _refresh_instances() const {
+        if (callbacks) {
+            _apply_params_to_callbacks(*callbacks);
+        }
+        for (uint32_t i = 0; i < scaled_instances.size(); i++) {
+            _apply_scale_to_callbacks(*scaled_instances[i].second, scaled_instances[i].first);
+        }
+    }
 
     bool _ensure_geometry() const {
         if (geometry_initialized && callbacks) {
@@ -87,12 +123,16 @@ protected:
 
     void _release_geometry() const {
         callbacks.reset(); // Safely deletes the callback, or does nothing if already null
+        for (uint32_t i = 0; i < scaled_instances.size(); i++) {
+            delete scaled_instances[i].second;
+        }
+        scaled_instances.clear();
         geometry_initialized = false;
-        _invalidate_scale();
     }
 
-    void _invalidate_scale() const { 
-        current_scale = physx::PxVec3(-1.0f, -1.0f, -1.0f); 
+    void _invalidate_scale() const {
+        // Kept for the derived set_data() call sites; instance refresh is now
+        // _refresh_instances().
     }
 
     // PhysXShape3D interface — detach PxShape from owners before callbacks are destroyed.

@@ -23,7 +23,8 @@ public:
 
 protected:
     virtual physx::PxCustomGeometryExt::ConeCallbacks* _create_callbacks() const override;
-    virtual void _apply_scale_to_callbacks(const physx::PxVec3& scale) const override;
+    virtual void _apply_scale_to_callbacks(physx::PxCustomGeometryExt::ConeCallbacks &cb, const physx::PxVec3& scale) const override;
+    virtual void _apply_params_to_callbacks(physx::PxCustomGeometryExt::ConeCallbacks &cb) const override;
 
 private:
     float radius = 0.5f;

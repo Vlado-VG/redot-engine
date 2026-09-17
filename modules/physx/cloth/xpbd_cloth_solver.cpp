@@ -290,7 +290,11 @@ void XPBDClothSolver::set_rest_length_scale(float p_scale) {
 	}
 	applied_rest_scale = p_scale;
 
-	rest_volume = _mesh_volume(rest_positions);
+	// The volume constraint's target must shrink with the edges, or the
+	// pressure term fights the shrink: _mesh_volume() measures the ORIGINAL
+	// rest positions (unchanged by the scale), so scale the cached value by
+	// p_scale^3 instead of recomputing it.
+	rest_volume *= p_scale * p_scale * p_scale;
 }
 
 void XPBDClothSolver::_solve_volume(float p_sdt) {
@@ -385,7 +389,12 @@ void XPBDClothSolver::step(float p_dt, const Vector3 &p_gravity, const Vector3 &
 	}
 	const int substeps = MAX(settings.substeps, 1);
 	const float sdt = p_dt / (float)substeps;
-	const float vel_retain = MAX(1.0f - settings.damping * p_dt, 0.0f);
+	// Per-SUBSTEP retain: the velocity is re-derived from positions each
+	// substep, so a frame-scaled factor here would compound (removing
+	// substeps x too much). Damping is documented as a fraction of velocity
+	// removed per second; distributing the frame's removal evenly across the
+	// substeps gives exactly that.
+	const float sub_retain = MAX(1.0f - settings.damping * p_dt / substeps, 0.0f);
 
 	_apply_aero(p_dt, p_wind);
 
@@ -438,7 +447,7 @@ void XPBDClothSolver::step(float p_dt, const Vector3 &p_gravity, const Vector3 &
 				velocities[i] = Vector3();
 				continue;
 			}
-			Vector3 v = (positions[i] - prev[i]) * inv_sdt * vel_retain;
+			Vector3 v = (positions[i] - prev[i]) * inv_sdt * sub_retain;
 			if (max_speed > 0.0f) {
 				const float sp = v.length();
 				if (sp > max_speed) {

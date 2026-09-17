@@ -25,7 +25,8 @@ public:
 protected:
     // Return types now match the template signature explicitly
     virtual physx::PxCustomGeometryExt::CylinderCallbacks* _create_callbacks() const override;
-    virtual void _apply_scale_to_callbacks(const physx::PxVec3& scale) const override;
+    virtual void _apply_scale_to_callbacks(physx::PxCustomGeometryExt::CylinderCallbacks &cb, const physx::PxVec3& scale) const override;
+    virtual void _apply_params_to_callbacks(physx::PxCustomGeometryExt::CylinderCallbacks &cb) const override;
 
 private:
     float radius = 0.5f;

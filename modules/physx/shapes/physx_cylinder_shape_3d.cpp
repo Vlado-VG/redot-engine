@@ -9,13 +9,8 @@ void PhysXCylinderShape3D::set_data(const Variant &p_data) {
     radius = d["radius"];
     height = d["height"];
 
-    _invalidate_scale();
-
-    // Look at how clean this is now! No static_cast required.
-    if (callbacks) {
-        callbacks->setRadius(radius);
-        callbacks->setHeight(height);
-    }
+    // Push the new params into every live per-scale instance.
+    _refresh_instances();
 
     _notify_shape_changed();
 }
@@ -38,12 +33,15 @@ physx::PxCustomGeometryExt::CylinderCallbacks* PhysXCylinderShape3D::_create_cal
     return new physx::PxCustomGeometryExt::CylinderCallbacks(height, radius, 1); 
 }
 
-void PhysXCylinderShape3D::_apply_scale_to_callbacks(const physx::PxVec3& scale) const {
-    if (!callbacks) return;
-
+void PhysXCylinderShape3D::_apply_scale_to_callbacks(physx::PxCustomGeometryExt::CylinderCallbacks &cb, const physx::PxVec3& scale) const {
     float scaled_radius = radius * physx::PxMax(physx::PxAbs(scale.x), physx::PxAbs(scale.z));
     float scaled_height = height * physx::PxAbs(scale.y);
 
-    callbacks->setRadius(scaled_radius);
-    callbacks->setHeight(scaled_height);
+    cb.setRadius(scaled_radius);
+    cb.setHeight(scaled_height);
+}
+
+void PhysXCylinderShape3D::_apply_params_to_callbacks(physx::PxCustomGeometryExt::CylinderCallbacks &cb) const {
+    cb.setRadius(radius);
+    cb.setHeight(height);
 }

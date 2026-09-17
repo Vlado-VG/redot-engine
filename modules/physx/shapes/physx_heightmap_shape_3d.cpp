@@ -26,10 +26,13 @@ AABB PhysXHeightMapShape3D::_calculate_aabb() const {
 physx::PxTransform PhysXHeightMapShape3D::get_local_pose() const {
 	// PhysX heightfields originate at a corner (0,0,0). Godot expects them
 	// centered on the local origin. Apply the offset so the shape is centered
-	// when the body places it at the origin.
+	// when the body places it at the origin. The Y offset reverses the
+	// quantization bake: sample value -32768 (== min_height) must land at
+	// min_height, not min_height - 32768 * height_scale.
 	float x_offset = -(float)(width - 1) * 0.5f;
 	float z_offset = -(float)(depth - 1) * 0.5f;
-	return physx::PxTransform(physx::PxVec3(x_offset, 0.0f, z_offset));
+	float y_offset = (float)min_height + 32768.0f * height_scale;
+	return physx::PxTransform(physx::PxVec3(x_offset, y_offset, z_offset));
 }
 
 void PhysXHeightMapShape3D::set_data(const Variant &p_data) {
@@ -48,21 +51,22 @@ void PhysXHeightMapShape3D::set_data(const Variant &p_data) {
 	// Calculate bounds and quantization scale
 	min_height = heights[0];
 	max_height = heights[0];
-	float max_abs_height = 0.0f;
 
 	for (int i = 0; i < heights.size(); ++i) {
 		float h = heights[i];
 		if (h < min_height) min_height = h;
 		if (h > max_height) max_height = h;
-
-		float abs_h = Math::abs(h);
-		if (abs_h > max_abs_height) max_abs_height = abs_h;
 	}
 
-	// Quantize float domain into 16-bit integer domain safely
-	// We map the absolute maximum height to 32767 to ensure Y=0 exactly equals PxI16(0)
-	if (max_abs_height > 0.0f) {
-		height_scale = max_abs_height / 32767.0f;
+	// Map [min_height, max_height] onto the FULL signed 16-bit range so the
+	// quantization error is (max-min)/65535 everywhere. The old zero-centered
+	// mapping spent the range on [-max_abs, +max_abs], which for an offset
+	// terrain (e.g. heights 100..110 m) quantized ~20x coarser than needed
+	// and produced visible stair-stepping. get_local_pose() lifts the field
+	// back by the baked offset so world-space heights are unchanged.
+	const float range = MAX((float)(max_height - min_height), 0.0f);
+	if (range > 0.0f) {
+		height_scale = range / 65535.0f;
 	} else {
 		height_scale = 1.0f; // Completely flat
 	}
@@ -130,9 +134,11 @@ bool PhysXHeightMapShape3D::_ensure_physx_height_field() const {
 			int physx_index = row * depth + column; // Swapped iteration alignment
 
 			float h = heights[godot_index];
-			
-			// Quantize height
-			physx::PxI16 h_quantized = (physx::PxI16)CLAMP(Math::round(h / height_scale), -32768.0, 32767.0);
+
+			// Quantize height: sample 0 == min_height lands at PxI16 -32768,
+			// max_height at +32767 (see set_data's scale comment).
+			int q = (int)Math::round((h - (float)min_height) / height_scale) - 32768;
+			physx::PxI16 h_quantized = (physx::PxI16)CLAMP(q, -32768, 32767);
 
 			samples[physx_index].height = h_quantized;
 			samples[physx_index].materialIndex0 = 0;
