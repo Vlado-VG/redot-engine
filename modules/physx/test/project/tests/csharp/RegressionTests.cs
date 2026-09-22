@@ -14,7 +14,8 @@ internal static class RegressionTests {
         s.Add("PHYSX-REG-0003", "REG-0003: sleeping body frozen mid-air (gravity skipped while asleep)", SleepingFrozen);
         s.Add("PHYSX-REG-0004", "REG-0004: cast_motion with initial overlap reports unobstructed (documented)", CastMotionOverlapQuirk);
         s.Add("PHYSX-REG-0005", "REG-0005: hit_from_inside synthetic hit has zero normal (documented)", InsideHitNormalQuirk);
-        s.Add("PHYSX-REG-0006", "REG-0006: collision priority getter pinned to 1.0 (documented no-op)", PriorityNoopQuirk);
+        s.Add("PHYSX-REG-0006", "REG-0006: collision priority getter round-trips (RETRACTED no-op pin 2026-09-22 — C-10 made the getter return the stored value)", PriorityNoopQuirk);
+
         s.Add("PHYSX-REG-0007", "REG-0007: bodies in separate spaces cannot interact (isolation)", SpaceIsolation);
         s.Add("PHYSX-REG-0008", "REG-0008: freeing a shared shape does not corrupt users", SharedShapeFree);
         // ---- discovered by this suite against the current build; these FAIL on
@@ -134,8 +135,10 @@ internal static class RegressionTests {
     static IEnumerator PriorityNoopQuirk() {
         using var w = new PhysxWorld(false);
         var b = w.MakeBody(w.Box(0.4f), new Vector3(0, 5, 0));
+        // C-10: the getter returns the stored value now (was pinned to 1.0 as a
+        // no-op; the 42 value from the original quirk is the round-trip probe).
         PhysicsServer3D.BodySetCollisionPriority(b, 42f);
-        Assert.ExpectNear(PhysicsServer3D.BodyGetCollisionPriority(b), 1f, 1e-6f, "priority no-op pinned getter");
+        Assert.ExpectNear(PhysicsServer3D.BodyGetCollisionPriority(b), 42f, 1e-6f, "priority round-trips (was no-op)");
         yield return Wait.Frame();
     }
     static IEnumerator SpaceIsolation() {

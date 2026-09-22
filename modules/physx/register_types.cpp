@@ -21,6 +21,8 @@
 #include "nodes/physx_cloth_3d.h"
 #include "nodes/physx_granular_3d.h"
 #include "nodes/physx_particle_fluid_3d.h"
+#include "nodes/physx_gas_3d.h"
+#include "nodes/physx_gas_emitter_3d.h"
 
 #ifdef GODOT_PHYSX_BLAST
 #include "blast/physx_blast_asset.h"
@@ -73,6 +75,8 @@ void initialize_physx_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<PhysXCloth3D>();
 		ClassDB::register_class<PhysXGranular3D>();
 		ClassDB::register_class<PhysXParticleFluid3D>();
+		ClassDB::register_class<PhysXGas3D>();
+		ClassDB::register_class<PhysXGasEmitter3D>();
 #ifdef GODOT_PHYSX_BLAST
 		ClassDB::register_class<PhysXDestructible3D>();
 		ClassDB::register_class<PhysXBlastAsset>();

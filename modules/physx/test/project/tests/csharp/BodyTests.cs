@@ -42,7 +42,7 @@ internal static class BodyTests {
         s.Add("PHYSX-BODY-026", "reset_mass_properties restores shape-derived behavior", ResetMassProps);
         // --- params: plumbing ---
         s.Add("PHYSX-BODY-P-027", "param round-trips (mass/bounce/friction/COM/inertia) [plumbing]", ParamRoundtrips);
-        s.Add("PHYSX-BODY-P-028", "collision priority documented no-op (getter 1.0) [plumbing]", CollisionPriorityNoop);
+        s.Add("PHYSX-BODY-P-028", "collision priority round-trips [plumbing]", CollisionPriorityNoop);
         s.Add("PHYSX-BODY-P-029", "user flags / CCD flag / instance-free bookkeeping [plumbing]", FlagsRoundtrip);
         // --- forces ---
         s.Add("PHYSX-BODY-030", "central impulse dV = J/m", CentralImpulseExact);
@@ -482,9 +482,12 @@ internal static class BodyTests {
     static IEnumerator CollisionPriorityNoop() {
         using var w = new PhysxWorld(false);
         var b = w.MakeBody(w.Box(0.5f), new Vector3(0, 10, 0));
-        PhysicsServer3D.BodySetCollisionPriority(b, 8f);
-        Assert.ExpectNear(PhysicsServer3D.BodyGetCollisionPriority(b), 1.0f, 1e-5f,
-            "collision priority is a documented module no-op returning 1.0");
+        // C-10: priority round-trips (Godot weights test-motion recovery by it
+        // upstream; the module stores it). 8 is the value the old no-op test
+        // pinned; 3 proves the getter returns what was SET, not a constant.
+        PhysicsServer3D.BodySetCollisionPriority(b, 3f);
+        Assert.ExpectNear(PhysicsServer3D.BodyGetCollisionPriority(b), 3f, 1e-5f,
+            "collision priority round-trips");
         yield return Wait.Frame();
     }
     static IEnumerator FlagsRoundtrip() {
