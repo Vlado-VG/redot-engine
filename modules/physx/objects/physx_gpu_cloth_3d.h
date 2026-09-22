@@ -41,6 +41,9 @@ class PhysXGPUCloth3D {
 	uint32_t vertex_count = 0;
 	LocalVector<int32_t> indices; // cooked triangle list, for the node's mesh
 	LocalVector<uint8_t> pinned; // 1 == pinned
+	// Maps PRE-cook input vertex indices to cooked-mesh vertex indices
+	// (cooking welds/reorders; pins are authored in input space).
+	LocalVector<int32_t> input_to_cooked;
 	LocalVector<Vector3> pin_target; // world position, NAN.x == none
 
 	void *host_pos = nullptr; // pinned host mirror (PxVec4*): pos.xyz + invMass.w

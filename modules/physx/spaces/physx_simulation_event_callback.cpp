@@ -106,7 +106,8 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 
 			// Body 0's perspective: normal points from shape[1] to shape[0]
 			// (i.e., toward body0). Godot's local normal points toward self.
-			if (body0 && body0->get_max_contacts_reported() > 0 && (int)body0->get_contacts().size() < body0->get_max_contacts_reported()) {
+			if (body0 && body0->get_max_contacts_reported() > 0) {
+				LocalVector<PhysXBodyContact> &contacts = body0->get_contacts();
 				PhysXBodyContact bc;
 				bc.local_position = Vector3(cp.position.x, cp.position.y, cp.position.z);
 				bc.local_normal = Vector3(cp.normal.x, cp.normal.y, cp.normal.z);
@@ -116,6 +117,7 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 				bc.collider_id = a1->object_id;
 				bc.collider_shape = shape1_idx >= 0 ? shape1_idx : 0;
 				bc.collider_position = Vector3(cp.position.x, cp.position.y, cp.position.z);
+				bc.depth = -cp.separation; // negative separation == penetration depth
 				// Velocities at the contact point.
 				if (dyn1) {
 					const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*dyn1, cp.position);
@@ -125,11 +127,26 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 					const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*dyn0, cp.position);
 					bc.local_velocity = Vector3(v.x, v.y, v.z);
 				}
-				body0->get_contacts().push_back(bc);
+				// Godot's replacement policy: at capacity, a DEEPER contact
+				// replaces the shallowest stored one instead of being dropped.
+				if ((int)contacts.size() < body0->get_max_contacts_reported()) {
+					contacts.push_back(bc);
+				} else {
+					int shallowest = 0;
+					for (int ci = 1; ci < (int)contacts.size(); ci++) {
+						if (contacts[ci].depth < contacts[shallowest].depth) {
+							shallowest = ci;
+						}
+					}
+					if (bc.depth > contacts[shallowest].depth) {
+						contacts[shallowest] = bc;
+					}
+				}
 			}
 
 			// Body 1's perspective: normal is flipped.
-			if (body1 && body1->get_max_contacts_reported() > 0 && (int)body1->get_contacts().size() < body1->get_max_contacts_reported()) {
+			if (body1 && body1->get_max_contacts_reported() > 0) {
+				LocalVector<PhysXBodyContact> &contacts = body1->get_contacts();
 				PhysXBodyContact bc;
 				bc.local_position = Vector3(cp.position.x, cp.position.y, cp.position.z);
 				bc.local_normal = Vector3(-cp.normal.x, -cp.normal.y, -cp.normal.z);
@@ -139,6 +156,7 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 				bc.collider_id = a0->object_id;
 				bc.collider_shape = shape0_idx >= 0 ? shape0_idx : 0;
 				bc.collider_position = Vector3(cp.position.x, cp.position.y, cp.position.z);
+				bc.depth = -cp.separation;
 				// Velocities at the contact point (swapped perspective).
 				if (dyn0) {
 					const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*dyn0, cp.position);
@@ -148,7 +166,20 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 					const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*dyn1, cp.position);
 					bc.local_velocity = Vector3(v.x, v.y, v.z);
 				}
-				body1->get_contacts().push_back(bc);
+				// Same depth-replacement policy as body 0.
+				if ((int)contacts.size() < body1->get_max_contacts_reported()) {
+					contacts.push_back(bc);
+				} else {
+					int shallowest = 0;
+					for (int ci = 1; ci < (int)contacts.size(); ci++) {
+						if (contacts[ci].depth < contacts[shallowest].depth) {
+							shallowest = ci;
+						}
+					}
+					if (bc.depth > contacts[shallowest].depth) {
+						contacts[shallowest] = bc;
+					}
+				}
 			}
 		}
 	}

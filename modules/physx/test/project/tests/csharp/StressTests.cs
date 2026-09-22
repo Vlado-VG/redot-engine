@@ -66,6 +66,9 @@ internal static class StressTests {
         long seed = 123456;
         var args = OS.GetCmdlineUserArgs();
         foreach (var a in args) if (a.StartsWith("--seed=")) long.TryParse(a[7..], out seed);
+        var skipOps = new HashSet<int>();
+        foreach (var a in args) if (a.StartsWith("--skip-ops="))
+            foreach (var s in a[11..].Split(',')) if (int.TryParse(s, out int v)) skipOps.Add(v);
         var rnd = new Random(unchecked((int)seed));
 
         using var w = new PhysxWorld();
@@ -77,6 +80,7 @@ internal static class StressTests {
 
         for (int op = 0; op < ops; op++) {
             int what = rnd.Next(extra ? 16 : 14);
+            if (skipOps.Contains(what)) continue;
             string desc = "";
             try {
                 switch (what) {
@@ -129,6 +133,9 @@ internal static class StressTests {
                     case 10: {
                         if (bodies.Count >= 2) {
                             var j2 = w.TrackJoint(PhysicsServer3D.JointCreate());
+                            // Note: the two picks can coincide; the backend keeps
+                            // such self-joints dormant instead of creating a
+                            // degenerate PhysX constraint (see PhysXJoint3D::_create).
                             PhysicsServer3D.JointMakePin(j2, bodies[rnd.Next(bodies.Count)], Vector3.Zero, bodies[rnd.Next(bodies.Count)], Vector3.Zero);
                             joints.Add(j2); desc = "create joint";
                         }

@@ -242,6 +242,9 @@ private:
 	int solver_priority = 0;
 
 	// --- Private helpers (deduplicate limit/drive reconfiguration) ---
+	/// Builds the slider linear limit pair from the cached params (softness /
+	/// damping / restitution included); deduplicates the switch-case blocks.
+	physx::PxJointLinearLimitPair _slider_limit() const;
 	/// Rebuilds and applies the hinge angular limit from hinge_params.
 	/// No-op if use_limit is false.
 	void _apply_hinge_limit();

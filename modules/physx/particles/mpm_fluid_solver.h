@@ -229,5 +229,5 @@ private:
 	LocalVector<float> _seed_block(int &r_count) const;
 	void _pack_params(double p_dt, int p_ncol, PackedByteArray &r_bytes) const;
 	void _pack_colliders(const LocalVector<SphereCollider> &p_colliders, PackedByteArray &r_bytes) const;
-	void _rebuild_uniform_sets();
+	bool _rebuild_uniform_sets();
 };

@@ -840,6 +840,16 @@ bool PhysXVehicle3D::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_chas
 		return false;
 	}
 
+	// Validate prerequisites BEFORE tearing down the previous configuration:
+	// a failed adopt used to leave the new chassis registered (and the old one
+	// un-flagged) with no vehicle state attached.
+	PhysXServer3D *server = PhysXServer3D::get_singleton();
+	physx::PxPhysics *px_physics = server ? server->try_get_physics() : nullptr;
+	if (!px_physics) {
+		WARN_PRINT_ONCE("PhysX: vehicle adopt skipped -- PhysX not initialized.");
+		return false;
+	}
+
 	if (space) {
 		space->unregister_vehicle(this);
 	}
@@ -869,12 +879,6 @@ bool PhysXVehicle3D::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_chas
 	// geometry, gravity and the step loop come from the chassis's actual scene.
 	if (chassis_body) {
 		chassis_body->add_chassis_vehicle(this);
-	}
-
-	PhysXServer3D *server = PhysXServer3D::get_singleton();
-	physx::PxPhysics *px_physics = server ? server->try_get_physics() : nullptr;
-	if (!px_physics) {
-		return false;
 	}
 
 	Vehicle2State *state = (archetype == ARCHETYPE_DIRECT_DRIVE)
@@ -1302,7 +1306,7 @@ void PhysXVehicle3D::write_commands() {
 		}
 		if (pw_drive) {
 			const float maxr = v2->throttle_response_params.maxResponse;
-			const float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
+			float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
 			v2->command_state.throttle = 1.0f;
 			// The gear flips the sign of the throttle response for the whole
 			// vehicle, so it follows the DOMINANT commanded direction (the
@@ -1318,6 +1322,15 @@ void PhysXVehicle3D::write_commands() {
 					: physx::PxVehicleDirectDriveTransmissionCommandState::eREVERSE;
 			for (int i = 0; i < wheel_count; i++) {
 				const float t = in_wheel_drive_torque[i];
+				const float demand = (t >= 0.0f) ? t : -t;
+				if (demand * inv > 1.0f) {
+					// A wheel torque above maxResponse would encode a multiplier > 1 --
+					// outside the response contract. Raise maxResponse to the largest
+					// demanded torque instead of clamping (clamping would silently
+					// weaken the other wheels' drive).
+					v2->throttle_response_params.maxResponse = demand;
+					inv = 1.0f / demand;
+				}
 				v2->throttle_response_params.wheelResponseMultipliers[i] = t * gear_sign * inv;
 			}
 		} else {
@@ -1335,14 +1348,21 @@ void PhysXVehicle3D::write_commands() {
 		}
 		if (pw_brake) {
 			const float maxr = v2->brake_response_params[0].maxResponse;
-			const float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
+			float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
 			v2->command_state.brakes[0] = 1.0f;
 			// Brake magnitude only: a brake torque resists wheel rotation, it
 			// has no direction of its own, so the sign of the command is
 			// meaningless and |t| is the intended semantics.
 			for (int i = 0; i < wheel_count; i++) {
 				const float t = in_wheel_brake_torque[i];
-				v2->brake_response_params[0].wheelResponseMultipliers[i] = (t < 0.0f ? -t : t) * inv;
+				const float demand = (t < 0.0f ? -t : t);
+				if (demand * inv > 1.0f) {
+					// Same contract as the drive channel: a brake torque above
+					// maxResponse must raise maxResponse, not clamp the multiplier.
+					v2->brake_response_params[0].maxResponse = demand;
+					inv = 1.0f / demand;
+				}
+				v2->brake_response_params[0].wheelResponseMultipliers[i] = demand * inv;
 			}
 		} else {
 			for (int i = 0; i < wheel_count; i++) {

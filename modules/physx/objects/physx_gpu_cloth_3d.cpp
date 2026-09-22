@@ -10,6 +10,7 @@
 #include "../spaces/physx_space_3d.h"
 
 #include "core/error/error_macros.h"
+#include "core/templates/hash_map.h"
 #include "core/math/math_funcs.h"
 
 #include <PxPhysicsAPI.h>
@@ -46,6 +47,13 @@ void PhysXGPUCloth3D::clear() {
 }
 
 void PhysXGPUCloth3D::_destroy_surface() {
+	// Everything below (shape/tri_mesh/material releases, pinned-buffer frees)
+	// is touched by the in-flight solve until it completes -- fetch first so
+	// the releases can't race it under async stepping. The actor removal above
+	// this point is queued and flushed by the same fetch.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
+	}
 	if (space && surface) {
 		// Routed through the space (queued when a solve is in flight).
 		space->remove_actor(surface);
@@ -200,6 +208,30 @@ bool PhysXGPUCloth3D::_cook_and_create(const Vector<Vector3> &p_positions, const
 	// density / thickness to end up with kg/m^2.
 	PxDeformableSurfaceExt::distributeDensityToVertices(*surface, density / thickness, thickness, hp);
 
+	// Map input (pre-cook) vertex indices to cooked indices: cooking welds
+	// duplicate vertices, and pins are authored in input space. Positions are
+	// unchanged by cooking, so an exact-match lookup keyed on the quantized
+	// position resolves every non-degenerate input vertex.
+	input_to_cooked.resize(nv);
+	{
+		HashMap<uint64_t, int32_t> cooked_by_pos;
+		for (PxU32 c = 0; c < cooked_nv; c++) {
+			const PxVec3 &cv = cooked_v[c];
+			const uint64_t key = (uint64_t)(uint32_t)(int32_t)(cv.x * 1.0e5f) ^
+					((uint64_t)(uint32_t)(int32_t)(cv.y * 1.0e5f) << 21) ^
+					((uint64_t)(uint32_t)(int32_t)(cv.z * 1.0e5f) << 42);
+			cooked_by_pos.insert(key, (int32_t)c);
+		}
+		for (int i = 0; i < nv; i++) {
+			const physx::PxVec3 &iv = verts[i];
+			const uint64_t key = (uint64_t)(uint32_t)(int32_t)(iv.x * 1.0e5f) ^
+					((uint64_t)(uint32_t)(int32_t)(iv.y * 1.0e5f) << 21) ^
+					((uint64_t)(uint32_t)(int32_t)(iv.z * 1.0e5f) << 42);
+			const int32_t *mapped = cooked_by_pos.getptr(key);
+			input_to_cooked[i] = mapped ? *mapped : -1;
+		}
+	}
+
 	// Pins: zero the inverse mass of pinned vertices.
 	pinned.resize(vertex_count);
 	pin_target.resize(vertex_count);
@@ -253,6 +285,10 @@ void PhysXGPUCloth3D::set_pinned(const Vector<int32_t> &p_pinned_indices) {
 	if (!surface || pinned.is_empty()) {
 		return;
 	}
+	// The host->device writes below are legal only between steps.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
+	}
 	// Inverse mass does not change during simulation, so the host mirror stays
 	// authoritative -- no device readback needed. Recompute the base mass from
 	// density (clears old pins) and zero the inverse mass of the new pinned set.
@@ -264,7 +300,12 @@ void PhysXGPUCloth3D::set_pinned(const Vector<int32_t> &p_pinned_indices) {
 		pin_target[i] = Vector3(NAN, 0, 0);
 	}
 	for (int k = 0; k < p_pinned_indices.size(); k++) {
-		const int v = p_pinned_indices[k];
+		const int input_idx = p_pinned_indices[k];
+		// Pins are authored in input (pre-cook) vertex space; translate to the
+		// cooked vertex the cook kept for that position.
+		const int v = (input_idx >= 0 && (uint32_t)input_idx < input_to_cooked.size())
+				? input_to_cooked[input_idx]
+				: input_idx;
 		if (v >= 0 && v < (int)vertex_count) {
 			pinned[v] = 1;
 			hp[v].w = 0.0f;
@@ -291,6 +332,10 @@ void PhysXGPUCloth3D::set_pin_targets(const Vector<Vector3> &p_world_targets) {
 void PhysXGPUCloth3D::apply_wind(const Vector3 &p_wind, float p_drag, float p_lift, float p_dt) {
 	if (!surface || vertex_count == 0 || p_dt <= 0.0f || !simulated_once) {
 		return;
+	}
+	// Host->device velocity writes are legal only between steps.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
 	}
 	// hp / hv hold the state from the last read_back (== start of this step).
 	// Accumulate a per-triangle aerodynamic impulse into the velocities, honor

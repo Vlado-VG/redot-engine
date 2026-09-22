@@ -555,8 +555,10 @@ void PhysXParticleFluid3D::_update_mpm_foam() {
 	}
 	PackedVector3Array foam = mpm->get_foam_positions();
 	const int fn = MIN(foam.size(), foam_particle_count);
-	PackedFloat32Array foam_buffer;
-	foam_buffer.resize(foam_particle_count * 12);
+	if (foam_buffer_scratch.size() != foam_particle_count * 12) {
+		foam_buffer_scratch.resize(foam_particle_count * 12);
+	}
+	PackedFloat32Array foam_buffer = foam_buffer_scratch;
 	float *fb = foam_buffer.ptrw();
 	const Vector3 *fp = foam.ptr();
 	for (int i = 0; i < fn; i++) {

@@ -5,8 +5,8 @@
  * Translates PhysX simulation events into Godot-side data:
  *   - onContact: populates per-body contact buffers (PhysXBody3D::contacts),
  *     read by PhysXDirectBodyState3D's contact getters.
- *   - onTrigger: dispatches Area3D monitor callbacks (AREA_BODY_ADDED /
- *     AREA_BODY_REMOVED). Fully wired when areas are implemented (Phase 3).
+ *   - onTrigger: maintains area overlap state and defers Area3D monitor
+ *     callbacks to flush_queries() (AREA_BODY_ADDED / AREA_BODY_REMOVED).
  *
  * The callback resolves actors back to PhysXBody3D / PhysXArea3D via the
  * PhysXActorUserData attached to each PxActor's userData field.

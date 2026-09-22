@@ -200,6 +200,16 @@ physx::PxJoint *PhysXJoint3D::_create() {
 		return nullptr;
 	}
 
+	// PhysX has no self-constraints: a joint whose endpoints resolve to the
+	// same actor puts a degenerate constraint in the solver -- checked builds
+	// abort on a worker thread mid-solve (silent process death, no handler
+	// output). Godot's own solver no-ops A==B joints, so stay dormant and
+	// re-resolve on the next make()/rebuild() instead of creating one.
+	if (actor_a && actor_b && actor_a == actor_b) {
+		WARN_PRINT_ONCE("PhysX: joint endpoints resolve to the same actor; the constraint is skipped and the joint stays dormant until reconfigured.");
+		return nullptr;
+	}
+
 	physx::PxJoint *created = create_px_joint(PhysXServer3D::get_singleton()->get_physics(),
 			static_cast<PhysicsServer3D::JointType>(kind), actor_a, frame_a, actor_b, frame_b);
 	return created;
@@ -367,10 +377,7 @@ void PhysXJoint3D::_apply_params() {
 			// actually configured (see set_slider_param) — a fresh slider must
 			// stay unlimited.
 			if (slider_limit_enabled) {
-				physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
-				limit.stiffness = slider_params.linear_limit_softness;
-				limit.damping = slider_params.linear_limit_damping;
-				limit.restitution = slider_params.linear_limit_restitution;
+				physx::PxJointLinearLimitPair limit = _slider_limit();
 				prismatic->setLimit(limit);
 				prismatic->setPrismaticJointFlag(physx::PxPrismaticJointFlag::eLIMIT_ENABLED, true);
 			}
@@ -546,6 +553,14 @@ real_t PhysXJoint3D::get_pin_param(PhysicsServer3D::PinJointParam p_param) const
 // Hinge joint — params and flags
 // ---------------------------------------------------------------------------
 
+physx::PxJointLinearLimitPair PhysXJoint3D::_slider_limit() const {
+	physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
+	limit.stiffness = slider_params.linear_limit_softness;
+	limit.damping = slider_params.linear_limit_damping;
+	limit.restitution = slider_params.linear_limit_restitution;
+	return limit;
+}
+
 // Rebuilds and applies the hinge angular limit from hinge_params. No-op when
 // the limit is disabled. Centralizes the limit construction that was previously
 // duplicated across 6 param cases + the USE_LIMIT flag case.
@@ -711,10 +726,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			slider_params.linear_limit_upper = (float)p_value;
 			slider_limit_enabled = true;
 			if (prismatic) {
-				physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
-				limit.stiffness = slider_params.linear_limit_softness;
-				limit.damping = slider_params.linear_limit_damping;
-				limit.restitution = slider_params.linear_limit_restitution;
+				physx::PxJointLinearLimitPair limit = _slider_limit();
 				prismatic->setLimit(limit);
 				prismatic->setPrismaticJointFlag(physx::PxPrismaticJointFlag::eLIMIT_ENABLED, true);
 			}
@@ -726,10 +738,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			slider_params.linear_limit_lower = (float)p_value;
 			slider_limit_enabled = true;
 			if (prismatic) {
-				physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
-				limit.stiffness = slider_params.linear_limit_softness;
-				limit.damping = slider_params.linear_limit_damping;
-				limit.restitution = slider_params.linear_limit_restitution;
+				physx::PxJointLinearLimitPair limit = _slider_limit();
 				prismatic->setLimit(limit);
 				prismatic->setPrismaticJointFlag(physx::PxPrismaticJointFlag::eLIMIT_ENABLED, true);
 			}
@@ -740,10 +749,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 		{
 			slider_params.linear_limit_softness = (float)p_value;
 			if (prismatic) {
-				physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
-				limit.stiffness = slider_params.linear_limit_softness;
-				limit.damping = slider_params.linear_limit_damping;
-				limit.restitution = slider_params.linear_limit_restitution;
+				physx::PxJointLinearLimitPair limit = _slider_limit();
 				prismatic->setLimit(limit);
 			}
 			break;
@@ -753,10 +759,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 		{
 			slider_params.linear_limit_restitution = (float)p_value;
 			if (prismatic) {
-				physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
-				limit.stiffness = slider_params.linear_limit_softness;
-				limit.damping = slider_params.linear_limit_damping;
-				limit.restitution = slider_params.linear_limit_restitution;
+				physx::PxJointLinearLimitPair limit = _slider_limit();
 				prismatic->setLimit(limit);
 			}
 			break;
@@ -766,10 +769,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 		{
 			slider_params.linear_limit_damping = (float)p_value;
 			if (prismatic) {
-				physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), slider_params.linear_limit_lower, slider_params.linear_limit_upper);
-				limit.stiffness = slider_params.linear_limit_softness;
-				limit.damping = slider_params.linear_limit_damping;
-				limit.restitution = slider_params.linear_limit_restitution;
+				physx::PxJointLinearLimitPair limit = _slider_limit();
 				prismatic->setLimit(limit);
 			}
 			break;

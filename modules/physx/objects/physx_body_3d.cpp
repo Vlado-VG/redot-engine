@@ -10,6 +10,7 @@
 
 #include "physx_body_3d.h"
 #include "physx_direct_body_state_3d.h"
+#include "../physx_conversions.h"
 #include "../joints/physx_joint_3d.h"
 #include "../vehicles/physx_vehicle_3d.h"
 #include "../physx_server.h"
@@ -355,12 +356,6 @@ void PhysXBody3D::set_mode(PhysicsServer3D::BodyMode p_mode) {
 // State
 // ---------------------------------------------------------------------------
 
-static void _variant_to_pxtransform(const Variant &p_value, physx::PxTransform &r_out) {
-	Transform3D t = p_value.operator Transform3D();
-	r_out.p = physx::PxVec3(t.origin.x, t.origin.y, t.origin.z);
-	Quaternion q = t.basis.get_rotation_quaternion();
-	r_out.q = physx::PxQuat(q.x, q.y, q.z, q.w);
-}
 
 void PhysXBody3D::set_state(PhysicsServer3D::BodyState p_state, const Variant &p_value) {
 	if (!px_actor) {
@@ -380,7 +375,9 @@ void PhysXBody3D::set_state(PhysicsServer3D::BodyState p_state, const Variant &p
 				refresh_shape_scaling();
 			}
 			physx::PxTransform pose(physx::PxIdentity);
-			_variant_to_pxtransform(p_value, pose);
+			// physx_to_px clamps NaN/degenerate quaternions before they can
+			// reach PhysX (physx_conversions.h); scale was captured above.
+			pose = physx_to_px(p_value.operator Transform3D());
 			if (mode == PhysicsServer3D::BODY_MODE_KINEMATIC) {
 				// Kinematic bodies must use setKinematicTarget() for the solver
 				// to interpolate — but that requires the body to be in a scene.
@@ -465,6 +462,9 @@ Variant PhysXBody3D::get_state(PhysicsServer3D::BodyState p_state) const {
 			Transform3D t;
 			t.origin = Vector3(pose.p.x, pose.p.y, pose.p.z);
 			Quaternion q(pose.q.x, pose.q.y, pose.q.z, pose.q.w);
+			// The set path strips node scale into body_scale (baked into shape
+			// geometry); re-apply it so the state round-trips what was set.
+			t.basis = t.basis.scaled(body_scale);
 			t.basis.set_quaternion(q);
 			return t;
 		}

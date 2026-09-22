@@ -118,6 +118,7 @@ private:
 
 	// Foam/spray/bubble particles, drawn in their own MultiMesh + RS instance.
 	RID foam_multimesh;
+	PackedFloat32Array foam_buffer_scratch; // reused; avoids a per-frame realloc
 	RID foam_instance;
 	Ref<Mesh> foam_mesh;
 

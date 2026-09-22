@@ -130,11 +130,6 @@ protected:
         geometry_initialized = false;
     }
 
-    void _invalidate_scale() const {
-        // Kept for the derived set_data() call sites; instance refresh is now
-        // _refresh_instances().
-    }
-
     // PhysXShape3D interface — detach PxShape from owners before callbacks are destroyed.
     // The callbacks are destroyed after this method returns (during derived-class
     // destructor), so the PxShape must be detached and released while the

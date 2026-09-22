@@ -383,7 +383,7 @@ void MPMFluidSolver::_pack_colliders(const LocalVector<SphereCollider> &p_collid
 	}
 }
 
-void MPMFluidSolver::_rebuild_uniform_sets() {
+bool MPMFluidSolver::_rebuild_uniform_sets() {
 	RID by_binding[10] = { buf_params, buf_particles, buf_grid_i, buf_grid_v, buf_colliders, buf_cimp, buf_mm, buf_surf, buf_foam, buf_foam_meta };
 	for (int p = 0; p < PASS_MAX; p++) {
 		if (uset[p].is_valid()) {
@@ -402,7 +402,9 @@ void MPMFluidSolver::_rebuild_uniform_sets() {
 			uniforms.push_back(u);
 		}
 		uset[p] = rd->uniform_set_create(uniforms, shader[p], 0);
-		ERR_FAIL_COND(uset[p].is_null());
+		if (uset[p].is_null()) {
+			return false;
+		}
 	}
 
 	// The march pass also binds set 1: the mesh output buffers.
@@ -421,7 +423,9 @@ void MPMFluidSolver::_rebuild_uniform_sets() {
 			m.push_back(u);
 		}
 		uset_mesh = rd->uniform_set_create(m, shader[PASS_MARCH], 1);
-		ERR_FAIL_COND(uset_mesh.is_null());
+		if (uset_mesh.is_null()) {
+			return false;
+		}
 	}
 }
 
@@ -506,7 +510,10 @@ void MPMFluidSolver::configure(const Settings &p_settings, const Transform3D &p_
 		buf_foam_meta = rd->storage_buffer_create(mzero.size(), mzero);
 	}
 
-	_rebuild_uniform_sets();
+	if (!_rebuild_uniform_sets()) {
+		_free_buffers();
+		return;
+	}
 	built = true;
 }
 
@@ -661,12 +668,16 @@ void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_c
 	if (foam_run) {
 		// Diffuse (foam/spray) layer, once per frame after the substeps: spawn
 		// off the final particle/grid state, then advect. Never touches the
-		// sim's own buffers.
-		rd->compute_list_bind_compute_pipeline(cl, pipeline[PASS_FOAM_SPAWN]);
-		rd->compute_list_bind_uniform_set(cl, uset[PASS_FOAM_SPAWN], 0);
-		rd->compute_list_dispatch(cl, pg, 1, 1); // one thread per fluid particle
-		rd->compute_list_add_barrier(cl);
-
+		// sim's own buffers. The spawn dispatch is gated near ring saturation
+		// (alive is the last reaped count): recycling live foam round-robin
+		// reads as popping, so past ~80% the layer only animates what exists.
+		const bool can_spawn = _foam_alive < (int)(foam_capacity_resolved * 0.8);
+		if (can_spawn) {
+			rd->compute_list_bind_compute_pipeline(cl, pipeline[PASS_FOAM_SPAWN]);
+			rd->compute_list_bind_uniform_set(cl, uset[PASS_FOAM_SPAWN], 0);
+			rd->compute_list_dispatch(cl, pg, 1, 1); // one thread per fluid particle
+			rd->compute_list_add_barrier(cl);
+		}
 		rd->compute_list_bind_compute_pipeline(cl, pipeline[PASS_FOAM_ADVECT]);
 		rd->compute_list_bind_uniform_set(cl, uset[PASS_FOAM_ADVECT], 0);
 		rd->compute_list_dispatch(cl, groups_for(foam_capacity_resolved), 1, 1);
@@ -736,7 +747,9 @@ void MPMFluidSolver::_reap_submitted() const {
 		Vector<uint8_t> meta = rd->buffer_get_data(buf_foam_meta, 0, 2 * sizeof(uint32_t));
 		const uint32_t alive = meta.size() >= 8 ? MIN(decode_uint32(meta.ptr() + 4), (uint32_t)foam_capacity_resolved) : 0;
 		PackedVector3Array positions;
-		if (alive > 0) {
+		if (alive == 0) {
+			positions.clear(); // skip the full-buffer readback entirely
+		} else {
 			Vector<uint8_t> raw = rd->buffer_get_data(buf_foam);
 			const int slots = MIN((int)(raw.size() / (FLOATS_PER_FOAM * sizeof(float))), foam_capacity_resolved);
 			const float *f = (const float *)raw.ptr();

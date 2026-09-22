@@ -48,6 +48,7 @@ struct PhysXBodyContact {
 	Vector3 collider_velocity; ///< Velocity of the collider at the contact point.
 	Vector3 local_velocity;    ///< Velocity of the local body at the contact point.
 	Vector3 collider_position; ///< World-space contact point on the collider side.
+	real_t depth = 0.0f;       ///< Penetration depth at this contact (Godot's replacement policy ranks by it).
 };
 
 class PhysXBody3D : public PhysXShapedObject3D {
@@ -163,6 +164,12 @@ public:
 
     // --- Contact reporting ---
     void set_max_contacts_reported(int p_amount);
+    void set_collision_priority(real_t p_priority) { collision_priority = p_priority; }
+    real_t get_collision_priority() const { return collision_priority; }
+    void set_user_flags(uint32_t p_flags) { user_flags = p_flags; }
+    uint32_t get_user_flags() const { return user_flags; }
+    void set_contacts_depth_threshold(real_t p_threshold) { contacts_depth_threshold = p_threshold; }
+    real_t get_contacts_depth_threshold() const { return contacts_depth_threshold; }
     int get_max_contacts_reported() const { return max_contacts_reported; }
 
     // --- Custom force integration (Godot's "custom integrator") ---
@@ -292,6 +299,9 @@ private:
 
     // Flags / state.
     int max_contacts_reported = 0;
+    real_t collision_priority = 1.0; // Godot default; weights test-motion recovery upstream
+    uint32_t user_flags = 0;
+    real_t contacts_depth_threshold = 0.0;
     bool omit_force_integration = false;
     bool ray_pickable = true;
     bool ccd_enabled = false;

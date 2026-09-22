@@ -767,20 +767,28 @@ uint32_t PhysXServer3D::body_get_collision_mask(RID p_body) const {
 }
 
 void PhysXServer3D::body_set_collision_priority(RID p_body, real_t p_priority) {
-	// PhysX has no collision priority; Godot uses it for soft-body contact
-	// biasing. Silently accept and ignore for now.
+	// Stored and round-tripped; weighting test-motion recovery by it (upstream
+	// Godot behavior) is not implemented -- see C-10.
+	PhysXBody3D *body = body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(body);
+	body->set_collision_priority(p_priority);
 }
 
 real_t PhysXServer3D::body_get_collision_priority(RID p_body) const {
-	return 1.0;
+	const PhysXBody3D *body = body_owner.get_or_null(p_body);
+	return body ? body->get_collision_priority() : 1.0;
 }
 
 void PhysXServer3D::body_set_user_flags(RID p_body, uint32_t p_flags) {
-	// Godot user flags have no PhysX equivalent; accept and ignore.
+	// Stored and round-tripped (no PhysX equivalent).
+	PhysXBody3D *body = body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(body);
+	body->set_user_flags(p_flags);
 }
 
 uint32_t PhysXServer3D::body_get_user_flags(RID p_body) const {
-	return 0;
+	const PhysXBody3D *body = body_owner.get_or_null(p_body);
+	return body ? body->get_user_flags() : 0;
 }
 
 void PhysXServer3D::body_set_param(RID p_body, PhysicsServer3D::BodyParameter p_param, const Variant &p_value) {
@@ -960,11 +968,15 @@ int PhysXServer3D::body_get_max_contacts_reported(RID p_body) const {
 }
 
 void PhysXServer3D::body_set_contacts_reported_depth_threshold(RID p_body, real_t p_threshold) {
-	// No direct PhysX equivalent; silently accept.
+	// Stored and round-tripped (no PhysX equivalent).
+	PhysXBody3D *body = body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(body);
+	body->set_contacts_depth_threshold(p_threshold);
 }
 
 real_t PhysXServer3D::body_get_contacts_reported_depth_threshold(RID p_body) const {
-	return INFINITY;
+	const PhysXBody3D *body = body_owner.get_or_null(p_body);
+	return body ? body->get_contacts_depth_threshold() : 0.0;
 }
 
 void PhysXServer3D::body_set_omit_force_integration(RID p_body, bool p_enable) {

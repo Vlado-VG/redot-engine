@@ -500,6 +500,10 @@ void PhysXGPUParticleFluid3D::_destroy_isosurface() {
 	if (!iso) {
 		return;
 	}
+	// Extractor/device-buffer releases must not race an in-flight solve.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
+	}
 	if (px_system) {
 		px_system->setParticleSystemCallback(nullptr);
 	}
@@ -580,6 +584,11 @@ uint32_t PhysXGPUParticleFluid3D::copy_foam_mesh(LocalVector<Vector3> &r_vertice
 }
 
 void PhysXGPUParticleFluid3D::_destroy() {
+	// The releases below are touched by an in-flight solve until it completes;
+	// fetch first so they can't race it under async stepping.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
+	}
 	_destroy_isosurface();
 	if (px_buffer && px_system) {
 		px_system->removeParticleBuffer(px_buffer);
@@ -827,6 +836,10 @@ void PhysXGPUParticleFluid3D::set_capacity(uint32_t p_capacity) {
 }
 
 void PhysXGPUParticleFluid3D::clear() {
+	// Releasing the buffer races an in-flight solve under async stepping.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
+	}
 	if (px_buffer && px_system) {
 		px_system->removeParticleBuffer(px_buffer);
 	}
@@ -951,6 +964,10 @@ void PhysXGPUParticleFluid3D::_write_particles(uint32_t p_at, const Vector<Vecto
 	const uint32_t n = MIN((uint32_t)p_positions.size(), capacity);
 	if (n == 0 || !px_buffer) {
 		return;
+	}
+	// The host->device copies below are legal only between steps.
+	if (space && space->is_stepping()) {
+		space->ensure_synced();
 	}
 	PxCudaContextManager *cuda = space->get_px_cuda();
 	const PxReal spacing = MAX((PxReal)particle_size, 0.001f);
