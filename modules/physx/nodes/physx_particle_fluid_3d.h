@@ -100,7 +100,11 @@ protected:
 	bool _mpm_configured = false;
 	bool _mpm_emit_mode = false;
 	bool spawned = false;
-	bool _mpm_path() const { return _resolved_solver() == SOLVER_MPM; }
+	// Backend frozen at fluid creation (_make_fluid): runtime property changes
+	// (notably toggling foam_enabled, which the Auto rule now keys on) never
+	// flip a live backend -- the next spawn()/free re-resolves instead.
+	SolverBackend resolved = SOLVER_AUTO;
+	bool _mpm_path() const { return resolved == SOLVER_MPM; }
 	void _mpm_configure(bool p_prefill = true);
 
 private:
@@ -254,6 +258,10 @@ public:
 	double get_mpm_step_msec() const;
 
 	PackedVector3Array get_particle_positions() const;
+	// World-space positions of the live diffuse (foam/spray) particles. On the
+	// MPM backend this reads the Vulkan diffuse layer's cache; on the CUDA/PBD
+	// backend it forwards to the server's diffuse readback.
+	PackedVector3Array get_foam_positions() const;
 
 	// 0..1 fraction of the world-space box currently filled with fluid.
 	float get_submersion(const AABB &p_world_aabb) const;

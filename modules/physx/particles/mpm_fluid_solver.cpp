@@ -168,6 +168,37 @@ void MPMFluidSolver::_compute_scales() {
 			CLAMP((int)Math::round(settings.domain.y / dx), 4, 256),
 			CLAMP((int)Math::round(settings.domain.z / dx), 4, 256));
 	node_count = grid_dims.x * grid_dims.y * grid_dims.z;
+
+	// Hard budget on grid size. An over-ambitious domain (e.g. the flamethrower
+	// demo's 5x20x12 m box at 2 cm particles) resolves to millions of nodes:
+	// hundreds of MB of grid buffers, tens of thousands of dispatch groups per
+	// grid-wide pass (over Vulkan's base 65535-group guarantee -- a GPU hang on
+	// drivers that enforce it), and multi-second sync stalls that TDR the
+	// display driver. Coarsen dx (re-resolve y/z, growing x coverage for free)
+	// until the node count fits; the domain stays covered, cells just get
+	// fatter, and the user gets told.
+	const int64_t MAX_NODES = 4000000; // 62.5k groups of 64 -- under the 65535 guarantee
+	int64_t nodes = (int64_t)grid_dims.x * grid_dims.y * grid_dims.z;
+	if (nodes > MAX_NODES) {
+		const int64_t nodes_requested = nodes;
+		const float requested_dx = dx;
+		int guard = 0;
+		while (nodes > MAX_NODES && guard++ < 64) {
+			dx *= 1.1f;
+			grid_dims = Vector3i(
+					settings.grid_res,
+					CLAMP((int)Math::round(settings.domain.y / dx), 4, 256),
+					CLAMP((int)Math::round(settings.domain.z / dx), 4, 256));
+			nodes = (int64_t)grid_dims.x * grid_dims.y * grid_dims.z;
+		}
+		WARN_PRINT(vformat(
+				"MPMFluidSolver: domain %s at grid resolution %d resolves to a %.1fM-node grid (over the %dm-node budget); dx coarsened from %.3f m to %.3f m, grid now %dx%dx%d. Narrow the domain or raise particle_size for finer cells.",
+				settings.domain, settings.grid_res, (float)nodes_requested / 1000000.0f,
+				(int)(MAX_NODES / 1000000), requested_dx, dx,
+				grid_dims.x, grid_dims.y, grid_dims.z));
+	}
+
+	node_count = (int)nodes;
 	const float spacing = dx * 0.5f;
 	// Particle mass from the medium density. For granular this is the "weight"
 	// knob: the collider coupling exchanges momentum in proportion to it (light
@@ -737,6 +768,27 @@ PackedVector3Array MPMFluidSolver::get_foam_positions() const {
 	// Cached from the last reaped step (alive-only, world space) -- no readback
 	// here, same contract as get_multimesh_buffer().
 	return _foam_cache;
+}
+
+float MPMFluidSolver::get_submersion(const AABB &p_world_aabb) const {
+	if (!is_available() || p_world_aabb.get_volume() <= 0.0f || _mm_cache.is_empty()) {
+		return 0.0f;
+	}
+	// The cached MultiMesh rows carry the world-space particle origins (floats
+	// 3/7/11), so this is a pure CPU scan over the last reaped frame -- no
+	// readback, no GPU work.
+	int inside = 0;
+	const int n = MIN(pcount, (int)(_mm_cache.size() / 12));
+	const float *b = _mm_cache.ptr();
+	for (int i = 0; i < n; i++) {
+		const float *t = b + i * 12;
+		if (p_world_aabb.has_point(Vector3(t[3], t[7], t[11]))) {
+			inside++;
+		}
+	}
+	const float spacing = dx * 0.5f; // each particle stands in for a spacing^3 cell
+	const float filled = (float)inside * spacing * spacing * spacing;
+	return CLAMP(filled / p_world_aabb.get_volume(), 0.0f, 1.0f);
 }
 
 PackedVector3Array MPMFluidSolver::get_positions() const {

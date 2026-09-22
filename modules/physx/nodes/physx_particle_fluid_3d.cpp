@@ -65,6 +65,15 @@ PhysXParticleFluid3D::SolverBackend PhysXParticleFluid3D::_resolved_solver() con
 	if (_is_granular()) {
 		return SOLVER_MPM;
 	}
+	// Foam is a hard requirement when enabled: NVIDIA's CUDA diffuse-particle
+	// allocation is broken through 5.11 (see the maxActiveDiffuseParticles
+	// guard in physx_gpu_particle_fluid_3d.cpp), so an Auto fluid with foam on
+	// runs the MPM backend, whose Vulkan diffuse layer works on any device.
+	// Choose SOLVER_PBD explicitly for the CUDA solver without foam. Revisit
+	// when an SDK fixes the allocation.
+	if (foam_enabled) {
+		return SOLVER_MPM;
+	}
 	PhysXServer3D *server = PhysXServer3D::get_singleton();
 	return (server && server->has_gpu()) ? SOLVER_PBD : SOLVER_MPM;
 }
@@ -574,7 +583,11 @@ void PhysXParticleFluid3D::_make_fluid() {
 		return;
 	}
 
-	if (_mpm_path()) {
+	// Freeze the backend for this fluid's lifetime; runtime setting changes
+	// re-resolve only on the next free + spawn cycle.
+	resolved = _resolved_solver();
+
+	if (resolved == SOLVER_MPM) {
 		Ref<SphereMesh> sphere;
 		sphere.instantiate();
 		sphere->set_radius(particle_size * 0.5);
@@ -781,6 +794,7 @@ void PhysXParticleFluid3D::_free_fluid() {
 	_mpm_configured = false;
 	_mpm_emit_mode = false;
 	emit_accum = 0.0;
+	resolved = SOLVER_AUTO; // backend re-resolves on the next spawn
 
 	if (_mpm_query_shape.is_valid()) {
 		PhysicsServer3D::get_singleton()->free(_mpm_query_shape);
@@ -1017,6 +1031,11 @@ PackedVector3Array PhysXParticleFluid3D::get_particle_positions() const {
 }
 
 float PhysXParticleFluid3D::get_submersion(const AABB &p_world_aabb) const {
+	if (_mpm_path()) {
+		// Vulkan path: fraction of cached particle positions inside the query
+		// volume, weighted by cell volume -- same semantic as the PBD call.
+		return mpm != nullptr ? mpm->get_submersion(p_world_aabb) : 0.0f;
+	}
 	PhysXServer3D *server = PhysXServer3D::get_singleton();
 	if (!server || fluid.is_null()) {
 		return 0.0f;
@@ -1640,6 +1659,9 @@ void PhysXParticleFluid3D::set_foam_enabled(bool p_enabled) {
 		// so enabling stays inert until the next spawn/configure).
 		mpm->set_foam_active(p_enabled && !_is_granular());
 	}
+	// Note: enabling/disabling foam at runtime never flips the backend of a
+	// live fluid (the resolution is frozen at creation); on the guarded CUDA
+	// path the count simply stays 0 until the fluid is respawned.
 }
 
 void PhysXParticleFluid3D::set_foam_particle_count(int p_count) {
@@ -1682,6 +1704,17 @@ void PhysXParticleFluid3D::set_foam_size(float p_v) {
 		s->set_height(_effective_foam_size());
 	}
 	_apply_foam();
+}
+
+PackedVector3Array PhysXParticleFluid3D::get_foam_positions() const {
+	if (_mpm_path()) {
+		return mpm != nullptr ? mpm->get_foam_positions() : PackedVector3Array();
+	}
+	PhysXServer3D *server = PhysXServer3D::get_singleton();
+	if (!server || fluid.is_null()) {
+		return PackedVector3Array();
+	}
+	return server->particle_fluid_get_foam_positions(fluid);
 }
 
 int PhysXParticleFluid3D::get_live_foam_count() const {
@@ -1802,6 +1835,7 @@ void PhysXParticleFluid3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_foam_size", "size"), &PhysXParticleFluid3D::set_foam_size);
 	ClassDB::bind_method(D_METHOD("get_foam_size"), &PhysXParticleFluid3D::get_foam_size);
 	ClassDB::bind_method(D_METHOD("get_live_foam_count"), &PhysXParticleFluid3D::get_live_foam_count);
+	ClassDB::bind_method(D_METHOD("get_foam_positions"), &PhysXParticleFluid3D::get_foam_positions);
 
 	BIND_ENUM_CONSTANT(SOLVER_AUTO);
 	BIND_ENUM_CONSTANT(SOLVER_PBD);

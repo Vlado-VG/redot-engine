@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/math/aabb.h"
 #include "core/math/quaternion.h"
 #include "core/math/transform_3d.h"
 #include "core/math/vector3.h"
@@ -164,6 +165,11 @@ public:
 	// world-space, alive-only; get_foam_count() is the matching instance count.
 	PackedVector3Array get_foam_positions() const;
 	int get_foam_count() const { return _foam_alive; }
+
+	// Fraction of the fluid's cached particle positions inside `p_world_aabb`,
+	// weighted by particle cell volume -- the MPM counterpart of the PBD
+	// server's particle_fluid_get_submersion (script-side buoyancy probes).
+	float get_submersion(const AABB &p_world_aabb) const;
 
 private:
 	enum Pass { PASS_CLEAR, PASS_P2G_MASS, PASS_P2G_MOM, PASS_GRID, PASS_COUPLE, PASS_G2P, PASS_FOAM_SPAWN, PASS_FOAM_ADVECT, PASS_SURFACE, PASS_MARCH, PASS_RENDER, PASS_MAX };

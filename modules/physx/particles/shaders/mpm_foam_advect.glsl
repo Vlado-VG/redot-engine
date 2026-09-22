@@ -34,15 +34,18 @@ void main() {
 
 	float dt = max(FRAME_DT, 1e-4);
 	if (sample_grid_mass(p) > 0.25 * PMASS) {
-		// In the fluid: relative-velocity drag toward the fluid motion plus a
-		// buoyant rise (FOAM_BUOY is a fraction of the gravity magnitude).
-		vec3 target = sample_grid_v(p) - GRAV * FOAM_BUOY;
+		// In the fluid: strong drag toward the fluid velocity, plus a gentle
+		// buoyant RISE. The rise speed is capped: an uncapped fraction-of-
+		// gravity target (0.9 * 9.8 = 8.8 m/s!) turned every submerged bubble
+		// into a bottle rocket -- it crossed the surface ballistically and
+		// hung in the air metres above the pool.
+		vec3 target = sample_grid_v(p) + vec3(0.0, 1.0, 0.0) * min(FOAM_BUOY * 1.5, 1.2);
 		float blend = 1.0 - exp(-max(FOAM_DRAG, 0.01) * 8.0 * dt);
 		v = mix(v, target, blend);
 	} else {
-		// Air: ballistic with mild aerodynamic drag.
+		// Air: ballistic with aerodynamic drag (droplets decelerate fast).
 		v += GRAV * dt;
-		v *= 1.0 / (1.0 + 0.2 * dt);
+		v *= 1.0 / (1.0 + 0.5 * dt);
 	}
 	p += v * dt;
 	life -= dt;

@@ -71,6 +71,12 @@ func _run() -> void:
 	# --- 3. Fluid: spawn / emitting / foam / surface mesh --------------------
 	if stages.fluid:
 		var fluid: PhysXParticleFluid3D = PhysXParticleFluid3D.new()
+		# This stage deliberately validates the CUDA/PBD pipeline (spawn, emit,
+		# the guarded foam path, the GPU isosurface rebuild) -- pin the backend:
+		# with Auto, a foam-enabled fluid now resolves to the MPM/Vulkan backend
+		# (whose diffuse layer works where the CUDA one is guarded), and MPM
+		# cannot run under --headless.
+		fluid.solver = PhysXParticleFluid3D.SOLVER_PBD
 		fluid.position = Vector3(0, 2, 0) # fall onto the floor below for agitation
 		root.add_child(fluid)
 		await process_frame
