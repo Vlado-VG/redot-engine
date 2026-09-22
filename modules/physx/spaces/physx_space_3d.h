@@ -43,6 +43,7 @@ class PhysXPairFilterCallback;
 class PhysXContactModifyCallback;
 class PhysXGPUParticleFluid3D;
 class PhysXGPUCloth3D;
+class PhysXArticulation3D;
 
 class PhysXSpace3D {
 public:
@@ -241,6 +242,19 @@ public:
         }
     }
 
+    // --------------------------------------------------------------------
+    // Articulation registration (PhysXArticulation3D — script-level API).
+    // Tracked so freeing the space can detach them (their wrappers survive
+    // the space and must not keep a dangling space/scene pointer).
+    // --------------------------------------------------------------------
+
+    void register_articulation(PhysXArticulation3D *p_articulation);
+    void unregister_articulation(PhysXArticulation3D *p_articulation);
+
+    const LocalVector<PhysXArticulation3D *> &get_articulations() const {
+        return articulations;
+    }
+
     // Convenience accessors for the GPU object types (resolve via the server).
     physx::PxPhysics *get_px_physics() const;
     physx::PxCudaContextManager *get_px_cuda() const;
@@ -314,6 +328,7 @@ private:
     LocalVector<PhysXGPUParticleFluid3D *> fluids;
     LocalVector<PhysXGPUCloth3D *> cloths;
     LocalVector<PhysXSoftBody3D *> soft_bodies;
+    LocalVector<PhysXArticulation3D *> articulations;
 
     // Deferred monitor events (filled during step, drained in flush_queries).
     LocalVector<TriggerEvent> pending_trigger_events;

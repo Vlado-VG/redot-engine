@@ -26,32 +26,37 @@
 extern std::atomic<bool> g_physx_debug_contacts_enabled;
 
 // ---------------------------------------------------------------------------
-// Soft-body collision-exception registry (GPU deformable path).
+// Collision-exception registry (rigid bodies and GPU deformables).
 //
 // PxFilterData.word2 carries an "exception slot" on shapes whose owner
-// participates in at least one soft-body collision exception (0 = none).
-// The filter shader cannot see actors/userData, so a deformable-vs-body pair
-// where BOTH sides carry slots is checked against this registry; a match
-// kills the pair. Verified against the vendored SDK with GPU dynamics active:
-// the shader's eKILL fully controls deformable-vs-rigid pairs (a layer-test
-// kill made a GPU PxDeformableVolume fall through a platform).
+// participates in at least one collision exception — soft-body OR rigid-body
+// (0 = none). The filter shader cannot see actors/userData, so a pair where
+// BOTH sides carry slots is checked against this registry in both directions;
+// a match kills the pair. This is the enforcement path on GPU dynamics scenes,
+// where the pair filter callback does not run; on the CPU the
+// PhysXPairFilterCallback enforces the same rigid exceptions from the
+// wrappers' exception sets. Verified against the vendored SDK with GPU
+// dynamics active: the shader's eKILL fully controls deformable-vs-rigid
+// pairs (a layer-test kill made a GPU PxDeformableVolume fall through a
+// platform).
 //
 // Threading: written only between steps on the server thread (add/remove
-// exception, soft-body free); read by the filter shader on PhysX workers
+// exception, body/soft-body free); read by the filter shader on PhysX workers
 // during simulate(). No writes occur while the simulation runs (the server
 // thread blocks in fetchResults under the synchronous step), so concurrent
 // reads need no lock — the same contract as the actor userData floats.
 // ---------------------------------------------------------------------------
 class PhysXSoftExceptionRegistry {
 public:
-	bool has(uint32_t p_soft_slot, uint32_t p_body_slot) const;
-	void add(uint32_t p_soft_slot, uint32_t p_body_slot);
-	void remove(uint32_t p_soft_slot, uint32_t p_body_slot);
-	/// Clears every pair of one soft body (called when it is freed).
-	void remove_soft(uint32_t p_soft_slot);
+	bool has(uint32_t p_a_slot, uint32_t p_b_slot) const;
+	void add(uint32_t p_a_slot, uint32_t p_b_slot);
+	void remove(uint32_t p_a_slot, uint32_t p_b_slot);
+	/// Clears every pair keyed by one participant's slot (called when a body
+	/// or soft body is freed; slots are monotonic and never reused).
+	void remove_soft(uint32_t p_slot);
 
 private:
-	HashMap<uint32_t, HashSet<uint32_t>> pairs; // soft slot -> body slots
+	HashMap<uint32_t, HashSet<uint32_t>> pairs; // participant slot -> paired slots
 };
 
 extern PhysXSoftExceptionRegistry g_physx_soft_exceptions;

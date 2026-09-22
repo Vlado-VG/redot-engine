@@ -10,6 +10,12 @@
  * Threading: PhysXServer3D itself is not thread-safe. When run on a separate
  * thread, it is wrapped by PhysicsServer3DWrapMT which serializes calls via
  * a command queue. The server does not need to know which mode it is in.
+ * EXCEPTION: the ClassDB-bound module APIs (the vehicle, articulation,
+ * particle-fluid and cloth method families) bypass the wrapper's queue —
+ * scripts call them directly on this inner server from the main thread.
+ * They, together with the physics pipeline (step/sync/flush_queries/free),
+ * are serialized by api_mutex; see the note above _bind_methods in
+ * physx_server.cpp.
  */
 
 #ifndef PHYSX_SERVER_H
@@ -20,6 +26,7 @@
 
 #include <PxPhysicsAPI.h>
 #include <core/templates/rid_owner.h>
+#include "core/os/mutex.h"
 
 class PhysXShape3D;
 class PhysXBody3D;
@@ -58,6 +65,14 @@ class PhysXServer3D : public PhysicsServer3D {
 	mutable RID_PtrOwner<PhysXGPUParticleFluid3D, true> fluid_owner;
 	mutable RID_PtrOwner<PhysXGPUCloth3D, true> cloth_owner;
 	mutable RID_PtrOwner<PhysXArticulation3D, true> articulation_owner;
+	// ------------------------------------------------------------------
+	// API guard — serializes the ClassDB-bound module APIs (called directly
+	// on this inner server from the main thread, bypassing WrapMT) against
+	// the physics pipeline (step/sync/flush_queries/free). This fork's Mutex
+	// is recursive: step/flush dispatch script Callables that may legally
+	// call back into these APIs on the same thread.
+	// ------------------------------------------------------------------
+	mutable Mutex api_mutex;
 	// ------------------------------------------------------------------
 	// PhysX SDK singletons (created in init(), released in finish()).
 	// ------------------------------------------------------------------

@@ -453,17 +453,21 @@ void PhysXCloth3D::_collide() {
 		if (!ss->rest_info(params, &info)) {
 			continue;
 		}
-		// The PhysX backend reports info.normal as the direction to push the query
-		// shape out and info.point as (center - normal * penetration), so the
-		// penetration depth is just the projection back onto the normal.
-		const Vector3 push_dir = info.normal;
-		const float depth = (pos[i] - info.point).dot(push_dir);
-		if (depth > 0.0f) {
-			pos[i] += push_dir * (depth + 0.001f);
-			const float vn = vel[i].dot(push_dir);
-			Vector3 v_tangent = vel[i] - push_dir * vn;
+		// The backend's rest_info reports info.point as the closest point ON
+		// the collider's surface to the query center and info.normal as the
+		// outward push direction — the same contract the soft body's
+		// _refresh_contacts documents (the old projection formula misread it
+		// and left resting vertices hovering and deep ones stuck inside).
+		// Resolve against the (point, normal) surface plane: a vertex whose
+		// center is on the back side of the plane is pushed back out; the
+		// tiny lift avoids re-penetrating the next frame.
+		const float sd = (pos[i] - info.point).dot(info.normal); // signed dist to surface
+		if (sd < 0.0f) {
+			pos[i] -= info.normal * (sd + 0.001f);
+			const float vn = vel[i].dot(info.normal);
+			Vector3 v_tangent = vel[i] - info.normal * vn;
 			v_tangent *= (1.0f - friction); // Coulomb-style sliding friction
-			vel[i] = v_tangent + push_dir * MAX(vn, 0.0f); // no inward velocity
+			vel[i] = v_tangent + info.normal * MAX(vn, 0.0f); // no inward velocity
 		}
 	}
 }

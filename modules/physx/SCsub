@@ -32,20 +32,19 @@ if physx_gpu:
 
 env_physx.Append(CPPDEFINES=physx_defines)
 
-if env["target"] == "debug":
-    env_physx.Append(CPPDEFINES=[
-        "PX_DEBUG=1",
-        "PX_CHECKED=1",
-        "PX_SUPPORT_PVD=1",
-    ])
-
-elif env["target"] == "release_debug":
+# Target defines. This fork's targets are editor / template_debug /
+# template_release (the legacy "debug"/"release_debug" names can never
+# match). Editor and debug-template builds pair PX_CHECKED=1 with the SDK's
+# "checked" lib configuration (the physx_config default); template_release
+# pairs with the release libs via `physx_config=release`. PX_DEBUG stays off
+# everywhere: the SDK's full debug configuration is orders of magnitude
+# slower and no target maps to it.
+if env["target"] != "template_release":
     env_physx.Append(CPPDEFINES=[
         "PX_DEBUG=0",
         "PX_CHECKED=1",
         "PX_SUPPORT_PVD=1",
     ])
-
 else:
     env_physx.Append(CPPDEFINES=[
         "PX_DEBUG=0",
@@ -56,7 +55,8 @@ else:
 # The PhysX SDK lives in thirdparty/physx with the vendor layout:
 #   include/                                headers
 #   lib/<platform>/<arch>/<config>/*.lib    static import libs (config: checked | release)
-#   bin/<platform>/<arch>/<config>/*.dll    runtime DLLs (GPU dynamics, PVD runtime)
+#   bin/<platform>/<arch>/<config>/*.dll    runtime DLLs (GPU dynamics; 5.11
+#                                           ships no PVD runtime DLL)
 #
 # `physx_config` selects the SDK configuration (default "checked", matching the
 # editor's PX_CHECKED=1 debug behavior). When packaging a release build,
@@ -102,8 +102,7 @@ physx_libs = [
     "PhysXPvdSDK_static_64",
     "PhysXSimulationControllerGpu_static_64",
     "PhysXSolverGpu_static_64",
-    "PhysXVehicle_static_64",
-    "PVDRuntime_64",
+    "PhysXVehicle_static_64"
 ]
 
 # Prebuilt PhysX libraries use plain ".lib" names. On Windows, SCons would
@@ -115,11 +114,12 @@ else:
     env.Append(LIBS=physx_libs)
 
 # Copy the SDK's runtime DLLs next to the built engine binary so the runtime
-# DLL version always matches the linked SDK configuration (GPU dynamics and
-# PVD runtime are dynamically loaded at runtime).
+# DLL version always matches the linked SDK configuration. PhysX 5.11 ships
+# only the GPU dynamics DLL (the legacy PVD runtime DLL was dropped from the
+# SDK distribution; PhysXPvdSDK_static_64 covers the PVD link surface).
 if env["platform"] == "windows":
     dll_src_dir = thirdparty_dir.Dir("bin/windows/x86_64/" + physx_config)
-    for dll_name in ["PhysXGpu_64.dll", "PVDRuntime_64.dll"]:
+    for dll_name in ["PhysXGpu_64.dll"]:
         env.Command(
             File("#bin/" + dll_name),
             dll_src_dir.File(dll_name),

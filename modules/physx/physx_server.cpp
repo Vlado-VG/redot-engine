@@ -66,10 +66,16 @@
 //   methods. singleton_ptr is the real PhysXServer3D (set in its ctor).
 //
 // THREADING:
-//   Under the current synchronous stepping (physx_space_3d.cpp simulate() +
-//   fetchResults(true) block), direct calls on the inner server from the main
-//   thread are safe. Marshaling vehicle calls through WrapMT for the separate-
-//   thread mode (run_on_separate_thread=true) is future hardening.
+//   These ClassDB-bound methods bypass PhysicsServer3DWrapMT (scripts call
+//   the inner server directly from the main thread), so every method below
+//   takes the server's api_mutex first; the physics pipeline (step / sync /
+//   flush_queries / free) takes the same lock. This serializes module API
+//   calls against the actual simulation, callback dispatch and RID frees —
+//   including under physics/physx_3d/simulation/async_step and with
+//   run_on_separate_thread=true. Residual caveat in separate-thread mode:
+//   ordinary marshaled server commands executing between steps on the
+//   physics thread do not hold the lock, so keep that mode out of projects
+//   that lean on the module APIs.
 //
 // USAGE (per frame): write control inputs in _PhysicsProcess (pre-step); read
 //   telemetry (vehicle_get_wheel_states / vehicle_get_engine_state) afterwards
@@ -907,12 +913,32 @@ void PhysXServer3D::body_add_collision_exception(RID p_body, RID p_excepted_body
 	PhysXBody3D *body = body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(body);
 	body->add_collision_exception(p_excepted_body);
+
+	// GPU path: the simulation filter shader cannot see actors/userData (it
+	// runs stateless on the sim thread, and GPU pair filtering does not invoke
+	// the pair filter callback), so route the exception through the same word2
+	// slot registry soft-body exceptions use. The CPU PhysXPairFilterCallback
+	// keeps enforcing the set from the wrappers as well — both kill the same
+	// pair, whichever path a pair takes.
+	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
+	if (!other) {
+		return;
+	}
+	const uint32_t slot_a = body->get_or_alloc_exception_slot();
+	const uint32_t slot_b = other->get_or_alloc_exception_slot();
+	body->refresh_collision_filters();
+	other->refresh_collision_filters();
+	g_physx_soft_exceptions.add(slot_a, slot_b);
 }
 
 void PhysXServer3D::body_remove_collision_exception(RID p_body, RID p_excepted_body) {
 	PhysXBody3D *body = body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(body);
 	body->remove_collision_exception(p_excepted_body);
+	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
+	if (other && body->get_exception_slot() != 0 && other->get_exception_slot() != 0) {
+		g_physx_soft_exceptions.remove(body->get_exception_slot(), other->get_exception_slot());
+	}
 }
 
 void PhysXServer3D::body_get_collision_exceptions(RID p_body, List<RID> *p_exceptions) {
@@ -988,6 +1014,7 @@ PhysicsDirectBodyState3D *PhysXServer3D::body_get_direct_state(RID p_body) {
 }
 
 RID PhysXServer3D::vehicle_create(int p_archetype) {
+	MutexLock lock(api_mutex);
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
         "PhysX: vehicle_create() called before PhysX initialization.");
 	PhysXVehicle3D *vehicle = memnew(PhysXVehicle3D);
@@ -998,6 +1025,7 @@ RID PhysXServer3D::vehicle_create(int p_archetype) {
 }
 
 void PhysXServer3D::vehicle_set_chassis_body(RID p_vehicle, RID p_body) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 
@@ -1021,6 +1049,7 @@ void PhysXServer3D::vehicle_set_chassis_body(RID p_vehicle, RID p_body) {
 }
 
 void PhysXServer3D::vehicle_set_space(RID p_vehicle, RID p_space) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 
@@ -1035,12 +1064,14 @@ void PhysXServer3D::vehicle_set_space(RID p_vehicle, RID p_space) {
 }
 
 int PhysXServer3D::vehicle_get_wheel_count(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
 	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, 0);
 	return vehicle->get_wheel_count();
 }
 
 void PhysXServer3D::vehicle_set_wheel_count(RID p_vehicle, int p_count) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_COND_MSG(p_count < 0, "PhysX: vehicle wheel count must be >= 0.");
@@ -1054,6 +1085,7 @@ void PhysXServer3D::vehicle_set_wheel_count(RID p_vehicle, int p_count) {
 }
 
 int PhysXServer3D::vehicle_add_wheel(RID p_vehicle) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, -1);
 	ERR_FAIL_NULL_V_MSG(vehicle->get_chassis_body(), -1,
@@ -1066,6 +1098,7 @@ int PhysXServer3D::vehicle_add_wheel(RID p_vehicle) {
 }
 
 void PhysXServer3D::vehicle_set_wheel_params(RID p_vehicle, int p_idx, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
@@ -1073,60 +1106,70 @@ void PhysXServer3D::vehicle_set_wheel_params(RID p_vehicle, int p_idx, const Dic
 }
 
 void PhysXServer3D::vehicle_set_control_inputs(RID p_vehicle, real_t p_throttle, real_t p_brake, real_t p_steer, real_t p_handbrake) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_control_inputs((float)p_throttle, (float)p_brake, (float)p_steer, (float)p_handbrake);
 }
 
 void PhysXServer3D::vehicle_set_gear_command(RID p_vehicle, int p_gear) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_gear_command(p_gear);
 }
 
 void PhysXServer3D::vehicle_set_response_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_response_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_anti_roll_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_anti_roll_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_engine_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_engine_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_clutch_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_clutch_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_gearbox_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_gearbox_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_autobox_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_autobox_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_differential_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_differential_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_wheel_drive_torque(RID p_vehicle, int p_idx, real_t p_torque) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
@@ -1134,6 +1177,7 @@ void PhysXServer3D::vehicle_set_wheel_drive_torque(RID p_vehicle, int p_idx, rea
 }
 
 void PhysXServer3D::vehicle_set_wheel_brake_torque(RID p_vehicle, int p_idx, real_t p_torque) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
@@ -1141,6 +1185,7 @@ void PhysXServer3D::vehicle_set_wheel_brake_torque(RID p_vehicle, int p_idx, rea
 }
 
 void PhysXServer3D::vehicle_set_wheel_steer_angle(RID p_vehicle, int p_idx, real_t p_angle) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
@@ -1148,6 +1193,7 @@ void PhysXServer3D::vehicle_set_wheel_steer_angle(RID p_vehicle, int p_idx, real
 }
 
 Array PhysXServer3D::vehicle_get_wheel_states(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
 	Array out;
 	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, out);
@@ -1171,6 +1217,7 @@ Array PhysXServer3D::vehicle_get_wheel_states(RID p_vehicle) const {
 }
 
 Dictionary PhysXServer3D::vehicle_get_engine_state(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
 	Dictionary d;
 	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, d);
@@ -1181,24 +1228,28 @@ Dictionary PhysXServer3D::vehicle_get_engine_state(RID p_vehicle) const {
 }
 
 void PhysXServer3D::vehicle_set_ackermann_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_ackermann_params(p_params);
 }
 
 PackedFloat32Array PhysXServer3D::vehicle_get_wheel_steer_angles(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
 	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, PackedFloat32Array());
 	return vehicle->get_wheel_steer_angles();
 }
 
 void PhysXServer3D::vehicle_set_balance_params(RID p_vehicle, const Dictionary &p_params) {
+	MutexLock lock(api_mutex);
 	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_balance_params(p_params);
 }
 
 Dictionary PhysXServer3D::vehicle_get_balance_state(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
 	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, Dictionary());
 	return vehicle->get_balance_state();
@@ -1209,6 +1260,7 @@ Dictionary PhysXServer3D::vehicle_get_balance_state(RID p_vehicle) const {
 // ---------------------------------------------------------------------------
 
 RID PhysXServer3D::articulation_create() {
+	MutexLock lock(api_mutex);
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
 			"PhysX: articulation_create() called before PhysX initialization.");
 	PhysXArticulation3D *articulation = memnew(PhysXArticulation3D);
@@ -1218,6 +1270,7 @@ RID PhysXServer3D::articulation_create() {
 }
 
 void PhysXServer3D::articulation_set_space(RID p_articulation, RID p_space) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	PhysXSpace3D *space = p_space.is_valid() ? space_owner.get_or_null(p_space) : nullptr;
@@ -1230,6 +1283,7 @@ void PhysXServer3D::articulation_set_space(RID p_articulation, RID p_space) {
 int PhysXServer3D::articulation_add_link(RID p_articulation, int p_parent_index,
 		const Transform3D &p_parent_frame, const Transform3D &p_child_frame,
 		int p_joint_type, float p_density, const Vector3 &p_box_half_extents) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, -1);
 	return articulation->add_link(p_parent_index, p_parent_frame, p_child_frame,
@@ -1239,6 +1293,7 @@ int PhysXServer3D::articulation_add_link(RID p_articulation, int p_parent_index,
 void PhysXServer3D::articulation_set_drive(RID p_articulation, int p_link_index, int p_axis,
 		float p_stiffness, float p_damping, float p_drive_target,
 		float p_drive_velocity, int p_drive_type) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->set_drive(p_link_index, p_axis, p_stiffness, p_damping,
@@ -1247,48 +1302,56 @@ void PhysXServer3D::articulation_set_drive(RID p_articulation, int p_link_index,
 
 void PhysXServer3D::articulation_set_limit(RID p_articulation, int p_link_index, int p_axis,
 		float p_low, float p_high) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->set_limit(p_link_index, p_axis, p_low, p_high);
 }
 
 void PhysXServer3D::articulation_set_fix_base(RID p_articulation, bool p_fix) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->set_fix_base(p_fix);
 }
 
 void PhysXServer3D::articulation_wake(RID p_articulation) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->wake_up();
 }
 
 void PhysXServer3D::articulation_sleep(RID p_articulation) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->put_to_sleep();
 }
 
 int PhysXServer3D::articulation_get_link_count(RID p_articulation) const {
+	MutexLock lock(api_mutex);
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, 0);
 	return articulation->get_link_count();
 }
 
 Transform3D PhysXServer3D::articulation_get_link_transform(RID p_articulation, int p_link_index) const {
+	MutexLock lock(api_mutex);
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, Transform3D());
 	return articulation->get_link_transform(p_link_index);
 }
 
 bool PhysXServer3D::articulation_is_sleeping(RID p_articulation) const {
+	MutexLock lock(api_mutex);
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, true);
 	return articulation->is_sleeping();
 }
 
 void PhysXServer3D::articulation_set_link_shape(RID p_articulation, int p_link_index, RID p_shape, const Transform3D &p_transform) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
@@ -1297,30 +1360,35 @@ void PhysXServer3D::articulation_set_link_shape(RID p_articulation, int p_link_i
 }
 
 void PhysXServer3D::articulation_set_link_collision_layer(RID p_articulation, int p_link_index, uint32_t p_layer) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->set_link_collision_layer(p_link_index, p_layer);
 }
 
 void PhysXServer3D::articulation_set_link_collision_mask(RID p_articulation, int p_link_index, uint32_t p_mask) {
+	MutexLock lock(api_mutex);
 	PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL(articulation);
 	articulation->set_link_collision_mask(p_link_index, p_mask);
 }
 
 uint32_t PhysXServer3D::articulation_get_link_collision_layer(RID p_articulation, int p_link_index) const {
+	MutexLock lock(api_mutex);
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, 0);
 	return articulation->get_link_collision_layer(p_link_index);
 }
 
 uint32_t PhysXServer3D::articulation_get_link_collision_mask(RID p_articulation, int p_link_index) const {
+	MutexLock lock(api_mutex);
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, 0);
 	return articulation->get_link_collision_mask(p_link_index);
 }
 
 Dictionary PhysXServer3D::articulation_get_link_velocity(RID p_articulation, int p_link_index) const {
+	MutexLock lock(api_mutex);
 	const PhysXArticulation3D *articulation = articulation_owner.get_or_null(p_articulation);
 	ERR_FAIL_NULL_V(articulation, Dictionary());
 	return articulation->get_link_velocity(p_link_index);
@@ -1471,6 +1539,7 @@ void PhysXServer3D::soft_body_apply_central_force(RID p_body, const Vector3 &p_f
 }
 
 bool PhysXServer3D::soft_body_is_gpu(RID p_body) const {
+	MutexLock lock(api_mutex);
 	const PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL_V(soft_body, false);
 	return soft_body->is_gpu();
@@ -1605,6 +1674,7 @@ bool PhysXServer3D::soft_body_is_point_pinned(RID p_body, int p_point_index) con
 /* PARTICLE FLUID */
 
 RID PhysXServer3D::particle_fluid_create() {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = memnew(PhysXGPUParticleFluid3D);
 	RID rid = fluid_owner.make_rid(fluid);
 	fluid->set_self(rid);
@@ -1612,6 +1682,7 @@ RID PhysXServer3D::particle_fluid_create() {
 }
 
 void PhysXServer3D::particle_fluid_set_space(RID p_fluid, RID p_space) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	PhysXSpace3D *space = space_owner.get_or_null(p_space);
@@ -1619,6 +1690,7 @@ void PhysXServer3D::particle_fluid_set_space(RID p_fluid, RID p_space) {
 }
 
 void PhysXServer3D::particle_fluid_set_param(RID p_fluid, int p_param, real_t p_value) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	ERR_FAIL_INDEX(p_param, PhysXGPUParticleFluid3D::PARAM_MAX);
@@ -1626,36 +1698,42 @@ void PhysXServer3D::particle_fluid_set_param(RID p_fluid, int p_param, real_t p_
 }
 
 void PhysXServer3D::particle_fluid_set_capacity(RID p_fluid, int p_max) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_capacity(p_max > 0 ? (uint32_t)p_max : 1);
 }
 
 void PhysXServer3D::particle_fluid_set_granular(RID p_fluid, bool p_enabled, real_t p_friction) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_granular(p_enabled, p_friction);
 }
 
 void PhysXServer3D::particle_fluid_set_particles(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_initial_velocity) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_particles(p_positions, p_initial_velocity);
 }
 
 void PhysXServer3D::particle_fluid_emit(RID p_fluid, const Vector<Vector3> &p_positions, const Vector3 &p_velocity) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->emit(p_positions, p_velocity);
 }
 
 void PhysXServer3D::particle_fluid_clear(RID p_fluid) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->clear();
 }
 
 void PhysXServer3D::particle_fluid_set_foam(RID p_fluid, bool p_enabled, int p_capacity, real_t p_lifetime, real_t p_threshold, real_t p_buoyancy, real_t p_size) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_foam_capacity(p_capacity > 0 ? (uint32_t)p_capacity : 1);
@@ -1667,6 +1745,7 @@ void PhysXServer3D::particle_fluid_set_foam(RID p_fluid, bool p_enabled, int p_c
 }
 
 Vector<Vector3> PhysXServer3D::particle_fluid_get_foam_positions(RID p_fluid) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, Vector<Vector3>());
 	const LocalVector<Vector3> &src = fluid->get_foam_positions();
@@ -1679,30 +1758,35 @@ Vector<Vector3> PhysXServer3D::particle_fluid_get_foam_positions(RID p_fluid) co
 }
 
 int PhysXServer3D::particle_fluid_get_foam_count(RID p_fluid) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, 0);
 	return (int)fluid->get_foam_count();
 }
 
 void PhysXServer3D::particle_fluid_set_surface_mesh(RID p_fluid, bool p_enabled) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_surface_mesh_enabled(p_enabled);
 }
 
 int PhysXServer3D::particle_fluid_get_surface_triangle_count(RID p_fluid) const {
+	MutexLock lock(api_mutex);
 	const PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, 0);
 	return (int)fluid->get_surface_triangle_count();
 }
 
 void PhysXServer3D::particle_fluid_set_surface_anisotropy(RID p_fluid, bool p_enabled) {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL(fluid);
 	fluid->set_surface_anisotropy_enabled(p_enabled);
 }
 
 int PhysXServer3D::particle_fluid_get_surface_mesh(RID p_fluid, PackedVector3Array &r_vertices, PackedVector3Array &r_normals, PackedInt32Array &r_indices, uint32_t &r_version) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, 0);
 	LocalVector<Vector3> v, n;
@@ -1727,6 +1811,7 @@ int PhysXServer3D::particle_fluid_get_surface_mesh(RID p_fluid, PackedVector3Arr
 }
 
 int PhysXServer3D::particle_fluid_get_foam_mesh(RID p_fluid, PackedVector3Array &r_vertices, PackedVector3Array &r_normals, PackedInt32Array &r_indices, uint32_t &r_version) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, 0);
 	LocalVector<Vector3> v, n;
@@ -1751,6 +1836,7 @@ int PhysXServer3D::particle_fluid_get_foam_mesh(RID p_fluid, PackedVector3Array 
 }
 
 Vector<Vector3> PhysXServer3D::particle_fluid_get_positions(RID p_fluid) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, Vector<Vector3>());
 	const LocalVector<Vector3> &src = fluid->get_positions();
@@ -1763,12 +1849,14 @@ Vector<Vector3> PhysXServer3D::particle_fluid_get_positions(RID p_fluid) const {
 }
 
 int PhysXServer3D::particle_fluid_get_particle_count(RID p_fluid) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, 0);
 	return (int)fluid->get_particle_count();
 }
 
 real_t PhysXServer3D::particle_fluid_get_submersion(RID p_fluid, const AABB &p_world_aabb) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUParticleFluid3D *fluid = fluid_owner.get_or_null(p_fluid);
 	ERR_FAIL_NULL_V(fluid, 0.0);
 	return fluid->get_submersion(p_world_aabb);
@@ -1777,6 +1865,7 @@ real_t PhysXServer3D::particle_fluid_get_submersion(RID p_fluid, const AABB &p_w
 /* GPU CLOTH */
 
 RID PhysXServer3D::cloth_create() {
+	MutexLock lock(api_mutex);
 	if (!px_cuda_context) {
 		return RID(); // no CUDA -> the node uses its CPU fallback
 	}
@@ -1787,47 +1876,55 @@ RID PhysXServer3D::cloth_create() {
 }
 
 void PhysXServer3D::cloth_set_space(RID p_cloth, RID p_space) {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_space(space_owner.get_or_null(p_space));
 }
 
 void PhysXServer3D::cloth_set_params(RID p_cloth, real_t p_thickness, real_t p_density, real_t p_stretch, real_t p_bend, real_t p_damping, uint32_t p_collision_mask) {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_params(p_thickness, p_density, p_stretch, p_bend, p_damping, p_collision_mask);
 }
 
 void PhysXServer3D::cloth_build(RID p_cloth, const Vector<Vector3> &p_positions, const Vector<int32_t> &p_indices, const Transform3D &p_xform) {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->build(p_positions, p_indices, p_xform);
 }
 
 void PhysXServer3D::cloth_set_pinned(RID p_cloth, const Vector<int32_t> &p_pinned) {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_pinned(p_pinned);
 }
 
 void PhysXServer3D::cloth_set_pin_targets(RID p_cloth, const Vector<Vector3> &p_world_targets) {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_pin_targets(p_world_targets);
 }
 
 void PhysXServer3D::cloth_apply_wind(RID p_cloth, const Vector3 &p_wind, real_t p_drag, real_t p_lift, real_t p_dt) {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->apply_wind(p_wind, p_drag, p_lift, p_dt);
 }
 
 bool PhysXServer3D::cloth_is_ready(RID p_cloth) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	return cloth && cloth->is_ready();
 }
 
 int PhysXServer3D::cloth_get_mesh(RID p_cloth, PackedVector3Array &r_positions, PackedInt32Array &r_indices, uint32_t &r_version) const {
+	MutexLock lock(api_mutex);
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL_V(cloth, 0);
 	LocalVector<Vector3> p;
@@ -2164,6 +2261,7 @@ bool PhysXServer3D::joint_is_disabled_collisions_between_bodies(RID p_joint) con
  * implemented (area/joint/soft_body pending).
  */
 void PhysXServer3D::free(RID p_rid) {
+	MutexLock lock(api_mutex);
 	// Freeing a null/invalid RID is a no-op (standard Godot convention —the
 	// scene tree may free a RID that body_create() returned empty because PhysX
 	// wasn't initialized yet during a fresh-compile editor boot, or a RID that
@@ -2214,6 +2312,12 @@ void PhysXServer3D::free(RID p_rid) {
 		// Drop grip-table references from surviving vehicles: memdelete(b) below
 		// releases the body's PxMaterial, which those tables hold raw pointers to.
 		invalidate_vehicles_surface_pairs(b);
+		// Drop the body's word2 exception-slot registry entries: the slot dies
+		// with the body and slots are never reused, but the registry must not
+		// accumulate dead keys (mirrors the soft-body free path).
+		if (b->get_exception_slot() != 0) {
+			g_physx_soft_exceptions.remove_soft(b->get_exception_slot());
+		}
 
 		body_owner.free(p_rid);
 		memdelete(b);
@@ -2287,6 +2391,14 @@ void PhysXServer3D::free(RID p_rid) {
 		}
 		while (!sp->get_cloths().is_empty()) {
 			const_cast<PhysXGPUCloth3D *>(sp->get_cloths()[0])->set_space(nullptr);
+		}
+
+		// Detach all articulations from this space before deleting it. Their
+		// wrappers survive the space (script-held RIDs) and must not keep a
+		// dangling space/scene pointer: the PxScene dies with the space, and a
+		// later articulation call would dereference freed memory.
+		while (!sp->get_articulations().is_empty()) {
+			const_cast<PhysXArticulation3D *>(sp->get_articulations()[0])->set_space(nullptr);
 		}
 
 		// Free the default area (which belongs to this space).
@@ -2550,6 +2662,7 @@ void PhysXServer3D::set_active(bool p_active) {
  * so this call blocks until all physics is computed.
  */
 void PhysXServer3D::step(real_t p_step) {
+	MutexLock lock(api_mutex);
 	if (!active) {
 		return;
 	}
@@ -2567,6 +2680,7 @@ void PhysXServer3D::step(real_t p_step) {
 }
 
 void PhysXServer3D::sync() {
+	MutexLock lock(api_mutex);
 	// The engine calls sync() at the start of every physics tick, before
 	// scripts. In async stepping mode this fetches the solve that step()
 	// kicked last tick (per-space no-op when nothing is in flight); with the
@@ -2584,6 +2698,7 @@ void PhysXServer3D::end_sync() {
 }
 
 void PhysXServer3D::flush_queries() {
+	MutexLock lock(api_mutex);
 	// Dispatch the Area3D monitor callbacks (body_entered / area_entered / ...)
 	// that were queued during the last step's onTrigger. Godot's contract is
 	// that these fire in the flush_queries() window —after sync(), with the

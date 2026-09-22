@@ -73,10 +73,6 @@ PhysXSoftExceptionRegistry g_physx_soft_exceptions;
  * PhysX never calls this shader for pairs of two static rigid actors, so
  * static areas could never produce area-vs-area trigger events.
  */
-static inline uint32_t deformable_other_slot(uint32_t p_soft_slot, uint32_t p_word2_0, uint32_t p_word2_1) {
-	return p_word2_0 == p_soft_slot ? p_word2_1 : p_word2_0;
-}
-
 physx::PxFilterFlags physx_simulation_filter_shader(
 		physx::PxFilterObjectAttributes attributes0, physx::PxFilterData filterData0,
 		physx::PxFilterObjectAttributes attributes1, physx::PxFilterData filterData1,
@@ -113,21 +109,21 @@ physx::PxFilterFlags physx_simulation_filter_shader(
 		return physx::PxFilterFlag::eKILL;
 	}
 
-	// --- Soft-body collision exceptions (GPU deformable path) ---
-	// A deformable-volume vs body pair where both sides carry exception slots
-	// (word2) is checked against the module registry; a match kills the pair.
-	// The shader cannot see actors/userData, hence the slot indirection. Slots
-	// are only assigned to exception participants, so scenes without soft-body
-	// exceptions never reach the registry. Verified: the shader's eKILL fully
-	// controls GPU PxDeformableVolume pairs.
-	if ((obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME ||
-			obj_type1 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME) &&
-			filterData0.word2 != 0 && filterData1.word2 != 0) {
-		const uint32_t soft_slot = obj_type0 == physx::PxFilterObjectType::eDEFORMABLE_VOLUME
-				? filterData0.word2
-				: filterData1.word2;
-		const uint32_t body_slot = deformable_other_slot(soft_slot, filterData0.word2, filterData1.word2);
-		if (g_physx_soft_exceptions.has(soft_slot, body_slot)) {
+	// --- Collision exceptions (body-body and deformable-vs-body) ---
+	// Pairs where BOTH sides carry an exception slot (PxFilterData.word2) are
+	// checked against the module registry in both directions; a match kills
+	// the pair. The shader cannot see actors/userData, hence the slot
+	// indirection. This is the enforcement path on GPU dynamics scenes, where
+	// the pair filter callback does not run; on the CPU the
+	// PhysXPairFilterCallback enforces the same exceptions from the wrappers'
+	// sets — both paths kill the identical pair. Slots are only assigned to
+	// exception participants (monotonic, never reused), so scenes without
+	// collision exceptions never reach the registry and stale entries cannot
+	// produce false matches. Verified: the shader's eKILL fully controls GPU
+	// PxDeformableVolume pairs.
+	if (filterData0.word2 != 0 && filterData1.word2 != 0) {
+		if (g_physx_soft_exceptions.has(filterData0.word2, filterData1.word2) ||
+				g_physx_soft_exceptions.has(filterData1.word2, filterData0.word2)) {
 			pairFlags = physx::PxPairFlags();
 			return physx::PxFilterFlag::eKILL;
 		}

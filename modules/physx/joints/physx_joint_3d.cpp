@@ -1209,7 +1209,15 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		}
 		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_UPPER_LIMIT:
 		{
+			// Mirror the lower-limit case: setting a limit bound marks the axis
+			// limited so the constraint is live now AND survives a wrapper
+			// rebuild (the cache is the source of truth for _apply_params).
+			// Godot's own Generic6DOFJoint3D pushes FLAG_ENABLE_ANGULAR_LIMIT
+			// true by default (generic_6dof_joint_3d.cpp _create_joint), so
+			// node-driven joints are unaffected either way.
+			g6dof_flags[p_axis].angular_limit = true;
 			_apply_g6dof_angular_limit(d6, p_axis);
+			d6->setMotion(ang_axis, physx::PxD6Motion::eLIMITED);
 			break;
 		}
 		// Angular limit softness
@@ -1448,8 +1456,10 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 }
 
 bool PhysXJoint3D::get_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJointAxisFlag p_flag) const {
+	// Round-trip what was SET: the stored flag, not a value derived from the
+	// params (Godot's node keeps its own flag state; e.g. a motor enabled with
+	// a zero target velocity must still read back enabled).
 	const G6DOFJointAxisFlags &flags = g6dof_flags[p_axis];
-	const G6DOFJointAxisParams &params = g6dof_params[p_axis];
 
 	switch (p_flag) {
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_LIMIT:
@@ -1457,13 +1467,13 @@ bool PhysXJoint3D::get_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_LIMIT:
 			return flags.angular_limit;
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_SPRING:
-			return params.angular_spring_stiffness > 0.0f;
+			return flags.angular_spring;
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_SPRING:
-			return params.linear_spring_stiffness > 0.0f;
+			return flags.linear_spring;
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_MOTOR:
-			return params.angular_motor_target_velocity != 0.0f;
+			return flags.angular_motor;
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_MOTOR:
-			return params.linear_motor_target_velocity != 0.0f;
+			return flags.linear_motor;
 		default:
 			return false;
 	}

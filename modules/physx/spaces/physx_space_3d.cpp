@@ -11,6 +11,7 @@
 #include "../objects/physx_body_3d.h"
 #include "../objects/physx_shaped_object_3d.h"
 #include "../objects/physx_soft_body_3d.h"
+#include "../objects/physx_articulation_3d.h"
 #include "../joints/physx_joint_3d.h"
 #include "physx_direct_space_state_3d.h"
 #include "physx_filter_shader.h"
@@ -625,6 +626,27 @@ void PhysXSpace3D::unregister_area(PhysXArea3D *p_area) {
             return;
         }
     }
+}
+
+void PhysXSpace3D::register_articulation(PhysXArticulation3D *p_articulation) {
+	ERR_FAIL_NULL(p_articulation);
+
+	if (articulations.find(p_articulation) != -1) {
+		return;
+	}
+
+	articulations.push_back(p_articulation);
+}
+
+void PhysXSpace3D::unregister_articulation(PhysXArticulation3D *p_articulation) {
+	ERR_FAIL_NULL(p_articulation);
+
+	for (unsigned int i = 0; i < articulations.size(); i++) {
+		if (articulations[i] == p_articulation) {
+			articulations.remove_at(i);
+			return;
+		}
+	}
 }
 
 // --------------------------------------------------------------------

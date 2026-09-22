@@ -848,6 +848,13 @@ void PhysXGPUParticleFluid3D::set_foam_enabled(bool p_enabled) {
 		return;
 	}
 	foam_enabled = p_enabled;
+	if (p_enabled) {
+		WARN_PRINT_ONCE(
+				"PhysX: foam (diffuse particles) is currently inert — allocating an "
+				"active diffuse budget corrupts the GPU runtime (CUDA error 700, all "
+				"SDK versions tested through 5.11). See maxActiveDiffuseParticles in "
+				"PhysXGPUParticleFluid3D::_ensure_buffer().");
+	}
 	// The diffuse capacity is baked into the buffer; rebuild it on the next fill.
 	clear();
 }
@@ -916,7 +923,17 @@ void PhysXGPUParticleFluid3D::_ensure_buffer() {
 	desc.velocities = &seed_vel;
 	desc.phases = &seed_phase;
 	desc.maxDiffuseParticles = max_diffuse;
-	desc.maxActiveDiffuseParticles = max_diffuse;
+	// NOTE: the ACTIVE diffuse allocation (maxActiveDiffuseParticles) must stay
+	// zero. Re-verified on PhysX 5.11 (CUDA 12.8.2): setting it — via the desc,
+	// right after creation, or deferred until after the buffer has simulated —
+	// corrupts GPU state: every host<->device upload on the buffer then fails
+	// with CUDA error 700 and PhysX aborts GPU simulation for the scene (the
+	// module's GPU smoke test reproduces it: --stages=fluid runs clean; adding
+	// foamearly storms error 700). The practical consequence: the solver has no
+	// diffuse-particle budget, so foam does not spawn. Everything else (fluid
+	// sim, emission, isosurface rendering, submersion) works with this
+	// configuration. Re-test on every SDK upgrade.
+	desc.maxActiveDiffuseParticles = 0u;
 	desc.diffuseParams = _diffuse_params((float)foam_lifetime, (float)foam_threshold, (float)foam_buoyancy);
 
 	px_buffer = ExtGpu::PxCreateAndPopulateParticleAndDiffuseBuffer(desc, cuda);

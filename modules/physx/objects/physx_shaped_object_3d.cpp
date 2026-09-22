@@ -312,6 +312,15 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
             }
         }
 
+        // Godot passes the shape owner's disabled state at add time
+        // (CollisionObject3D::shape_owner_add_shape forwards it). A disabled
+        // shape must attach inert — no simulation, no queries — exactly as a
+        // later set_shape_disabled(idx, true) would leave it; without this the
+        // toggle can never fire because the wrapper already records the flag.
+        if (p_disabled) {
+            shape_flags = physx::PxShapeFlag::eVISUALIZATION;
+        }
+
         record.px_shape = p_shape->create_shape(physics, total_scale, _get_shape_material(), shape_flags);
 
         if (record.px_shape) {
@@ -517,6 +526,12 @@ void PhysXShapedObject3D::rebuild_shapes() {
 		physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
 		if (dynamic_non_kinematic && !record.shareable_shape->is_convex()) {
 			shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
+		}
+		// Preserve the slot's disabled state across the actor recreation — a
+		// mode switch must not re-enable shapes that were added disabled (or
+		// disabled via set_shape_disabled before the switch).
+		if (record.disabled) {
+			shape_flags = physx::PxShapeFlag::eVISUALIZATION;
 		}
 
 		// Body scale + per-shape transform scale, per record (each attached

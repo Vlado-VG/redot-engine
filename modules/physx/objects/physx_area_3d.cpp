@@ -609,7 +609,10 @@ void PhysXArea3D::_update_shapes() {
 		if (record.px_shape) {
 			_configure_shape_as_trigger(record.px_shape);
 			if (record.disabled) {
+				// Mirror set_shape_disabled(): a disabled area shape neither
+				// triggers nor answers scene queries.
 				record.px_shape->setFlag(physx::PxShapeFlag::eTRIGGER_SHAPE, false);
+				record.px_shape->setFlag(physx::PxShapeFlag::eSCENE_QUERY_SHAPE, false);
 			}
 		}
 		_sync_detection_shape(record);

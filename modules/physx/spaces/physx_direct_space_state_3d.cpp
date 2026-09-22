@@ -987,21 +987,26 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                             // block.distance is measured along the ray from its origin,
                             // so depth = ray_length - distance is positive while penetrating.
                             const float penetration_depth = ray_length - ray_hit.block.distance;
-                            const physx::PxVec3 &hit_normal_px = ray_hit.block.normal;
 
                             if (penetration_depth > MIN_PENETRATION_THRESHOLD) {
                                 penetrating_in_this_iter = true;
-                                const Vector3 pen_vec(hit_normal_px.x * penetration_depth,
-                                                      hit_normal_px.y * penetration_depth,
-                                                      hit_normal_px.z * penetration_depth);
+                                // Godot's separation-ray contact
+                                // (GodotCollisionSolver3D::solve_separation_ray): with
+                                // slide_on_slope the recovery pushes along the surface
+                                // normal; without it the contact normal is the negated
+                                // RAY direction, so a character resting on the ray does
+                                // not slide down slopes.
+                                const physx::PxVec3 push_dir_px = sep_ray->get_slide_on_slope()
+                                        ? ray_hit.block.normal
+                                        : -px_shape_dir;
+                                const Vector3 push_dir(push_dir_px.x, push_dir_px.y, push_dir_px.z);
+                                const Vector3 pen_vec = push_dir * penetration_depth;
                                 if (step_recovery.length_squared() == 0.0f) {
                                     step_recovery = pen_vec;
                                 } else {
-                                    const float dot = step_recovery.normalized().dot(
-                                            Vector3(hit_normal_px.x, hit_normal_px.y, hit_normal_px.z));
+                                    const float dot = step_recovery.normalized().dot(push_dir);
                                     if (dot < 0.0f) {
-                                        const Vector3 sub = Vector3(hit_normal_px.x, hit_normal_px.y, hit_normal_px.z)
-                                                * dot * step_recovery.length();
+                                        const Vector3 sub = push_dir * dot * step_recovery.length();
                                         step_recovery += pen_vec - sub;
                                     } else {
                                         step_recovery += pen_vec;
@@ -1144,15 +1149,19 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
         );
 
         // Separation rays are not swept as a volume in the cast phase — they
-        // participate only in recover/collide. When collide_separation_ray is
-        // false they're skipped entirely. When true we fall through to the
-        // generic sweep using the ray's thin-box representation, because a
-        // downward raycast distance is not comparable to a horizontal sweep
-        // distance and would incorrectly clamp horizontal motion.
+        // participate only in recover/collide. Godot's contract
+        // (godot_space_3d test_body_motion): they are skipped only when
+        // collide_separation_ray is off AND slide_on_slope is off — with the
+        // flag on, the shape acts like a regular shape so the body can snap to
+        // the ground. When we fall through to the generic sweep we use the
+        // ray's thin-box representation, because a downward raycast distance
+        // is not comparable to a horizontal sweep distance and would
+        // incorrectly clamp horizontal motion.
         if (shape->userData) {
             const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(shape->userData);
             if (shape_bp && shape_bp->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
-                if (!p_collide_separation_ray) {
+                const PhysXSeparationRayShape3D *sep_ray = static_cast<const PhysXSeparationRayShape3D *>(shape_bp);
+                if (!p_collide_separation_ray && !sep_ray->get_slide_on_slope()) {
                     continue;
                 }
                 // fall through to the generic sweep below
@@ -1303,8 +1312,14 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
                     if (ray_hit.hasBlock) {
                         PhysicsServer3D::MotionCollision &col = r_result->collisions[r_result->collision_count];
 
+                        // Same normal contract as the recover phase (Godot's
+                        // solve_separation_ray): surface normal with
+                        // slide_on_slope, negated ray direction without it.
+                        const physx::PxVec3 normal_px = sep_ray->get_slide_on_slope()
+                                ? ray_hit.block.normal
+                                : -px_shape_dir;
                         col.position = Vector3(ray_hit.block.position.x, ray_hit.block.position.y, ray_hit.block.position.z);
-                        col.normal = Vector3(ray_hit.block.normal.x, ray_hit.block.normal.y, ray_hit.block.normal.z);
+                        col.normal = Vector3(normal_px.x, normal_px.y, normal_px.z);
                         // Depth = how far the ray tip has passed the surface (positive while penetrating).
                         col.depth = ray_length - ray_hit.block.distance;
 

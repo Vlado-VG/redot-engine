@@ -819,9 +819,20 @@ void PhysXBody3D::apply_impulse(const Vector3 &p_impulse, const Vector3 &p_posit
 		if (mode == PhysicsServer3D::BODY_MODE_KINEMATIC || mode == PhysicsServer3D::BODY_MODE_STATIC) {
 			return;
 		}
-		physx::PxVec3 force(p_impulse.x, p_impulse.y, p_impulse.z);
-		physx::PxVec3 pos(p_position.x, p_position.y, p_position.z);
-		physx::PxRigidBodyExt::addForceAtPos(*dyn, force, pos, physx::PxForceMode::eIMPULSE);
+		// Godot's p_position is an OFFSET from the body origin in GLOBAL
+		// coordinates (RigidBody3D.apply_impulse contract; godot_physics_3d
+		// computes the torque arm as (position - center_of_mass), where its
+		// center_of_mass is the origin-relative COM in global axes).
+		// PxRigidBodyExt::addForceAtPos takes an absolute world position, so
+		// translate the offset by the actor origin; PhysX then applies the
+		// identical (world - COM) torque arm.
+		const physx::PxTransform pose = dyn->getGlobalPose();
+		const physx::PxVec3 world(pose.p.x + (physx::PxReal)p_position.x,
+				pose.p.y + (physx::PxReal)p_position.y,
+				pose.p.z + (physx::PxReal)p_position.z);
+		physx::PxRigidBodyExt::addForceAtPos(*dyn,
+				physx::PxVec3((physx::PxReal)p_impulse.x, (physx::PxReal)p_impulse.y, (physx::PxReal)p_impulse.z),
+				world, physx::PxForceMode::eIMPULSE);
 	}
 }
 
@@ -848,9 +859,15 @@ void PhysXBody3D::apply_force(const Vector3 &p_force, const Vector3 &p_position)
 		if (mode == PhysicsServer3D::BODY_MODE_KINEMATIC || mode == PhysicsServer3D::BODY_MODE_STATIC) {
 			return;
 		}
-		physx::PxVec3 force(p_force.x, p_force.y, p_force.z);
-		physx::PxVec3 pos(p_position.x, p_position.y, p_position.z);
-		physx::PxRigidBodyExt::addForceAtPos(*dyn, force, pos, physx::PxForceMode::eFORCE);
+		// Same position contract as apply_impulse: offset from the body origin
+		// in global coordinates, translated to a world point for addForceAtPos.
+		const physx::PxTransform pose = dyn->getGlobalPose();
+		const physx::PxVec3 world(pose.p.x + (physx::PxReal)p_position.x,
+				pose.p.y + (physx::PxReal)p_position.y,
+				pose.p.z + (physx::PxReal)p_position.z);
+		physx::PxRigidBodyExt::addForceAtPos(*dyn,
+				physx::PxVec3((physx::PxReal)p_force.x, (physx::PxReal)p_force.y, (physx::PxReal)p_force.z),
+				world, physx::PxForceMode::eFORCE);
 	}
 }
 
@@ -872,9 +889,19 @@ void PhysXBody3D::add_constant_central_force(const Vector3 &p_force) {
 }
 
 void PhysXBody3D::add_constant_force(const Vector3 &p_force, const Vector3 &p_position) {
-	// Godot: constant force at a position contributes a force and a torque.
+	// Godot's contract (godot_physics_3d GodotBody3D::add_constant_force): the
+	// force accumulates directly and contributes the torque
+	//     (position - center_of_mass) x force
+	// where position is an offset from the body origin in GLOBAL coordinates
+	// and center_of_mass is the origin-relative COM in global axes. Subtract
+	// the rotated COM offset to produce the same arm.
 	constant_force += p_force;
-	constant_torque += p_position.cross(p_force);
+	Vector3 arm = p_position;
+	if (physx::PxRigidDynamic *dyn = get_px_dynamic()) {
+		const physx::PxVec3 com_offset = dyn->getGlobalPose().rotate(dyn->getCMassLocalPose().p);
+		arm -= Vector3(com_offset.x, com_offset.y, com_offset.z);
+	}
+	constant_torque += arm.cross(p_force);
 }
 
 void PhysXBody3D::add_constant_torque(const Vector3 &p_torque) {
@@ -1239,8 +1266,12 @@ void PhysXBody3D::on_pre_step(float p_step) {
 		}
 
 		if (!dyn->isSleeping()) {
-			dyn->setLinearDamping((float)total_linear_damp);
-			dyn->setAngularDamping((float)total_angular_damp);
+			// Godot skips damping entirely when a custom force integrator is
+			// set (godot_body_3d integrate_forces guards the whole velocity
+			// update on omit_force_integration) — zero the solver damping so
+			// PhysX does not double-damp on top of the custom integrator.
+			dyn->setLinearDamping((float)(omit_force_integration ? 0.0f : total_linear_damp));
+			dyn->setAngularDamping((float)(omit_force_integration ? 0.0f : total_angular_damp));
 		}
 
 		// Wind is applied OUTSIDE the sleep gate: a constant wind must keep

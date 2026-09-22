@@ -82,13 +82,22 @@ void PhysXArticulation3D::set_space(PhysXSpace3D *p_space) {
 	if (p_space) {
 		p_space->ensure_synced();
 	}
-	if (space && px_articulation) {
-		if (PxScene *scene = space->get_px_scene()) {
-			scene->removeArticulation(*px_articulation);
-		}
+	// Membership truth is the articulation's own scene pointer, not the cached
+	// space: a zero-link articulation is deliberately NOT added to its scene.
+	// PhysX 5.11 crashes inside NpScene::addArticulation -> checkArticulationLink
+	// (BodyCore::getInverseMass dereference) for an articulation with no links;
+	// it joins on its first add_link instead.
+	if (px_articulation && px_articulation->getScene()) {
+		px_articulation->getScene()->removeArticulation(*px_articulation);
+	}
+	if (space) {
+		space->unregister_articulation(this);
 	}
 	space = p_space;
-	if (space && px_articulation) {
+	if (space) {
+		space->register_articulation(this);
+	}
+	if (space && px_articulation && px_articulation->getNbLinks() > 0) {
 		if (PxScene *scene = space->get_px_scene()) {
 			scene->addArticulation(*px_articulation);
 		}
@@ -117,6 +126,11 @@ int PhysXArticulation3D::add_link(int p_parent_index,
 	// attached to a space works instead of failing with a null link.
 	physx::PxScene *scene = px_articulation->getScene();
 	if (scene) {
+		// removeArticulation/addArticulation below mutate the scene — fetch
+		// an in-flight solve first (async stepping), like set_space() does.
+		if (space) {
+			space->ensure_synced();
+		}
 		scene->removeArticulation(*px_articulation);
 	}
 
@@ -170,6 +184,12 @@ int PhysXArticulation3D::add_link(int p_parent_index,
 
 	if (scene) {
 		scene->addArticulation(*px_articulation);
+	} else if (space && px_articulation->getNbLinks() == 1) {
+		// First link of an articulation whose space deferred the attach
+		// (zero-link articulations stay out of the scene — see set_space).
+		if (PxScene *attach_scene = space->get_px_scene()) {
+			attach_scene->addArticulation(*px_articulation);
+		}
 	}
 	// Per-link mass properties are set by updateMassAndInertia() above; the
 	// reduced-coordinate solver aggregates them when the articulation is added
