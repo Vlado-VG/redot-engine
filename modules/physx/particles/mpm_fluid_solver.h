@@ -72,6 +72,17 @@ public:
 		Vector3 gravity = Vector3(0, -9.8f, 0);
 		Vector3 domain = Vector3(3, 3, 3); // MPM sim box / boundary, centred on the solver transform
 		Vector3 spawn_region = Vector3(1, 1, 1); // prefill fills this, centred on the transform (clamped to the domain)
+
+		// Vulkan diffuse (foam/spray) layer. Thresholds are in MPM potential
+		// units (a kinetic-energy / density-error / divergence blend) -- not
+		// comparable to the PBD/CUDA foam_threshold scale. The layer never joins
+		// the solve; it adds two small passes once per frame.
+		bool foam_enabled = false;
+		int foam_capacity = 8192; // diffuse-particle slots
+		float foam_threshold = 3.0f; // spawn potential above which foam spawns
+		float foam_lifetime = 1.5f; // seconds before a diffuse particle fades
+		float foam_buoyancy = 0.9f; // in-fluid rise, as a fraction of gravity
+		float foam_drag = 0.9f; // in-fluid drag toward the fluid velocity
 	};
 
 	// An analytic collider coupled to the fluid.
@@ -111,6 +122,12 @@ public:
 		_recompute_surface_iso();
 	}
 
+	// Runtime foam toggle. The slot allocation was sized at configure() -- a
+	// solver configured with foam off has a single parked slot, so toggling on
+	// stays inert until the next configure().
+	void set_foam_active(bool p_enabled) { settings.foam_enabled = p_enabled; }
+	bool is_foam_active() const { return settings.foam_enabled; }
+
 	struct EmittedParticle {
 		Vector3 position; // world
 		Vector3 velocity;
@@ -143,8 +160,13 @@ public:
 	// triangle count. Ready for RenderingServer::mesh_add_surface_from_arrays.
 	int get_surface_mesh(PackedVector3Array &r_vertices, PackedVector3Array &r_normals) const;
 
+	// Diffuse (foam/spray) layer, cached from the last reaped step. Positions are
+	// world-space, alive-only; get_foam_count() is the matching instance count.
+	PackedVector3Array get_foam_positions() const;
+	int get_foam_count() const { return _foam_alive; }
+
 private:
-	enum Pass { PASS_CLEAR, PASS_P2G_MASS, PASS_P2G_MOM, PASS_GRID, PASS_COUPLE, PASS_G2P, PASS_SURFACE, PASS_MARCH, PASS_RENDER, PASS_MAX };
+	enum Pass { PASS_CLEAR, PASS_P2G_MASS, PASS_P2G_MOM, PASS_GRID, PASS_COUPLE, PASS_G2P, PASS_FOAM_SPAWN, PASS_FOAM_ADVECT, PASS_SURFACE, PASS_MARCH, PASS_RENDER, PASS_MAX };
 
 	RenderingDevice *rd = nullptr;
 	bool built = false;
@@ -168,6 +190,8 @@ private:
 	RID buf_mverts;
 	RID buf_mnorms;
 	RID buf_mcount;
+	RID buf_foam;
+	RID buf_foam_meta;
 
 	mutable uint64_t last_step_usec = 0;
 	// Async render readback: a step submits its compute work and returns; the
@@ -178,6 +202,10 @@ private:
 	mutable int _submitted_ncol = 0;
 	mutable PackedFloat32Array _mm_cache;
 	mutable LocalVector<Vector3> _imp_cache;
+	// Foam readback, same async reap as the render buffer above.
+	mutable PackedVector3Array _foam_cache;
+	mutable int _foam_alive = 0;
+	int foam_capacity_resolved = 1; // actual foam slot count (>= 1 keeps the buffer bindings valid)
 	void _reap_submitted() const;
 	int pcount = 0; // live particles (== capacity when prefilled)
 	int capacity = 0; // particle-buffer slots

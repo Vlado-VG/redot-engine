@@ -143,6 +143,19 @@ void PhysXParticleFluid3D::_mpm_configure(bool p_prefill) {
 	s.grid_res = _mpm_resolved_grid_res();
 	_mpm_surface_params(s.surface_iso, s.surface_kernel, s.surface_boost);
 
+	// Vulkan diffuse (foam/spray) layer. The PBD/CUDA path keeps NVIDIA's own
+	// diffuse particles (currently behind the maxActiveDiffuseParticles guard --
+	// see physx_gpu_particle_fluid_3d.cpp); if a future SDK fixes that
+	// allocation, PBD foam returns and this stays the non-CUDA fallback.
+	// Granular beds don't foam. The shared foam_threshold property is PBD-scaled
+	// (default 300); MPM potential units are normalized so the default maps to
+	// 3.0.
+	s.foam_enabled = foam_enabled && !_is_granular();
+	s.foam_capacity = foam_particle_count;
+	s.foam_threshold = MAX(foam_threshold * 0.01f, 0.05f);
+	s.foam_lifetime = MAX(foam_lifetime, 0.1f);
+	s.foam_buoyancy = CLAMP(foam_buoyancy, 0.0f, 1.0f);
+
 	mpm->configure(s, get_global_transform(), p_prefill);
 	_mpm_configured = mpm->is_available();
 
@@ -397,6 +410,9 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 	if (mpm->get_particle_count() == 0) {
 		// Emit mode, nothing spawned yet.
 		RenderingServer::get_singleton()->multimesh_set_visible_instances(multimesh, 0);
+		if (foam_multimesh.is_valid()) {
+			RenderingServer::get_singleton()->multimesh_set_visible_instances(foam_multimesh, 0);
+		}
 		return;
 	}
 
@@ -454,6 +470,8 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 		}
 		rb->apply_central_impulse(imp);
 	}
+
+	_update_mpm_foam();
 
 	RenderingServer *rs = RenderingServer::get_singleton();
 
@@ -513,6 +531,44 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 	rs->multimesh_set_visible_instances(multimesh, n);
 }
 
+// Push the Vulkan diffuse layer's cached positions into the foam sprite
+// MultiMesh (world space, same consumption pattern as the PBD path's foam).
+// Sprites stay visible alongside the MPM isosurface -- there is no MPM foam
+// isosurface layer yet.
+void PhysXParticleFluid3D::_update_mpm_foam() {
+	if (foam_multimesh.is_null()) {
+		return;
+	}
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (!foam_enabled || mpm == nullptr || !mpm->is_available()) {
+		rs->multimesh_set_visible_instances(foam_multimesh, 0);
+		return;
+	}
+	PackedVector3Array foam = mpm->get_foam_positions();
+	const int fn = MIN(foam.size(), foam_particle_count);
+	PackedFloat32Array foam_buffer;
+	foam_buffer.resize(foam_particle_count * 12);
+	float *fb = foam_buffer.ptrw();
+	const Vector3 *fp = foam.ptr();
+	for (int i = 0; i < fn; i++) {
+		float *t = &fb[i * 12];
+		t[0] = 1;
+		t[1] = 0;
+		t[2] = 0;
+		t[3] = fp[i].x;
+		t[4] = 0;
+		t[5] = 1;
+		t[6] = 0;
+		t[7] = fp[i].y;
+		t[8] = 0;
+		t[9] = 0;
+		t[10] = 1;
+		t[11] = fp[i].z;
+	}
+	rs->multimesh_set_buffer(foam_multimesh, foam_buffer);
+	rs->multimesh_set_visible_instances(foam_multimesh, fn);
+}
+
 void PhysXParticleFluid3D::_make_fluid() {
 	if (multimesh.is_valid()) {
 		return;
@@ -564,6 +620,32 @@ void PhysXParticleFluid3D::_make_fluid() {
 				water_material = m;
 			}
 			set_base(array_mesh);
+		}
+
+		// Foam/spray sprites: same world-space MultiMesh pattern as the PBD
+		// branch -- the Vulkan diffuse layer feeds it from the solver readback.
+		if (foam_enabled && get_world_3d() != nullptr) {
+			Ref<SphereMesh> foam_sphere;
+			foam_sphere.instantiate();
+			foam_sphere->set_radius(_effective_foam_size() * 0.5);
+			foam_sphere->set_height(_effective_foam_size());
+			foam_sphere->set_radial_segments(5);
+			foam_sphere->set_rings(2);
+			Ref<StandardMaterial3D> foam_material;
+			foam_material.instantiate();
+			foam_material->set_albedo(Color(1, 1, 1, 0.85));
+			foam_material->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+			foam_material->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+			foam_sphere->set_material(foam_material);
+			foam_mesh = foam_sphere;
+
+			foam_multimesh = rs->multimesh_create();
+			rs->multimesh_allocate_data(foam_multimesh, foam_particle_count, RS::MULTIMESH_TRANSFORM_3D);
+			rs->multimesh_set_mesh(foam_multimesh, foam_mesh->get_rid());
+			rs->multimesh_set_visible_instances(foam_multimesh, 0);
+			foam_instance = rs->instance_create2(foam_multimesh, get_world_3d()->get_scenario());
+			rs->instance_set_transform(foam_instance, Transform3D());
+			rs->instance_set_custom_aabb(foam_instance, AABB(Vector3(-100000, -100000, -100000), Vector3(200000, 200000, 200000)));
 		}
 
 		mpm = memnew(MPMFluidSolver);
@@ -1552,6 +1634,12 @@ void PhysXParticleFluid3D::set_surface_mesh(bool p_enabled) {
 void PhysXParticleFluid3D::set_foam_enabled(bool p_enabled) {
 	foam_enabled = p_enabled;
 	_apply_foam();
+	if (_mpm_path() && mpm != nullptr && _mpm_configured) {
+		// Runtime toggle flips the solver flag; the slot allocation itself was
+		// sized at configure() (a solver configured with foam off has no slots,
+		// so enabling stays inert until the next spawn/configure).
+		mpm->set_foam_active(p_enabled && !_is_granular());
+	}
 }
 
 void PhysXParticleFluid3D::set_foam_particle_count(int p_count) {
@@ -1597,6 +1685,10 @@ void PhysXParticleFluid3D::set_foam_size(float p_v) {
 }
 
 int PhysXParticleFluid3D::get_live_foam_count() const {
+	if (_mpm_path()) {
+		// Vulkan diffuse layer: count from the solver's last reaped step.
+		return mpm != nullptr ? mpm->get_foam_count() : 0;
+	}
 	PhysXServer3D *server = PhysXServer3D::get_singleton();
 	if (!server || fluid.is_null()) {
 		return 0;

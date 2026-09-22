@@ -106,6 +106,7 @@ protected:
 private:
 	void _mpm_step(double p_delta);
 	void _mpm_emit_step(double p_delta);
+	void _update_mpm_foam();
 	int _mpm_resolved_grid_res() const;
 	void _mpm_surface_params(float &r_iso, float &r_kernel, float &r_boost) const;
 	void _mpm_apply_surface_params();

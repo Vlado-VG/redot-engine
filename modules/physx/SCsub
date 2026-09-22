@@ -204,6 +204,8 @@ _mpm_glsl = (
     "mpm_grid.glsl",
     "mpm_couple.glsl",
     "mpm_g2p.glsl",
+    "mpm_foam_spawn.glsl",
+    "mpm_foam_advect.glsl",
     "mpm_surface.glsl",
     "mpm_march.glsl",
     "mpm_render.glsl",

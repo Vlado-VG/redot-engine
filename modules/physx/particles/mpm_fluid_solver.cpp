@@ -32,6 +32,8 @@
 
 #include "shaders/mpm_clear.glsl.gen.h"
 #include "shaders/mpm_couple.glsl.gen.h"
+#include "shaders/mpm_foam_advect.glsl.gen.h"
+#include "shaders/mpm_foam_spawn.glsl.gen.h"
 #include "shaders/mpm_g2p.glsl.gen.h"
 #include "shaders/mpm_grid.glsl.gen.h"
 #include "shaders/mpm_march.glsl.gen.h"
@@ -51,8 +53,9 @@ namespace {
 constexpr int FLOATS_PER_PARTICLE = 32; // 8 * vec4 (x/v/C x3/F x3)
 constexpr int FLOATS_PER_COLLIDER = 16; // 4 * vec4 (c0..c3)
 constexpr int MAX_COLLIDERS = 32; // analytic colliders per step (rigid bodies + expanded debris chunks)
-constexpr uint32_t PARAMS_BYTES = 128; // 8 * vec4, std140
+constexpr uint32_t PARAMS_BYTES = 160; // 10 * vec4, std140
 constexpr float IMP_FIXED = 1024.0f;
+constexpr int FLOATS_PER_FOAM = 8; // 2 * vec4 (pos/life, vel/kind)
 constexpr uint32_t GROUP = 64;
 constexpr uint32_t TRI_BUDGET = 200000; // isosurface triangle cap
 
@@ -104,6 +107,8 @@ bool MPMFluidSolver::_compile_shaders() {
 		mpm_grid_shader_glsl,
 		mpm_couple_shader_glsl,
 		mpm_g2p_shader_glsl,
+		mpm_foam_spawn_shader_glsl,
+		mpm_foam_advect_shader_glsl,
 		mpm_surface_shader_glsl,
 		mpm_march_shader_glsl,
 		mpm_render_shader_glsl,
@@ -131,6 +136,8 @@ void MPMFluidSolver::_free_buffers() {
 	}
 	_mm_cache = PackedFloat32Array();
 	_imp_cache.clear();
+	_foam_cache = PackedVector3Array();
+	_foam_alive = 0;
 	// Uniform sets first: RD auto-frees a uniform set when a buffer it references
 	// is freed, so freeing the buffers first leaves these RIDs dangling.
 	for (int i = 0; i < PASS_MAX; i++) {
@@ -143,7 +150,7 @@ void MPMFluidSolver::_free_buffers() {
 		rd->free(uset_mesh);
 		uset_mesh = RID();
 	}
-	RID *bufs[] = { &buf_params, &buf_particles, &buf_grid_i, &buf_grid_v, &buf_colliders, &buf_cimp, &buf_mm, &buf_surf, &buf_mverts, &buf_mnorms, &buf_mcount };
+	RID *bufs[] = { &buf_params, &buf_particles, &buf_grid_i, &buf_grid_v, &buf_colliders, &buf_cimp, &buf_mm, &buf_surf, &buf_mverts, &buf_mnorms, &buf_mcount, &buf_foam, &buf_foam_meta };
 	for (RID *b : bufs) {
 		if (b->is_valid()) {
 			rd->free(*b);
@@ -297,6 +304,16 @@ void MPMFluidSolver::_pack_params(double p_dt, int p_ncol, PackedByteArray &r_by
 	put_f(116, MAX(settings.granular_cohesion, 0.0f));
 	put_f(120, mu);
 	put_f(124, lambda);
+
+	// Foam (Vulkan diffuse layer). Frame dt, not substep dt: the foam passes run
+	// once per frame after the substep loop. Capacity as float -- the shader
+	// reads it for the ring modulo.
+	put_f(128, settings.foam_threshold);
+	put_f(132, settings.foam_lifetime);
+	put_f(136, CLAMP(settings.foam_buoyancy, 0.0f, 1.0f));
+	put_f(140, MAX(settings.foam_drag, 0.01f));
+	put_f(144, (float)foam_capacity_resolved);
+	put_f(148, (float)(p_dt * settings.substeps));
 }
 
 void MPMFluidSolver::_pack_colliders(const LocalVector<SphereCollider> &p_colliders, PackedByteArray &r_bytes) const {
@@ -336,17 +353,17 @@ void MPMFluidSolver::_pack_colliders(const LocalVector<SphereCollider> &p_collid
 }
 
 void MPMFluidSolver::_rebuild_uniform_sets() {
-	RID by_binding[8] = { buf_params, buf_particles, buf_grid_i, buf_grid_v, buf_colliders, buf_cimp, buf_mm, buf_surf };
+	RID by_binding[10] = { buf_params, buf_particles, buf_grid_i, buf_grid_v, buf_colliders, buf_cimp, buf_mm, buf_surf, buf_foam, buf_foam_meta };
 	for (int p = 0; p < PASS_MAX; p++) {
 		if (uset[p].is_valid()) {
 			rd->free(uset[p]);
 			uset[p] = RID();
 		}
-		// Every pass includes mpm_fluid_inc.glsl, which declares all eight
+		// Every pass includes mpm_fluid_inc.glsl, which declares all ten
 		// bindings -- shader reflection puts them all in the set layout whether
-		// or not a given pass references them, so provide all eight.
+		// or not a given pass references them, so provide all ten.
 		Vector<RD::Uniform> uniforms;
-		for (int bnd = 0; bnd < 8; bnd++) {
+		for (int bnd = 0; bnd < 10; bnd++) {
 			RD::Uniform u;
 			u.uniform_type = (bnd == 0) ? RD::UNIFORM_TYPE_UNIFORM_BUFFER : RD::UNIFORM_TYPE_STORAGE_BUFFER;
 			u.binding = bnd;
@@ -442,6 +459,22 @@ void MPMFluidSolver::configure(const Settings &p_settings, const Transform3D &p_
 		buf_mcount = rd->storage_buffer_create(mc.size(), mc);
 	}
 
+	// Vulkan diffuse (foam/spray) layer. Slots always exist so the shared
+	// uniform-set bindings stay valid; the passes only dispatch when enabled.
+	foam_capacity_resolved = settings.foam_enabled ? CLAMP(settings.foam_capacity, 1, 65536) : 1;
+	{
+		PackedByteArray fzero;
+		fzero.resize(foam_capacity_resolved * FLOATS_PER_FOAM * sizeof(float));
+		memset(fzero.ptrw(), 0, fzero.size()); // life = 0 everywhere: all slots parked
+		buf_foam = rd->storage_buffer_create(fzero.size(), fzero);
+	}
+	{
+		PackedByteArray mzero;
+		mzero.resize(4 * sizeof(uint32_t));
+		memset(mzero.ptrw(), 0, mzero.size()); // spawn counter + alive count = 0
+		buf_foam_meta = rd->storage_buffer_create(mzero.size(), mzero);
+	}
+
 	_rebuild_uniform_sets();
 	built = true;
 }
@@ -513,6 +546,12 @@ void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_c
 		rd->buffer_update(buf_colliders, 0, cdata.size(), cdata.ptr());
 	}
 	rd->buffer_clear(buf_cimp, 0, MAX_COLLIDERS * 4 * sizeof(int32_t));
+	const bool foam_run = settings.foam_enabled && foam_capacity_resolved > 1;
+	if (foam_run) {
+		// Reset the spawn counter + alive count; the foam passes re-accumulate
+		// both inside this frame's compute list.
+		rd->buffer_clear(buf_foam_meta, 0, 2 * sizeof(uint32_t));
+	}
 	if (p_want_surface) {
 		rd->buffer_clear(buf_mcount, 0, sizeof(uint32_t)); // reset tri_count, keep tri_budget
 		rd->buffer_clear(buf_surf, 0, node_count * sizeof(int32_t)); // reset the density scatter
@@ -588,6 +627,20 @@ void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_c
 		rd->compute_list_dispatch(cl, pg, 1, 1);
 		rd->compute_list_add_barrier(cl);
 	}
+	if (foam_run) {
+		// Diffuse (foam/spray) layer, once per frame after the substeps: spawn
+		// off the final particle/grid state, then advect. Never touches the
+		// sim's own buffers.
+		rd->compute_list_bind_compute_pipeline(cl, pipeline[PASS_FOAM_SPAWN]);
+		rd->compute_list_bind_uniform_set(cl, uset[PASS_FOAM_SPAWN], 0);
+		rd->compute_list_dispatch(cl, pg, 1, 1); // one thread per fluid particle
+		rd->compute_list_add_barrier(cl);
+
+		rd->compute_list_bind_compute_pipeline(cl, pipeline[PASS_FOAM_ADVECT]);
+		rd->compute_list_bind_uniform_set(cl, uset[PASS_FOAM_ADVECT], 0);
+		rd->compute_list_dispatch(cl, groups_for(foam_capacity_resolved), 1, 1);
+		rd->compute_list_add_barrier(cl);
+	}
 	if (p_want_surface) {
 		rd->compute_list_bind_compute_pipeline(cl, pipeline[PASS_SURFACE]);
 		rd->compute_list_bind_uniform_set(cl, uset[PASS_SURFACE], 0);
@@ -645,12 +698,45 @@ void MPMFluidSolver::_reap_submitted() const {
 			_imp_cache.push_back(Vector3(ci[i * 4 + 0], ci[i * 4 + 1], ci[i * 4 + 2]) / IMP_FIXED);
 		}
 	}
+
+	// Foam readback: alive count from the meta buffer, then the alive slots'
+	// positions out of the foam ring (life <= 0 slots are parked).
+	if (settings.foam_enabled && buf_foam.is_valid()) {
+		Vector<uint8_t> meta = rd->buffer_get_data(buf_foam_meta, 0, 2 * sizeof(uint32_t));
+		const uint32_t alive = meta.size() >= 8 ? MIN(decode_uint32(meta.ptr() + 4), (uint32_t)foam_capacity_resolved) : 0;
+		PackedVector3Array positions;
+		if (alive > 0) {
+			Vector<uint8_t> raw = rd->buffer_get_data(buf_foam);
+			const int slots = MIN((int)(raw.size() / (FLOATS_PER_FOAM * sizeof(float))), foam_capacity_resolved);
+			const float *f = (const float *)raw.ptr();
+			positions.resize(alive);
+			int written = 0;
+			for (int i = 0; i < slots && written < (int)alive; i++) {
+				const float *o = f + i * FLOATS_PER_FOAM;
+				if (o[3] > 0.0f) { // lifetime remaining
+					positions.write[written++] = Vector3(o[0], o[1], o[2]);
+				}
+			}
+			positions.resize(written);
+		}
+		_foam_cache = positions;
+		_foam_alive = (int)alive;
+	} else {
+		_foam_cache = PackedVector3Array();
+		_foam_alive = 0;
+	}
 }
 
 PackedFloat32Array MPMFluidSolver::get_multimesh_buffer() const {
 	// Cached from the last reaped step -- no readback here. Full-capacity buffer
 	// (MultiMesh::set_buffer wants every slot); the caller only shows `pcount`.
 	return _mm_cache;
+}
+
+PackedVector3Array MPMFluidSolver::get_foam_positions() const {
+	// Cached from the last reaped step (alive-only, world space) -- no readback
+	// here, same contract as get_multimesh_buffer().
+	return _foam_cache;
 }
 
 PackedVector3Array MPMFluidSolver::get_positions() const {

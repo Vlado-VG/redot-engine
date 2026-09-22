@@ -48,6 +48,8 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	vec4 bmax;        // xyz domain max (world), w = granular flag (0 fluid / 1 granular)
 	vec4 extra;       // x collider count, y collider friction, z surface iso density, w surface kernel
 	vec4 gran;        // granular: x = Drucker-Prager alpha (friction), y = cohesion, z = shear modulus mu, w = Lame lambda
+	vec4 foam_a;      // foam: x = spawn threshold, y = lifetime (s), z = buoyancy (fraction of gravity), w = fluid drag rate
+	vec4 foam_b;      // foam: x = foam capacity (slots), y = frame dt (s; foam runs once per frame, not per substep)
 };
 
 layout(set = 0, binding = 1, std430) restrict buffer Particles { Particle particles[]; };
@@ -57,6 +59,18 @@ layout(set = 0, binding = 4, std430) restrict buffer Colliders { Collider collid
 layout(set = 0, binding = 5, std430) restrict buffer ColliderImp { int cimp[]; }; // 4 ints / collider: reaction impulse xyz
 layout(set = 0, binding = 6, std430) restrict buffer MMData { float mm[]; };       // 12 floats / instance: MultiMesh transform rows
 layout(set = 0, binding = 7, std430) restrict buffer SurfaceField { int surf_i[]; }; // 1 int / node: SPH density scatter (SURF_FIXED), for isosurfacing
+
+// Diffuse (foam/spray) particles -- a Vulkan-compute visual layer that never
+// joins the MPM solve. This mirrors NVIDIA's PxDiffuseParticleParams model (and
+// the PBD path's CUDA diffuse particles) so the same foam_* node properties
+// drive either backend. Foam slots whose life hit zero stay parked; the spawn
+// pass recycles slots round-robin through a monotonic counter.
+struct FoamParticle {
+	vec4 pos_life; // xyz = position (world), w = lifetime remaining (s); <= 0 = parked
+	vec4 vel_kind; // xyz = velocity, w = kind (0 = foam/spray -- single kind in v1)
+};
+layout(set = 0, binding = 8, std430) restrict buffer FoamBuf { FoamParticle foam[]; };
+layout(set = 0, binding = 9, std430) restrict buffer FoamMeta { uvec4 foam_meta; }; // x = spawn counter (monotonic), y = alive count this frame
 
 #define DT       (gravity_dt.w)
 #define GRAV     (gravity_dt.xyz)
@@ -75,6 +89,12 @@ layout(set = 0, binding = 7, std430) restrict buffer SurfaceField { int surf_i[]
 #define DP_COH   (gran.y)
 #define GMU      (gran.z)
 #define GLAMBDA  (gran.w)
+#define FOAM_THRESH (foam_a.x)
+#define FOAM_LIFE   (foam_a.y)
+#define FOAM_BUOY   (foam_a.z)
+#define FOAM_DRAG   (foam_a.w)
+#define FOAM_CAP    (foam_b.x)
+#define FRAME_DT    (foam_b.y)
 
 int node_index(ivec3 c) {
 	return (c.z * RES.y + c.y) * RES.x + c.x;
@@ -95,6 +115,35 @@ vec3 bspline(float fx) {
 	w.y = 0.75 - (fx - 1.0) * (fx - 1.0);
 	w.z = 0.5 * (fx - 0.5) * (fx - 0.5);
 	return w;
+}
+
+// Trilinear grid-field samples for the foam layer (advection drag + the spawn
+// divergence estimate). Node k sits at ORIGIN + k*DX; out-of-range taps clamp,
+// and the corner weights still sum to 1, so clamped reads stay a convex blend.
+vec3 sample_grid_v(vec3 wp) {
+	vec3 g = (wp - ORIGIN) / DX;
+	ivec3 c = ivec3(floor(g));
+	vec3 f = g - vec3(c);
+	vec3 acc = vec3(0.0);
+	for (int i = 0; i < 8; i++) {
+		ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+		float w = (o.x != 0 ? f.x : 1.0 - f.x) * (o.y != 0 ? f.y : 1.0 - f.y) * (o.z != 0 ? f.z : 1.0 - f.z);
+		acc += grid_v[node_index(clamp(c + o, ivec3(0), RES - 1))].xyz * w;
+	}
+	return acc;
+}
+
+float sample_grid_mass(vec3 wp) {
+	vec3 g = (wp - ORIGIN) / DX;
+	ivec3 c = ivec3(floor(g));
+	vec3 f = g - vec3(c);
+	float acc = 0.0;
+	for (int i = 0; i < 8; i++) {
+		ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+		float w = (o.x != 0 ? f.x : 1.0 - f.x) * (o.y != 0 ? f.y : 1.0 - f.y) * (o.z != 0 ? f.z : 1.0 - f.z);
+		acc += grid_v[node_index(clamp(c + o, ivec3(0), RES - 1))].w * w;
+	}
+	return acc;
 }
 
 void grid_local(vec3 x, out ivec3 base, out vec3 fx) {
