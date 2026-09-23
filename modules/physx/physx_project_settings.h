@@ -92,6 +92,34 @@ public:
 	// enhanced_determinism forces every soft body to CPU (no CUDA context).
 	inline static int soft_body_mode = 0;
 
+	// physics/physx_3d/flow/device_api
+	//
+	// GPU backend for the NVIDIA Flow runtime (PhysXFlowSimulation3D nodes).
+	// Flow owns its own GPU device/queue (its SDK is deliberately not a PhysX
+	// subsystem), independent of the renderer's device. 0 = Auto (Vulkan,
+	// falling back to the CPU context when no Vulkan device can be created),
+	// 1 = Vulkan only, 2 = CPU only (slow, for machines without usable GPU
+	// drivers). Read when the first Flow simulation initializes.
+	inline static int flow_device_api = 0;
+
+	// physics/physx_3d/flow/device_index
+	//
+	// Which GPU to run Flow on when several exist (0 = first). Ignored by the
+	// CPU backend.
+	inline static int flow_device_index = 0;
+
+	// physics/physx_3d/flow/device_validation
+	//
+	// Enables Flow SDK validation layers in debug/editor builds (Vulkan
+	// backend). Diagnostic aid only; costs performance.
+	inline static bool flow_device_validation = false;
+
+	// physics/physx_3d/flow/verbose_logs
+	//
+	// Passes the Flow SDK's info-level log (per-allocation traces etc.)
+	// through to Godot's console. Errors/warnings always print.
+	inline static bool flow_verbose_logs = false;
+
 	static void register_settings();
 	static void read_settings();
 };

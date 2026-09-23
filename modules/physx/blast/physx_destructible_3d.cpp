@@ -54,6 +54,10 @@ void aligned_free_16(void *p_mem) {
 } //namespace
 
 void PhysXDestructible3D::_bind_methods() {
+	ADD_SIGNAL(MethodInfo("chunks_fractured",
+			PropertyInfo(Variant::VECTOR3, "world_position"),
+			PropertyInfo(Variant::INT, "pieces_spawned"),
+			PropertyInfo(Variant::FLOAT, "damage")));
 	ClassDB::bind_method(D_METHOD("set_asset_path", "path"), &PhysXDestructible3D::set_asset_path);
 	ClassDB::bind_method(D_METHOD("get_asset_path"), &PhysXDestructible3D::get_asset_path);
 	ClassDB::bind_method(D_METHOD("set_chunks_path", "path"), &PhysXDestructible3D::set_chunks_path);
@@ -1012,6 +1016,13 @@ int PhysXDestructible3D::apply_radial_damage(const Vector3 &p_world_position, fl
 		pieces.remove_at_unordered(0);
 		fractured = true;
 		set_physics_process_internal(true);
+	}
+
+		if (spawned > 0) {
+		// Engine-level destruction event (see the header): fired only when
+		// real chunks actually broke off. Consumed by the Flow bridge for
+		// dust/smoke, and directly usable by gameplay/audio/particles.
+		emit_signal(SNAME("chunks_fractured"), p_world_position, spawned, p_damage);
 	}
 
 	return spawned;

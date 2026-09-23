@@ -258,6 +258,13 @@ public:
 	// separate demo-script concern layered on top.
 	int apply_radial_damage(const Vector3 &p_world_position, float p_damage, float p_min_radius, float p_max_radius);
 
+	// (Signal "chunks_fractured", declared via ADD_SIGNAL in _bind_methods:
+	// emitted at the end of apply_radial_damage() when real chunks broke off
+	// -- never for a no-op hit. Args: world_position (damage origin),
+	// pieces_spawned, damage. This is the module's engine-level destruction
+	// event: the Flow bridge consumes it for dust/smoke, and scripts may
+	// use it directly.)
+
 	PackedStringArray get_configuration_warnings() const override;
 
 	// Always chunk 0's (the whole intact mesh's) local-space bounds,

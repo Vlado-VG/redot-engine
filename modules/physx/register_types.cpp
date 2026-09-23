@@ -30,8 +30,21 @@
 #include "blast/physx_destructible_3d.h"
 #endif
 
+#ifdef GODOT_PHYSX_FLOW
+#include "flow/flow_runtime.h"
+#include "flow/physx_flow_simulation_3d.h"
+#include "flow/physx_flow_emitter_3d.h"
+#include "flow/physx_flow_collider_3d.h"
+#if defined(GODOT_PHYSX_BLAST)
+#include "flow/physx_flow_blast_bridge_3d.h"
+#endif
+#endif
+
 #ifdef TOOLS_ENABLED
 #include "editor/physx_editor_plugin.h"
+#ifdef GODOT_PHYSX_FLOW
+#include "editor/physx_flow_editor_plugin.h"
+#endif
 #endif
 
 /**
@@ -82,12 +95,28 @@ void initialize_physx_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<PhysXBlastAsset>();
 		ClassDB::register_class<PhysXBlastAuthoring>();
 #endif
+#ifdef GODOT_PHYSX_FLOW
+		// NVIDIA Flow scene nodes (fluid/fire/smoke). Flow is architecturally
+		// a sibling of PhysX/Blast (own SDK, own GPU runtime -- see
+		// flow/docs/IMPLEMENTATION_NOTES.md); it is registered here only
+		// because this module is the packaging unit.
+		ClassDB::register_class<PhysXFlowSimulation3D>();
+		ClassDB::register_class<PhysXFlowEmitter3D>();
+		ClassDB::register_class<PhysXFlowCollider3D>();
+#if defined(GODOT_PHYSX_BLAST)
+		// Optional destruction-event adapter (Blast fracture -> Flow dust).
+		ClassDB::register_class<PhysXFlowBlastBridge3D>();
+#endif
+#endif
 	}
 
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
-		// Viewport gizmos for the fluid/cloth nodes.
+		// Viewport gizmos for the module's scene nodes.
 		EditorPlugins::add_by_type<PhysXEditorPlugin>();
+#ifdef GODOT_PHYSX_FLOW
+		EditorPlugins::add_by_type<PhysXFlowEditorPlugin>();
+#endif
 	}
 #endif
 }
@@ -98,4 +127,13 @@ void uninitialize_physx_module(ModuleInitializationLevel p_level) {
 	}
 	// Inner PhysXServer3D lifetime is managed by PhysicsServer3DWrapMT,
 	// which the PhysicsServer3DManager owns and tears down at shutdown.
+#ifdef GODOT_PHYSX_FLOW
+	// All scene nodes (and thus Flow simulations) are freed before SERVERS
+	// modules uninitialize; if anything still holds the shared Flow GPU
+	// runtime, tear it down anyway with a diagnostic rather than leak the
+	// device across an engine restart.
+	if (FlowRuntime::get_singleton() != nullptr) {
+		FlowRuntime::get_singleton()->release_for_shutdown();
+	}
+#endif
 }

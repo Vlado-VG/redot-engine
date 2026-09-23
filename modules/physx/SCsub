@@ -126,6 +126,36 @@ if env["platform"] == "windows":
             Copy("$TARGET", "$SOURCE"),
         )
 
+# --- NVIDIA Flow (sparse-voxel fluid/fire/smoke GPU simulation) ---------------
+# Flow 2.2.0 is consumed EXCLUSIVELY through NvFlowLoader
+# (thirdparty/flow/include/nvflowext/NvFlowLoader.h), which LoadLibrary's
+# nvflow.dll/nvflowext.dll and duplicates their reflection-described
+# interfaces at runtime -- nothing links against nvflow*.lib. Architecturally
+# Flow stays a sibling of PhysX/Blast (see flow/docs/IMPLEMENTATION_NOTES.md):
+# the flow/ subdirectory has zero PhysX dependencies, only the shared module
+# registration/SCsub plumbing lives here. Disable with `flow=no` -- all Flow
+# code is GODOT_PHYSX_FLOW-guarded and compiles out.
+flow_enabled = ARGUMENTS.get("flow", "yes") not in ("no", "0", "false", "False")
+flow_dir = Dir("#thirdparty/flow")
+if flow_enabled:
+    env_physx.Append(CPPDEFINES=["GODOT_PHYSX_FLOW"])
+    # NvFlowLoader.h includes Windows.h and the SDK headers live in two roots
+    # (nvflow/, nvflowext/) with same-directory #includes.
+    env_physx.PrependUnique(CPPPATH=[
+        flow_dir.Dir("include/nvflow").abspath,
+        flow_dir.Dir("include/nvflowext").abspath,
+    ])
+
+    # Runtime DLLs next to the engine binary (only the base pair -- the _rtx
+    # variants cover Flow's own raytraced composite path, unused here).
+    if env["platform"] == "windows":
+        flow_dll_dir = flow_dir.Dir("bin/windows/x86_64/release")
+        for dll_name in ["nvflow.dll", "nvflowext.dll"]:
+            env.Command(
+                File("#bin/" + dll_name),
+                flow_dll_dir.File(dll_name),
+                Copy("$TARGET", "$SOURCE"),
+            )
 # --- Blast (NvBlast + authoring/shaders extensions) --------------------------
 # Runtime mesh fracture/destruction. Prebuilt Blast 5.x SDK in
 # thirdparty/blast, vendor layout:
@@ -191,6 +221,12 @@ if blast_enabled and env["platform"] == "windows":
     env_physx.add_source_files(env.modules_sources, "blast/*.cpp")
 elif blast_enabled and env["platform"] != "windows":
     print("physx: blast=yes has no library wiring for platform '%s' yet; building without Blast." % env["platform"])
+
+# NVIDIA Flow sources (solver runtime + scene nodes). Flow itself is
+# Windows-only for now (prebuilt DLLs), but flow/*.cpp are fully guarded and
+# compile empty elsewhere.
+if flow_enabled:
+    env_physx.add_source_files(env.modules_sources, "flow/*.cpp")
 
 # MLS-MPM compute-fluid shaders (cross-vendor fallback for the PhysX GPU path).
 # Every pass #include's mpm_fluid_inc.glsl, which GLSL_HEADER does not see, so

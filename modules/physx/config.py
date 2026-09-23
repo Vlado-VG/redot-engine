@@ -20,6 +20,10 @@ def get_doc_classes():
         "PhysXGas3D",
         "PhysXGasEmitter3D",
         "PhysXBlastAsset",
+        "PhysXFlowSimulation3D",
+        "PhysXFlowEmitter3D",
+        "PhysXFlowCollider3D",
+        "PhysXFlowBlastBridge3D",
     ]
 
 
