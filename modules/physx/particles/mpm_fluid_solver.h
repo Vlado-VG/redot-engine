@@ -74,16 +74,30 @@ public:
 		Vector3 domain = Vector3(3, 3, 3); // MPM sim box / boundary, centred on the solver transform
 		Vector3 spawn_region = Vector3(1, 1, 1); // prefill fills this, centred on the transform (clamped to the domain)
 
-		// Vulkan diffuse (foam/spray) layer. Thresholds are in MPM potential
-		// units (a kinetic-energy / density-error / divergence blend) -- not
-		// comparable to the PBD/CUDA foam_threshold scale. The layer never joins
-		// the solve; it adds two small passes once per frame.
+		// Vulkan diffuse (foam/spray/bubble) layer, per Ihmsen et al. 2012 with
+		// the SPH neighbor sums translated into MPM measures (strain/curl off
+		// the affine matrix, mass-field gradient for the wave crest). Potentials
+		// are auto-normalized against a decaying running max, so foam_threshold
+		// acts as the master SPAWN SCALE (expected foam per particle-second at
+		// full intensity), not a raw unit gate -- it holds across scenes. The
+		// layer never joins the solve; it adds two small passes once per frame.
 		bool foam_enabled = false;
 		int foam_capacity = 8192; // diffuse-particle slots
-		float foam_threshold = 3.0f; // spawn potential above which foam spawns
-		float foam_lifetime = 1.5f; // seconds before a diffuse particle fades
-		float foam_buoyancy = 0.9f; // in-fluid rise, as a fraction of gravity
-		float foam_drag = 0.9f; // in-fluid drag toward the fluid velocity
+		float foam_threshold = 3.0f; // master spawn scale
+		float foam_lifetime = 1.5f; // seconds before a diffuse particle fades (foam; spray halves it, bubbles double it)
+		float foam_buoyancy = 0.9f; // bubble rise, as a fraction of gravity (capped)
+		float foam_drag = 0.9f; // bubble drag toward the fluid velocity
+		// Per-channel spawn rates (Ihmsen's k_ta / k_wc / k_vo, RikkaBunny's
+		// multiplicative kinetic energy). Not node-exposed yet; C++-tunable.
+		float foam_rate_ta = 2.0f; // trapped air (shear + compression)
+		float foam_rate_wc = 2.0f; // wave crest (outward motion through the surface band)
+		float foam_rate_vo = 1.0f; // vorticity
+		float foam_rate_ke = 1.0f; // kinetic-energy multiplier
+		// Kind-classification thresholds, as fluid coverage fractions of the
+		// containing cell's 8 corner nodes: at or below spray_ratio -> spray,
+		// at or above bubble_ratio -> bubble, between -> foam.
+		float foam_spray_ratio = 0.25f;
+		float foam_bubble_ratio = 0.75f;
 	};
 
 	// An analytic collider coupled to the fluid.
@@ -161,9 +175,13 @@ public:
 	// triangle count. Ready for RenderingServer::mesh_add_surface_from_arrays.
 	int get_surface_mesh(PackedVector3Array &r_vertices, PackedVector3Array &r_normals) const;
 
-	// Diffuse (foam/spray) layer, cached from the last reaped step. Positions are
-	// world-space, alive-only; get_foam_count() is the matching instance count.
+	// Diffuse (foam/spray/bubble) layer, cached from the last reaped step.
+	// get_foam_positions(): world-space, alive-only positions (the legacy
+	// contract). get_foam_data(): 4 floats per alive particle -- xyz + kind
+	// (0 = spray, 1 = foam, 2 = bubble) -- for kind-aware rendering.
+	// get_foam_count() is the matching instance count.
 	PackedVector3Array get_foam_positions() const;
+	PackedFloat32Array get_foam_data() const { return _foam_cache; }
 	int get_foam_count() const { return _foam_alive; }
 
 	// Fraction of the fluid's cached particle positions inside `p_world_aabb`,
@@ -198,6 +216,7 @@ private:
 	RID buf_mcount;
 	RID buf_foam;
 	RID buf_foam_meta;
+	RID buf_foam_norm; // decaying running maxima of the four foam potentials (uint-packed floats)
 
 	mutable uint64_t last_step_usec = 0;
 	// Async render readback: a step submits its compute work and returns; the
@@ -208,8 +227,9 @@ private:
 	mutable int _submitted_ncol = 0;
 	mutable PackedFloat32Array _mm_cache;
 	mutable LocalVector<Vector3> _imp_cache;
-	// Foam readback, same async reap as the render buffer above.
-	mutable PackedVector3Array _foam_cache;
+	// Foam readback, same async reap as the render buffer above: 4 floats per
+	// alive particle (xyz + kind).
+	mutable PackedFloat32Array _foam_cache;
 	mutable int _foam_alive = 0;
 	int foam_capacity_resolved = 1; // actual foam slot count (>= 1 keeps the buffer bindings valid)
 	void _reap_submitted() const;

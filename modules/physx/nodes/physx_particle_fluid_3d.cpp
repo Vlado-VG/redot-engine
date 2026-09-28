@@ -152,7 +152,8 @@ void PhysXParticleFluid3D::_mpm_configure(bool p_prefill) {
 	s.grid_res = _mpm_resolved_grid_res();
 	_mpm_surface_params(s.surface_iso, s.surface_kernel, s.surface_boost);
 
-	// Vulkan diffuse (foam/spray) layer. The PBD/CUDA path keeps NVIDIA's own
+	// Vulkan diffuse (foam/spray/bubble) layer, Ihmsen et al. 2012 potentials
+	// auto-normalized on the GPU. The PBD/CUDA path keeps NVIDIA's own
 	// diffuse particles (currently behind the maxActiveDiffuseParticles guard --
 	// see physx_gpu_particle_fluid_3d.cpp); if a future SDK fixes that
 	// allocation, PBD foam returns and this stays the non-CUDA fallback.
@@ -540,10 +541,11 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 	rs->multimesh_set_visible_instances(multimesh, n);
 }
 
-// Push the Vulkan diffuse layer's cached positions into the foam sprite
+// Push the Vulkan diffuse layer's cached records into the foam sprite
 // MultiMesh (world space, same consumption pattern as the PBD path's foam).
-// Sprites stay visible alongside the MPM isosurface -- there is no MPM foam
-// isosurface layer yet.
+// Each record is x,y,z,kind (0 = spray, 1 = foam, 2 = bubble); the kind scales
+// the sprite -- spray droplets smaller, bubbles larger. Sprites stay visible
+// alongside the MPM isosurface -- there is no MPM foam isosurface layer yet.
 void PhysXParticleFluid3D::_update_mpm_foam() {
 	if (foam_multimesh.is_null()) {
 		return;
@@ -553,28 +555,31 @@ void PhysXParticleFluid3D::_update_mpm_foam() {
 		rs->multimesh_set_visible_instances(foam_multimesh, 0);
 		return;
 	}
-	PackedVector3Array foam = mpm->get_foam_positions();
-	const int fn = MIN(foam.size(), foam_particle_count);
+	PackedFloat32Array foam = mpm->get_foam_data();
+	const int fn = MIN(foam.size() / 4, foam_particle_count);
 	if (foam_buffer_scratch.size() != foam_particle_count * 12) {
 		foam_buffer_scratch.resize(foam_particle_count * 12);
 	}
 	PackedFloat32Array foam_buffer = foam_buffer_scratch;
 	float *fb = foam_buffer.ptrw();
-	const Vector3 *fp = foam.ptr();
+	const float *fp = foam.ptr();
+	static const float kind_scale[3] = { 0.6f, 1.0f, 1.4f };
 	for (int i = 0; i < fn; i++) {
+		const float *rec = fp + i * 4;
+		const float s = kind_scale[CLAMP((int)rec[3], 0, 2)];
 		float *t = &fb[i * 12];
-		t[0] = 1;
+		t[0] = s;
 		t[1] = 0;
 		t[2] = 0;
-		t[3] = fp[i].x;
+		t[3] = rec[0];
 		t[4] = 0;
-		t[5] = 1;
+		t[5] = s;
 		t[6] = 0;
-		t[7] = fp[i].y;
+		t[7] = rec[1];
 		t[8] = 0;
 		t[9] = 0;
-		t[10] = 1;
-		t[11] = fp[i].z;
+		t[10] = s;
+		t[11] = rec[2];
 	}
 	rs->multimesh_set_buffer(foam_multimesh, foam_buffer);
 	rs->multimesh_set_visible_instances(foam_multimesh, fn);

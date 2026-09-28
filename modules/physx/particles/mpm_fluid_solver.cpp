@@ -53,7 +53,7 @@ namespace {
 constexpr int FLOATS_PER_PARTICLE = 32; // 8 * vec4 (x/v/C x3/F x3)
 constexpr int FLOATS_PER_COLLIDER = 16; // 4 * vec4 (c0..c3)
 constexpr int MAX_COLLIDERS = 32; // analytic colliders per step (rigid bodies + expanded debris chunks)
-constexpr uint32_t PARAMS_BYTES = 160; // 10 * vec4, std140
+constexpr uint32_t PARAMS_BYTES = 176; // 11 * vec4, std140
 constexpr float IMP_FIXED = 1024.0f;
 constexpr int FLOATS_PER_FOAM = 8; // 2 * vec4 (pos/life, vel/kind)
 constexpr uint32_t GROUP = 64;
@@ -136,7 +136,7 @@ void MPMFluidSolver::_free_buffers() {
 	}
 	_mm_cache = PackedFloat32Array();
 	_imp_cache.clear();
-	_foam_cache = PackedVector3Array();
+	_foam_cache = PackedFloat32Array();
 	_foam_alive = 0;
 	// Uniform sets first: RD auto-frees a uniform set when a buffer it references
 	// is freed, so freeing the buffers first leaves these RIDs dangling.
@@ -150,7 +150,7 @@ void MPMFluidSolver::_free_buffers() {
 		rd->free(uset_mesh);
 		uset_mesh = RID();
 	}
-	RID *bufs[] = { &buf_params, &buf_particles, &buf_grid_i, &buf_grid_v, &buf_colliders, &buf_cimp, &buf_mm, &buf_surf, &buf_mverts, &buf_mnorms, &buf_mcount, &buf_foam, &buf_foam_meta };
+	RID *bufs[] = { &buf_params, &buf_particles, &buf_grid_i, &buf_grid_v, &buf_colliders, &buf_cimp, &buf_mm, &buf_surf, &buf_mverts, &buf_mnorms, &buf_mcount, &buf_foam, &buf_foam_meta, &buf_foam_norm };
 	for (RID *b : bufs) {
 		if (b->is_valid()) {
 			rd->free(*b);
@@ -345,6 +345,15 @@ void MPMFluidSolver::_pack_params(double p_dt, int p_ncol, PackedByteArray &r_by
 	put_f(140, MAX(settings.foam_drag, 0.01f));
 	put_f(144, (float)foam_capacity_resolved);
 	put_f(148, (float)(p_dt * settings.substeps));
+	put_f(152, CLAMP(settings.foam_spray_ratio, 0.0f, 1.0f));
+	put_f(156, CLAMP(settings.foam_bubble_ratio, 0.0f, 1.0f));
+
+	// foam_c: Ihmsen et al. 2012 channel rates (trapped air / wave crest /
+	// vorticity) plus the kinetic-energy multiplier.
+	put_f(160, MAX(settings.foam_rate_ta, 0.0f));
+	put_f(164, MAX(settings.foam_rate_wc, 0.0f));
+	put_f(168, MAX(settings.foam_rate_vo, 0.0f));
+	put_f(172, MAX(settings.foam_rate_ke, 0.0f));
 }
 
 void MPMFluidSolver::_pack_colliders(const LocalVector<SphereCollider> &p_colliders, PackedByteArray &r_bytes) const {
@@ -384,17 +393,17 @@ void MPMFluidSolver::_pack_colliders(const LocalVector<SphereCollider> &p_collid
 }
 
 bool MPMFluidSolver::_rebuild_uniform_sets() {
-	RID by_binding[10] = { buf_params, buf_particles, buf_grid_i, buf_grid_v, buf_colliders, buf_cimp, buf_mm, buf_surf, buf_foam, buf_foam_meta };
+	RID by_binding[11] = { buf_params, buf_particles, buf_grid_i, buf_grid_v, buf_colliders, buf_cimp, buf_mm, buf_surf, buf_foam, buf_foam_meta, buf_foam_norm };
 	for (int p = 0; p < PASS_MAX; p++) {
 		if (uset[p].is_valid()) {
 			rd->free(uset[p]);
 			uset[p] = RID();
 		}
-		// Every pass includes mpm_fluid_inc.glsl, which declares all ten
+		// Every pass includes mpm_fluid_inc.glsl, which declares all eleven
 		// bindings -- shader reflection puts them all in the set layout whether
-		// or not a given pass references them, so provide all ten.
+		// or not a given pass references them, so provide all eleven.
 		Vector<RD::Uniform> uniforms;
-		for (int bnd = 0; bnd < 10; bnd++) {
+		for (int bnd = 0; bnd < 11; bnd++) {
 			RD::Uniform u;
 			u.uniform_type = (bnd == 0) ? RD::UNIFORM_TYPE_UNIFORM_BUFFER : RD::UNIFORM_TYPE_STORAGE_BUFFER;
 			u.binding = bnd;
@@ -427,6 +436,7 @@ bool MPMFluidSolver::_rebuild_uniform_sets() {
 			return false;
 		}
 	}
+	return true;
 }
 
 void MPMFluidSolver::configure(const Settings &p_settings, const Transform3D &p_xform, bool p_prefill) {
@@ -509,6 +519,15 @@ void MPMFluidSolver::configure(const Settings &p_settings, const Transform3D &p_
 		memset(mzero.ptrw(), 0, mzero.size()); // spawn counter + alive count = 0
 		buf_foam_meta = rd->storage_buffer_create(mzero.size(), mzero);
 	}
+	{
+		// Decaying running maxima of the four foam potentials: zeroed once at
+		// configure and NEVER per frame -- they persist so the normalization
+		// carries scene history.
+		PackedByteArray nzero;
+		nzero.resize(4 * sizeof(uint32_t));
+		memset(nzero.ptrw(), 0, nzero.size());
+		buf_foam_norm = rd->storage_buffer_create(nzero.size(), nzero);
+	}
 
 	if (!_rebuild_uniform_sets()) {
 		_free_buffers();
@@ -586,9 +605,12 @@ void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_c
 	rd->buffer_clear(buf_cimp, 0, MAX_COLLIDERS * 4 * sizeof(int32_t));
 	const bool foam_run = settings.foam_enabled && foam_capacity_resolved > 1;
 	if (foam_run) {
-		// Reset the spawn counter + alive count; the foam passes re-accumulate
-		// both inside this frame's compute list.
-		rd->buffer_clear(buf_foam_meta, 0, 2 * sizeof(uint32_t));
+		// Reset only the alive count; the foam passes re-accumulate it inside
+		// this frame's compute list. The spawn counter is deliberately NOT
+		// reset: it stays monotonic across frames so the ring genuinely
+		// round-robins (a frame's spawns continue where the last frame left
+		// off) instead of every frame overwriting the same first slots.
+		rd->buffer_clear(buf_foam_meta, sizeof(uint32_t), sizeof(uint32_t));
 	}
 	if (p_want_surface) {
 		rd->buffer_clear(buf_mcount, 0, sizeof(uint32_t)); // reset tri_count, keep tri_budget
@@ -742,31 +764,37 @@ void MPMFluidSolver::_reap_submitted() const {
 	}
 
 	// Foam readback: alive count from the meta buffer, then the alive slots'
-	// positions out of the foam ring (life <= 0 slots are parked).
+	// records out of the foam ring (life <= 0 slots are parked), packed as
+	// x,y,z,kind for kind-aware rendering.
 	if (settings.foam_enabled && buf_foam.is_valid()) {
 		Vector<uint8_t> meta = rd->buffer_get_data(buf_foam_meta, 0, 2 * sizeof(uint32_t));
 		const uint32_t alive = meta.size() >= 8 ? MIN(decode_uint32(meta.ptr() + 4), (uint32_t)foam_capacity_resolved) : 0;
-		PackedVector3Array positions;
+		PackedFloat32Array data;
 		if (alive == 0) {
-			positions.clear(); // skip the full-buffer readback entirely
+			data.clear(); // skip the full-buffer readback entirely
 		} else {
 			Vector<uint8_t> raw = rd->buffer_get_data(buf_foam);
 			const int slots = MIN((int)(raw.size() / (FLOATS_PER_FOAM * sizeof(float))), foam_capacity_resolved);
 			const float *f = (const float *)raw.ptr();
-			positions.resize(alive);
+			data.resize(alive * 4);
 			int written = 0;
 			for (int i = 0; i < slots && written < (int)alive; i++) {
 				const float *o = f + i * FLOATS_PER_FOAM;
 				if (o[3] > 0.0f) { // lifetime remaining
-					positions.write[written++] = Vector3(o[0], o[1], o[2]);
+					float *d = data.ptrw() + written * 4;
+					d[0] = o[0];
+					d[1] = o[1];
+					d[2] = o[2];
+					d[3] = o[7]; // kind
+					written++;
 				}
 			}
-			positions.resize(written);
+			data.resize(written * 4);
 		}
-		_foam_cache = positions;
+		_foam_cache = data;
 		_foam_alive = (int)alive;
 	} else {
-		_foam_cache = PackedVector3Array();
+		_foam_cache = PackedFloat32Array();
 		_foam_alive = 0;
 	}
 }
@@ -778,9 +806,16 @@ PackedFloat32Array MPMFluidSolver::get_multimesh_buffer() const {
 }
 
 PackedVector3Array MPMFluidSolver::get_foam_positions() const {
-	// Cached from the last reaped step (alive-only, world space) -- no readback
-	// here, same contract as get_multimesh_buffer().
-	return _foam_cache;
+	// Unpacks the kind-aware cache (x,y,z,kind) into the legacy positions-only
+	// contract. Cached from the last reaped step -- no readback here, same
+	// contract as get_multimesh_buffer().
+	PackedVector3Array out;
+	const int n = _foam_cache.size() / 4;
+	out.resize(n);
+	for (int i = 0; i < n; i++) {
+		out.write[i] = Vector3(_foam_cache[i * 4 + 0], _foam_cache[i * 4 + 1], _foam_cache[i * 4 + 2]);
+	}
+	return out;
 }
 
 float MPMFluidSolver::get_submersion(const AABB &p_world_aabb) const {

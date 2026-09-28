@@ -48,8 +48,9 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	vec4 bmax;        // xyz domain max (world), w = granular flag (0 fluid / 1 granular)
 	vec4 extra;       // x collider count, y collider friction, z surface iso density, w surface kernel
 	vec4 gran;        // granular: x = Drucker-Prager alpha (friction), y = cohesion, z = shear modulus mu, w = Lame lambda
-	vec4 foam_a;      // foam: x = spawn threshold, y = lifetime (s), z = buoyancy (fraction of gravity), w = fluid drag rate
-	vec4 foam_b;      // foam: x = foam capacity (slots), y = frame dt (s; foam runs once per frame, not per substep)
+	vec4 foam_a;      // foam: x = spawn scale (master rate multiplier), y = lifetime (s), z = buoyancy (fraction of gravity), w = fluid drag rate
+	vec4 foam_b;      // foam: x = foam capacity (slots), y = frame dt (s; foam runs once per frame, not per substep), z = spray ratio, w = bubble ratio (kind thresholds, see FoamNorm)
+	vec4 foam_c;      // foam: Ihmsen et al. 2012 channel rates -- x = trapped air, y = wave crest, z = vorticity, w = kinetic energy multiplier
 };
 
 layout(set = 0, binding = 1, std430) restrict buffer Particles { Particle particles[]; };
@@ -60,17 +61,31 @@ layout(set = 0, binding = 5, std430) restrict buffer ColliderImp { int cimp[]; }
 layout(set = 0, binding = 6, std430) restrict buffer MMData { float mm[]; };       // 12 floats / instance: MultiMesh transform rows
 layout(set = 0, binding = 7, std430) restrict buffer SurfaceField { int surf_i[]; }; // 1 int / node: SPH density scatter (SURF_FIXED), for isosurfacing
 
-// Diffuse (foam/spray) particles -- a Vulkan-compute visual layer that never
-// joins the MPM solve. This mirrors NVIDIA's PxDiffuseParticleParams model (and
-// the PBD path's CUDA diffuse particles) so the same foam_* node properties
+// Diffuse (foam/spray/bubble) particles -- a Vulkan-compute visual layer that
+// never joins the MPM solve. Generation follows Ihmsen et al. 2012, "Unified
+// spray, foam and air bubbles for particle-based fluids" (the method behind
+// SPlisHSPlasH's FoamGenerator and NVIDIA's PxDiffuseParticleParams), with the
+// SPH neighbor sums translated into MPM-native measures: the particle's affine
+// velocity matrix C carries the velocity gradient exactly, so trapped air reads
+// as deviatoric strain + compression, vorticity as curl(C) (both register math,
+// no neighbor lists), and the wave crest as outward motion through the mass
+// field's gradient. Potentials are auto-normalized against a decaying running
+// maximum (FoamNorm, SPlisHSPlasH's auto-tuning mode) so thresholds hold across
+// scenes. Advecting particles are re-classified per frame by fluid-node count
+// into spray / foam / bubble, each with its own dynamics. This mirrors and
+// extends the PBD path's CUDA diffuse model so the same foam_* node properties
 // drive either backend. Foam slots whose life hit zero stay parked; the spawn
-// pass recycles slots round-robin through a monotonic counter.
+// pass recycles slots round-robin through a counter.
 struct FoamParticle {
 	vec4 pos_life; // xyz = position (world), w = lifetime remaining (s); <= 0 = parked
-	vec4 vel_kind; // xyz = velocity, w = kind (0 = foam/spray -- single kind in v1)
+	vec4 vel_kind; // xyz = velocity, w = kind (0 = spray, 1 = foam, 2 = bubble)
 };
 layout(set = 0, binding = 8, std430) restrict buffer FoamBuf { FoamParticle foam[]; };
-layout(set = 0, binding = 9, std430) restrict buffer FoamMeta { uvec4 foam_meta; }; // x = spawn counter (monotonic), y = alive count this frame
+layout(set = 0, binding = 9, std430) restrict buffer FoamMeta { uvec4 foam_meta; };  // x = spawn counter, y = alive count this frame
+// Running maxima of the four raw potentials (floatBitsToUint-packed -- the
+// ordering trick is valid because potentials are non-negative). Decays a little
+// every spawn frame so a single huge splash doesn't pin the normalization.
+layout(set = 0, binding = 10, std430) restrict buffer FoamNorm { uvec4 foam_norm; };
 
 #define DT       (gravity_dt.w)
 #define GRAV     (gravity_dt.xyz)
@@ -89,12 +104,18 @@ layout(set = 0, binding = 9, std430) restrict buffer FoamMeta { uvec4 foam_meta;
 #define DP_COH   (gran.y)
 #define GMU      (gran.z)
 #define GLAMBDA  (gran.w)
-#define FOAM_THRESH (foam_a.x)
+#define FOAM_THRESH (foam_a.x) // master spawn scale (expected foam per particle-second at full intensity)
 #define FOAM_LIFE   (foam_a.y)
 #define FOAM_BUOY   (foam_a.z)
 #define FOAM_DRAG   (foam_a.w)
 #define FOAM_CAP    (foam_b.x)
 #define FRAME_DT    (foam_b.y)
+#define FOAM_SPRAY_RATIO  (foam_b.z) // containing cell mostly air  -> spray
+#define FOAM_BUBBLE_RATIO (foam_b.w) // containing cell fully fluid  -> bubble
+#define FOAM_K_TA (foam_c.x) // Ihmsen Eq. 2 channel rate
+#define FOAM_K_WC (foam_c.y) // Ihmsen Eq. 4/7 channel rate
+#define FOAM_K_VO (foam_c.z) // Bender et al. 2019 channel rate
+#define FOAM_K_KE (foam_c.w) // kinetic-energy multiplier
 
 int node_index(ivec3 c) {
 	return (c.z * RES.y + c.y) * RES.x + c.x;
@@ -144,6 +165,68 @@ float sample_grid_mass(vec3 wp) {
 		acc += grid_v[node_index(clamp(c + o, ivec3(0), RES - 1))].w * w;
 	}
 	return acc;
+}
+
+// --- foam: Ihmsen et al. 2012 potentials from MPM data ---
+
+// Frobenius norm of a 3x3.
+float foam_frob(mat3 M) {
+	float s = 0.0;
+	for (int c = 0; c < 3; c++) {
+		for (int r = 0; r < 3; r++) {
+			s += M[c][r] * M[c][r];
+		}
+	}
+	return sqrt(s);
+}
+
+// Deviatoric strain-rate magnitude ||S - tr(S)/3 I||_F, S = (C + C^T)/2. C is
+// the particle's affine velocity matrix (columns = spatial directions:
+// C[c][r] = dv_r/dx_c, see the G2P pass), so this is the shear rate of the
+// local flow -- the continuum form of Ihmsen Eq. 2's opposing-stream term.
+float foam_strain_dev(mat3 C) {
+	mat3 S = 0.5 * (C + transpose(C));
+	float tr = (S[0][0] + S[1][1] + S[2][2]) / 3.0;
+	S[0][0] -= tr;
+	S[1][1] -= tr;
+	S[2][2] -= tr;
+	return foam_frob(S);
+}
+
+// Vorticity magnitude |curl v| straight off C (Bender et al. 2019's channel).
+float foam_curl_len(mat3 C) {
+	return length(vec3(
+			C[1][2] - C[2][1],
+			C[2][0] - C[0][2],
+			C[0][1] - C[1][0]));
+}
+
+// Fluid-mass field gradient at a world position (central differences of the
+// node mass). xyz = grad, w = |grad|. Points toward higher mass; the OUTWARD
+// surface normal is -grad/|grad|. Near-zero inside the bulk and far in the air
+// -- nonzero exactly on the surface band a wave crest lives on.
+vec4 sample_grid_mass_grad(vec3 wp) {
+	float e = DX;
+	vec3 g = vec3(
+			sample_grid_mass(wp + vec3(e, 0.0, 0.0)) - sample_grid_mass(wp - vec3(e, 0.0, 0.0)),
+			sample_grid_mass(wp + vec3(0.0, e, 0.0)) - sample_grid_mass(wp - vec3(0.0, e, 0.0)),
+			sample_grid_mass(wp + vec3(0.0, 0.0, e)) - sample_grid_mass(wp - vec3(0.0, 0.0, e)));
+	g /= (2.0 * e);
+	return vec4(g, length(g));
+}
+
+// Small stateful PCG hash -- per-thread randomness for spawn placement.
+uint foam_hash(uint x) {
+	x ^= x >> 16;
+	x *= 0x7feb352du;
+	x ^= x >> 15;
+	x *= 0x846ca68bu;
+	x ^= x >> 16;
+	return x;
+}
+float foam_rand(inout uint p_state) {
+	p_state = p_state * 747796405u + 2891336453u;
+	return float(foam_hash(p_state)) * (1.0 / 4294967296.0);
 }
 
 void grid_local(vec3 x, out ivec3 base, out vec3 fx) {
