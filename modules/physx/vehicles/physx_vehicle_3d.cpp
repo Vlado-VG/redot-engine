@@ -142,8 +142,8 @@ bool PhysXVehicle3D::_build() {
 	for (int i = 0; i < 4; i++) {
 		PhysXVehicleWheel3D *w = wheels[i];
 		Vehicle4WWheelConfig &wc = cfg.wheels[i];
-		wc.position = w->get_position();
-		wc.basis = w->get_transform().basis;
+		wc.position = w->get_authored_position();
+		wc.basis = w->get_authored_basis();
 		wc.radius = w->get_radius();
 		wc.half_width = w->get_half_width();
 		wc.wheel_mass = w->get_wheel_mass();
@@ -256,6 +256,7 @@ void PhysXVehicle3D::_notification(int p_what) {
 			v.commandState.steer = (PxReal)steer;
 			v.transmissionCommandState.gear = reverse ? PxVehicleDirectDriveTransmissionCommandState::eREVERSE : PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
 			v.step((PxReal)get_physics_process_delta_time(), impl->simulationContext);
+
 			// v.rigidBodyState.pose is CoM-relative, not the actor's real
 			// origin (confirmed directly by comparing it against a raw
 			// getGlobalPose() read while root-causing the chassis-collision

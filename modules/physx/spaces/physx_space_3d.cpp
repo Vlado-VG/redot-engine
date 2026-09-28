@@ -372,13 +372,13 @@ void PhysXSpace3D::_finish_step() {
     LocalVector<PhysXBody3D *> now_active;
     if (px_scene) {
         physx::PxU32 nb_active = 0;
-        physx::PxActor **active = px_scene->getActiveActors(nb_active);
+        physx::PxActor **active_actors = px_scene->getActiveActors(nb_active);
         active_objects = (int)nb_active;
         for (physx::PxU32 i = 0; i < nb_active; i++) {
-            if (!active[i] || !active[i]->userData) {
+            if (!active_actors[i] || !active_actors[i]->userData) {
                 continue;
             }
-            const PhysXActorUserData *ud = static_cast<const PhysXActorUserData *>(active[i]->userData);
+            const PhysXActorUserData *ud = static_cast<const PhysXActorUserData *>(active_actors[i]->userData);
             if (ud->object && ud->object->get_type() == PhysXObject3D::OBJECT_TYPE_BODY) {
                 PhysXBody3D *body = static_cast<PhysXBody3D *>(ud->object);
                 push_sync(body);

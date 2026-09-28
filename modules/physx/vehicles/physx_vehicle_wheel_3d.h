@@ -100,6 +100,11 @@ public:
 
 	PackedStringArray get_configuration_warnings() const override;
 
+	// Authored suspension hardpoint (see the cache comment): what the parent
+	// vehicles configure from.
+	Vector3 get_authored_position() const { return _authored_position; }
+	Basis get_authored_basis() const { return _authored_basis; }
+
 private:
 	real_t radius = 0.35f;
 	real_t half_width = 0.15f;
@@ -122,4 +127,16 @@ private:
 	// PhysXVehicle3D's own property setters -- this node has no independent
 	// physics state, it's just data the parent reads at build time.
 	void _rebuild_parent_if_live();
+
+	// The AUTHORED local transform, captured at tree entry. Once the vehicle
+	// is live it OWNS this node's transform (it writes the live suspension
+	// pose -- jounce, steer and wheel spin -- into it every tick), so any
+	// later rebuild must configure from the authored hardpoint, never from
+	// the live pose: reading get_transform() post-build folds spin/steer back
+	// into the suspension geometry, tilting the travel direction and
+	// injecting a phantom drive force (measured: a parked car cruised at a
+	// constant 2.5 m/s after its tuning was touched at runtime).
+	Vector3 _authored_position;
+	Basis _authored_basis;
+	bool _authored_valid = false;
 };

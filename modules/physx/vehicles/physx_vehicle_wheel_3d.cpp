@@ -38,6 +38,11 @@
 void PhysXVehicleWheel3D::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE: {
+			// Capture the authored hardpoint BEFORE the parent vehicle ever
+			// simulates (it starts owning this transform once live).
+			_authored_position = get_position();
+			_authored_basis = get_transform().basis;
+			_authored_valid = true;
 			if (PhysXVehicle3D *v = Object::cast_to<PhysXVehicle3D>(get_parent())) {
 				vehicle = v;
 				v->wheels.push_back(this);

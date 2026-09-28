@@ -145,8 +145,8 @@ bool PhysXMotorcycle3D::_build() {
 	for (int i = 0; i < 2; i++) {
 		Vehicle2WWheelConfig &wc = *wheel_cfgs[i];
 		PhysXVehicleWheel3D *w = wheel_nodes[i];
-		wc.position = w->get_position();
-		wc.basis = w->get_transform().basis;
+		wc.position = w->get_authored_position();
+		wc.basis = w->get_authored_basis();
 		wc.radius = w->get_radius();
 		wc.half_width = w->get_half_width();
 		wc.wheel_mass = w->get_wheel_mass();

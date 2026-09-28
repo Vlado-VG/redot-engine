@@ -203,8 +203,8 @@ bool PhysXFlowSimulation3D::_build_server_shape_mesh(const RID &p_shape_rid, Cac
 			return true;
 		}
 		case PhysicsServer3D::SHAPE_CONCAVE_POLYGON: {
-			const Dictionary data = ps->shape_get_data(p_shape_rid);
-			const PackedVector3Array faces = data["faces"]; // triangle soup a,b,c per face
+			const Dictionary shape_data = ps->shape_get_data(p_shape_rid);
+			const PackedVector3Array faces = shape_data["faces"]; // triangle soup a,b,c per face
 			if (faces.size() < 3 || faces.size() % 3 != 0) {
 				return false;
 			}
@@ -220,9 +220,9 @@ bool PhysXFlowSimulation3D::_build_server_shape_mesh(const RID &p_shape_rid, Cac
 		}
 		case PhysicsServer3D::SHAPE_CAPSULE:
 		case PhysicsServer3D::SHAPE_CYLINDER: {
-			const Dictionary data = ps->shape_get_data(p_shape_rid);
-			const float radius = (float)(double)data["radius"];
-			const float height = (float)(double)data["height"];
+			const Dictionary shape_data = ps->shape_get_data(p_shape_rid);
+			const float radius = (float)(double)shape_data["radius"];
+			const float height = (float)(double)shape_data["height"];
 			r_cache.analytic_box = true;
 			r_cache.box_half_extents = Vector3(radius, height * 0.5f, radius);
 			return true;
