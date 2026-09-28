@@ -23,12 +23,20 @@ physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False
 # headers entirely), we keep the SDK's GPU headers available unconditionally —
 # the GPU fluid/cloth object code needs them to compile. GODOT_PHYSX_GPU only
 # gates whether OUR code creates a CUDA context.
+#
+# GPU dynamics is Windows-only: the vendored GPU-enabled SDK (and its
+# PhysXGpu runtime DLL) ships for win64, and the GPU link mechanism on other
+# platforms is unverified (upstream verified Linux CPU-only: a clang/gcc-built
+# PhysX SDK links into a GCC Godot build fine -- GPU stayed the untested path).
+# Other platforms build CPU-only; the wrappers' CPU fallbacks take over.
 physx_defines = [
     "PX_PHYSX_STATIC_LIB",
 ]
 
-if physx_gpu:
+if physx_gpu and env["platform"] == "windows":
     physx_defines.append("GODOT_PHYSX_GPU")
+elif physx_gpu:
+    print("physx: physx_gpu=yes has no GPU wiring for platform '%s'; building CPU-only." % env["platform"])
 
 env_physx.Append(CPPDEFINES=physx_defines)
 
@@ -84,26 +92,60 @@ env_physx.PrependUnique(CPPPATH=[
     physx_include_path,
 ])
 
+# Fail with an explanation rather than a cryptic linker error when a
+# platform's SDK libraries aren't vendored (only Windows x64 ships in this
+# checkout today; a Linux SDK built from the upstream presets installs its
+# static libs under bin/linux.x86_64/<config>/ -- verify against whatever the
+# build actually produced before extending the vendor layout below).
+if env["platform"] != "windows" and not os.path.isdir(physx_lib_path.abspath):
+    print("physx: WARNING: no PhysX SDK libraries vendored for platform '%s' (expected %s) -- the link step will fail until the SDK libs are added." % (env["platform"], physx_lib_path.abspath))
+
 env.PrependUnique(LIBPATH=[physx_lib_path.abspath])
 
+# Ordered so each library comes before the ones it depends on: GNU/clang ld
+# resolves static archives in a single left-to-right pass (MSVC doesn't
+# care), so the old alphabetical order undefined-symbol'd on Linux/BSD --
+# e.g. BroadphaseGpu referenced CommonGpu, which came after it. Port of the
+# upstream Linux build fix (CPU path verified there).
 physx_libs = [
+    # Domain extensions first (depend on the core libs further down).
+    "PhysXVehicle_static_64",
+    "PhysXCharacterKinematic_static_64",
+    "PhysXCooking_static_64",
+    "PhysXExtensions_static_64",
+    "PhysXPvdSDK_static_64",
+    # Core.
     "PhysX_static_64",
+    # GPU dynamics group (Windows-only: filtered out below elsewhere, see
+    # the physx_gpu note at the top). Each references CommonGpu/Common and
+    # Foundation, so they precede those here too.
     "PhysXArticulationGpu_static_64",
     "PhysXBroadphaseGpu_static_64",
-    "PhysXCharacterKinematic_static_64",
-    "PhysXCommon_static_64",
-    "PhysXCommonGpu_static_64",
-    "PhysXCooking_static_64",
-    "PhysXCudaContextManager_static_64",
-    "PhysXExtensions_static_64",
-    "PhysXFoundation_static_64",
-    "PhysXGpu_64",
     "PhysXNarrowphaseGpu_static_64",
-    "PhysXPvdSDK_static_64",
     "PhysXSimulationControllerGpu_static_64",
     "PhysXSolverGpu_static_64",
-    "PhysXVehicle_static_64"
+    "PhysXCommonGpu_static_64",
+    "PhysXCudaContextManager_static_64",
+    "PhysXGpu_64",  # import lib for the PhysXGpu_64 runtime DLL
+    # Low-level last: dependencies of everything above.
+    "PhysXCommon_static_64",
+    "PhysXFoundation_static_64",
 ]
+
+# CPU-only outside Windows (see the physx_gpu note): keep only the CPU libs.
+# (Explicit list rather than a substring filter -- PhysXCudaContextManager
+# is GPU-only without carrying "Gpu" in its name.)
+if env["platform"] != "windows":
+    physx_libs = [
+        "PhysXVehicle_static_64",
+        "PhysXCharacterKinematic_static_64",
+        "PhysXCooking_static_64",
+        "PhysXExtensions_static_64",
+        "PhysXPvdSDK_static_64",
+        "PhysX_static_64",
+        "PhysXCommon_static_64",
+        "PhysXFoundation_static_64",
+    ]
 
 # Prebuilt PhysX libraries use plain ".lib" names. On Windows, SCons would
 # otherwise append $LIBSUFFIX (e.g. ".windows.editor.x86_64.lib") to env.LIBS

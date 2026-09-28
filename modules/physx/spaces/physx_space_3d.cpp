@@ -18,7 +18,7 @@
 #include "physx_pair_filter_callback.h"
 #include "physx_simulation_event_callback.h"
 #include "physx_contact_modify_callback.h"
-#include "../vehicles/physx_vehicle_3d.h"
+#include "../vehicles/physx_vehicle_server.h"
 #include "../objects/physx_gpu_cloth_3d.h"
 #include "../objects/physx_gpu_particle_fluid_3d.h"
 
@@ -272,7 +272,7 @@ void PhysXSpace3D::step(float p_step) {
     // Vehicle update (pre-step): read state from PhysX actor, apply commands,
     // write state back. This runs before simulate so the vehicle2 state is
     // consistent during the physics step.
-    for (PhysXVehicle3D *vehicle : vehicles) {
+    for (PhysXVehicleServer *vehicle : vehicles) {
         vehicle->update(p_step);
     }
 
@@ -408,7 +408,7 @@ void PhysXSpace3D::_finish_step() {
 
     // Vehicle post-step (post-step): sync the PhysX actor pose/velocity from
     // vehicle2 state after the simulation step is complete.
-    for (PhysXVehicle3D *vehicle : vehicles) {
+    for (PhysXVehicleServer *vehicle : vehicles) {
         vehicle->post_step(last_step);
     }
 
@@ -653,7 +653,7 @@ void PhysXSpace3D::unregister_articulation(PhysXArticulation3D *p_articulation) 
 // Vehicle registration
 // --------------------------------------------------------------------
 
-void PhysXSpace3D::register_vehicle(PhysXVehicle3D *p_vehicle) {
+void PhysXSpace3D::register_vehicle(PhysXVehicleServer *p_vehicle) {
     ERR_FAIL_NULL(p_vehicle);
 
     if (vehicles.find(p_vehicle) != -1) {
@@ -663,7 +663,7 @@ void PhysXSpace3D::register_vehicle(PhysXVehicle3D *p_vehicle) {
     vehicles.push_back(p_vehicle);
 }
 
-void PhysXSpace3D::unregister_vehicle(PhysXVehicle3D *p_vehicle) {
+void PhysXSpace3D::unregister_vehicle(PhysXVehicleServer *p_vehicle) {
     ERR_FAIL_NULL(p_vehicle);
 
     for (unsigned int i = 0; i < vehicles.size(); i++) {

@@ -35,7 +35,7 @@ class PhysXObject3D;
 class PhysXBody3D;
 class PhysXJoint3D;
 class PhysXDirectSpaceState3D;
-class PhysXVehicle3D;
+class PhysXVehicleServer;
 class PhysXSimulationEventCallback;
 class PhysXShapedObject3D;
 class PhysXSoftBody3D;
@@ -203,10 +203,10 @@ public:
     // Vehicle registration
     // --------------------------------------------------------------------
 
-    void register_vehicle(PhysXVehicle3D *p_vehicle);
-    void unregister_vehicle(PhysXVehicle3D *p_vehicle);
+    void register_vehicle(PhysXVehicleServer *p_vehicle);
+    void unregister_vehicle(PhysXVehicleServer *p_vehicle);
 
-    const LocalVector<PhysXVehicle3D *> &get_vehicles() const {
+    const LocalVector<PhysXVehicleServer *> &get_vehicles() const {
         return vehicles;
     }
 
@@ -324,7 +324,7 @@ private:
     // Object registration
     LocalVector<PhysXBody3D *> bodies;
     LocalVector<PhysXArea3D *> areas;
-    LocalVector<PhysXVehicle3D *> vehicles;
+    LocalVector<PhysXVehicleServer *> vehicles;
     LocalVector<PhysXGPUParticleFluid3D *> fluids;
     LocalVector<PhysXGPUCloth3D *> cloths;
     LocalVector<PhysXSoftBody3D *> soft_bodies;

@@ -1,2019 +1,544 @@
-/**
- * @file physx_vehicle_3d.cpp
- * @brief Implementation of PhysXVehicle3D — vehicle2 wrapper.
- *
- * Phase 7: both archetypes assembled end-to-end and integrated through the
- * PhysX actor path.
- *   - DirectDrive (7A): per-wheel torque, no gearbox.
- *   - EngineDrive (7B): engine + clutch + gearbox + autobox + differential.
- *
- * vehicle2 component model: each component is a base class we subclass and
- * bind to the vehicle's arrays by overriding getDataFor...Component(...).
- * Every array parameter is passed BY REFERENCE (&), matching the base classes.
- *
- * DirectDrive sequence:
- *   Begin -> DirectDriveCommandResponse -> DirectDriveActuationState
- *   -> RoadGeom -> Suspension -> Tire -> DirectDrivetrain -> Constraint -> End
- * EngineDrive sequence:
- *   Begin -> EngineDriveCommandResponse -> FourWheelDriveDifferentialState
- *   -> EngineDriveActuationState -> RoadGeom -> Suspension -> Tire
- *   -> EngineDrivetrain -> Constraint -> End
- *
- * TODOs flagged inline: the gravity/eDISABLE_GRAVITY hand-off (plan R3), Godot
- * frame calibration, wheel PxShape creation, telemetry readback.
- */
+/**************************************************************************/
+/*  physx_vehicle_3d.cpp                                                  */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             GODOT ENGINE                               */
+/**************************************************************************/
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
 
 #include "physx_vehicle_3d.h"
 
-#include "physx_server.h"
-#include "spaces/physx_space_3d.h"
-#include "objects/physx_body_3d.h"
-#include "shapes/physx_user_data.h"
-#include "spaces/physx_query_filter_callback.h"
+#include "../physx_conversions.h"
+#include "../physx_project_settings.h"
+#include "../physx_server.h"
+#include "../spaces/physx_space_3d.h"
+#include "physx_vehicle4w.h"
+#include "physx_vehicle_wheel_3d.h"
 
-#include "PxPhysicsAPI.h"
-#include "vehicle/PxVehicleAPI.h"
-#include "vehicle/physxConstraints/PxVehiclePhysXConstraintHelpers.h"
+#include "core/config/engine.h"
+#include "core/object/class_db.h"
+#include "scene/3d/physics/collision_shape_3d.h"
+#include "scene/resources/3d/box_shape_3d.h"
+#include "scene/resources/3d/world_3d.h"
 
-#include "vehicle/wheel/PxVehicleWheelParams.h"
-#include "vehicle/suspension/PxVehicleSuspensionParams.h"
-#include "vehicle/suspension/PxVehicleSuspensionStates.h"
-#include "vehicle/tire/PxVehicleTireParams.h"
+struct PhysXVehicle3D::Impl {
+	Vehicle4W vehicle;
+	PxVehiclePhysXSimulationContext simulationContext;
+	PxScene *scene = nullptr;
+	PxReal sleep_threshold = 0.0f;
+	PxReal time_before_sleep = 0.0f;
+	bool built = false;
+	// wheel_order[Vehicle4W::WHEEL_FL/FR/RL/RR] = index into the parent's own
+	// `wheels` vector (child-registration order) for that canonical slot --
+	// see configure_vehicle4w()'s own doc comment.
+	PxU32 wheel_order[4] = {};
+};
 
-// Per-wheel cap on (ground material -> friction) mappings in the tire grip
-// table (vehicle_set_wheel_params "surface_frictions").
-static constexpr unsigned MAX_SURFACE_PAIRS = 8;
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-static physx::PxTransform _to_px_transform(const Transform3D &p_t) {
-	const Quaternion q = p_t.basis.get_rotation_quaternion();
-	return physx::PxTransform(
-			physx::PxVec3((float)p_t.origin.x, (float)p_t.origin.y, (float)p_t.origin.z),
-			physx::PxQuat((float)q.x, (float)q.y, (float)q.z, (float)q.w));
+PhysXVehicle3D::PhysXVehicle3D() {
+	impl = memnew(Impl);
 }
 
-static void _set_wheel_param_defaults(physx::PxVehicleWheelParams &p_wp,
-		physx::PxVehicleSuspensionParams &p_sp,
-		physx::PxVehicleSuspensionForceParams &p_sfp,
-		physx::PxVehicleTireForceParams &p_tp) {
-	p_wp.radius = 0.5f;
-	p_wp.halfWidth = 0.2f;
-	p_wp.mass = 20.0f;
-	p_wp.moi = 0.5f * p_wp.mass * p_wp.radius * p_wp.radius;
-	p_wp.dampingRate = 0.25f;
-
-	p_sp.suspensionAttachment = physx::PxTransform(physx::PxIdentity);
-	p_sp.suspensionTravelDir = physx::PxVec3(0.0f, -1.0f, 0.0f);
-	p_sp.suspensionTravelDist = 1.0f;
-	p_sp.wheelAttachment = physx::PxTransform(physx::PxIdentity);
-
-	p_sfp.stiffness = 30000.0f;
-	p_sfp.damping = 4500.0f;
-	p_sfp.sprungMass = 250.0f;
-
-	p_tp.latStiffX = 2.0f;
-	p_tp.latStiffY = 18000.0f;
-	p_tp.longStiff = 10000.0f;
-	p_tp.camberStiff = 0.0f;
-	p_tp.frictionVsSlip[0][0] = 0.0f; p_tp.frictionVsSlip[0][1] = 1.0f;
-	p_tp.frictionVsSlip[1][0] = 0.1f; p_tp.frictionVsSlip[1][1] = 1.0f;
-	p_tp.frictionVsSlip[2][0] = 1.0f; p_tp.frictionVsSlip[2][1] = 1.0f;
-	p_tp.restLoad = p_sfp.sprungMass * 9.81f;
-	p_tp.loadFilter[0][0] = 0.0f; p_tp.loadFilter[0][1] = 0.0f;
-	p_tp.loadFilter[1][0] = 3.0f; p_tp.loadFilter[1][1] = 3.0f;
+PhysXVehicle3D::~PhysXVehicle3D() {
+	_destroy();
+	memdelete(impl);
 }
 
-// ============================================================================
-// Compiler firewall: Vehicle2State
-// ============================================================================
-
-struct PhysXVehicle3D::Vehicle2State {
-	int nb_wheels = 0;
-	Archetype arch = ARCHETYPE_DIRECT_DRIVE;
-
-	// per-wheel config (params)
-	physx::PxVehicleWheelParams *wheel_params = nullptr;
-	physx::PxVehicleSuspensionParams *suspension_params = nullptr;
-	physx::PxVehicleSuspensionForceParams *suspension_force_params = nullptr;
-	physx::PxVehicleSuspensionComplianceParams *suspension_compliance_params = nullptr;
-	physx::PxVehicleTireForceParams *tire_params = nullptr;
-	physx::PxVehiclePhysXMaterialFrictionParams *material_friction_params = nullptr;
-	physx::PxVehiclePhysXSuspensionLimitConstraintParams *suspension_limit_params = nullptr;
-	physx::PxTransform *wheel_shape_local_poses = nullptr;
-	// Anti-roll bars (configured via vehicle_set_anti_roll_params; inactive
-	// while nb_anti_roll_bars == 0).
-	physx::PxVehicleAntiRollForceParams *anti_roll_params = nullptr;
-	int nb_anti_roll_bars = 0;
-	physx::PxVehicleAntiRollTorque anti_roll_torque; // accumulated per step (world frame)
-
-	// Per-wheel (ground material -> friction) grip table, wheel-major
-	// ([wheel * MAX_SURFACE_PAIRS, + nb)); filled from vehicle_set_wheel_params
-	// "surface_frictions".
-	physx::PxVehiclePhysXMaterialFriction *surface_pairs = nullptr;
-	// Parallel Godot-side table recording WHICH body each surface_pairs entry
-	// was resolved from, so entries can be invalidated when that body (and its
-	// private PxMaterial) is freed — a raw PxMaterial* here would otherwise
-	// dangle the moment the ground body dies (PhysXShapedObject3D releases the
-	// material in its destructor).
-	RID *surface_pair_bodies = nullptr;
-
-	// per-wheel state (recomputed each step)
-	physx::PxVehicleRoadGeometryState *road_geometry_states = nullptr;
-	physx::PxVehiclePhysXRoadGeometryQueryState *physx_road_geometry_states = nullptr;
-	physx::PxVehicleSuspensionState *suspension_states = nullptr;
-	physx::PxVehicleSuspensionComplianceState *suspension_compliance_states = nullptr;
-	physx::PxVehicleSuspensionForce *suspension_forces = nullptr;
-	physx::PxVehicleTireGripState *tire_grip_states = nullptr;
-	physx::PxVehicleTireDirectionState *tire_direction_states = nullptr;
-	physx::PxVehicleTireSpeedState *tire_speed_states = nullptr;
-	physx::PxVehicleTireSlipState *tire_slip_states = nullptr;
-	physx::PxVehicleTireCamberAngleState *tire_camber_states = nullptr;
-	physx::PxVehicleTireStickyState *tire_sticky_states = nullptr;
-	physx::PxVehicleTireForce *tire_forces = nullptr;
-	physx::PxVehicleWheelRigidBody1dState *wheel_rigid_body_1d_states = nullptr;
-	physx::PxVehicleWheelActuationState *actuation_states = nullptr;
-	physx::PxVehicleWheelLocalPose *wheel_local_poses = nullptr;
-	physx::PxReal *steer_response_states = nullptr;
-	physx::PxReal *brake_response_states = nullptr;
-	physx::PxReal *throttle_response_states = nullptr; // DirectDrive (per-wheel)
-
-	// singletons shared by both archetypes (params)
-	physx::PxVehicleAxleDescription axle_description;
-	physx::PxVehicleRigidBodyParams rigid_body_params;
-	physx::PxVehicleSuspensionStateCalculationParams susp_state_calc_params;
-	physx::PxVehiclePhysXActor physx_actor;
-	physx::PxVehiclePhysXSteerState physx_steer_state;
-	physx::PxVehiclePhysXConstraints physx_constraints;
-	physx::PxVehicleCommandState command_state;
-	physx::PxVehiclePhysXRoadGeometryQueryParams road_geom_params;
-	PhysXQueryFilterCallback *road_geometry_filter = nullptr;
-	HashSet<RID> chassis_rid_set;
-	physx::PxVehicleDirectDriveThrottleCommandResponseParams throttle_response_params; // DirectDrive
-	physx::PxVehicleSteerCommandResponseParams steer_response_params;
-	physx::PxVehicleBrakeCommandResponseParams brake_response_params[2];
-	int nb_brake_response_params = 2;
-
-	// DirectDrive command/state
-	physx::PxVehicleDirectDriveTransmissionCommandState direct_transmission_command;
-
-	// EngineDrive params
-	physx::PxVehicleEngineParams engine_params;
-	physx::PxVehicleClutchParams clutch_params;
-	physx::PxVehicleClutchCommandResponseParams clutch_response_params;
-	physx::PxVehicleGearboxParams gearbox_params;
-	physx::PxVehicleAutoboxParams autobox_params;
-	physx::PxVehicleFourWheelDriveDifferentialParams diff_params;
-
-	// EngineDrive state
-	physx::PxVehicleRigidBodyState rigid_body_state; // shared
-	physx::PxVehicleEngineState engine_state;
-	physx::PxVehicleGearboxState gearbox_state;
-	physx::PxVehicleClutchCommandResponseState clutch_response_state;
-	physx::PxVehicleDifferentialState diff_state;
-	physx::PxVehicleAutoboxState autobox_state;
-	physx::PxVehicleClutchSlipState clutch_slip_state;
-	physx::PxVehicleWheelConstraintGroupState constraint_group_state;
-	physx::PxVehicleEngineDriveThrottleCommandResponseState engine_throttle_response_state;
-	physx::PxVehicleEngineDriveTransmissionCommandState engine_transmission_command;
-
-	// component pipeline
-	physx::PxVehicleComponentSequence sequence;
-	physx::PxVehicleComponent *comp_begin = nullptr;
-	physx::PxVehicleComponent *comp_cmd_response = nullptr; // DirectDrive
-	physx::PxVehicleComponent *comp_actuation = nullptr; // DirectDrive
-	physx::PxVehicleComponent *comp_drivetrain = nullptr; // DirectDrive
-	physx::PxVehicleComponent *comp_engine_cmd_response = nullptr; // EngineDrive
-	physx::PxVehicleComponent *comp_diff_state = nullptr; // EngineDrive
-	physx::PxVehicleComponent *comp_engine_actuation = nullptr; // EngineDrive
-	physx::PxVehicleComponent *comp_engine_drivetrain = nullptr; // EngineDrive
-	physx::PxVehicleComponent *comp_road_geom = nullptr;
-	physx::PxVehicleComponent *comp_suspension = nullptr;
-	physx::PxVehicleComponent *comp_tire = nullptr;
-	physx::PxVehicleComponent *comp_constraint = nullptr;
-	physx::PxVehicleComponent *comp_rigid_body = nullptr;
-	physx::PxVehicleComponent *comp_end = nullptr;
-
-	Vehicle2State() = default;
-	~Vehicle2State() {
-		free_arrays();
-		free_components();
+bool PhysXVehicle3D::_build() {
+	if (impl->built) {
+		return true;
 	}
-	void allocate_arrays(int p_n);
-	void free_arrays();
-	void free_components();
-};
-
-// ============================================================================
-// Component subclasses. Each binds its getData to the arrays (arrays by &).
-// Begin/End are archetype-aware (engine/gearbox only for EngineDrive).
-// ============================================================================
-
-class PhysXVehicle3D::BeginComponent : public physx::PxVehiclePhysXActorBeginComponent {
-public:
-	explicit BeginComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForPhysXActorBeginComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleCommandState *&commands,
-			const physx::PxVehicleEngineDriveTransmissionCommandState *&transmissionCommands,
-			const physx::PxVehicleGearboxParams *&gearParams,
-			const physx::PxVehicleGearboxState *&gearState,
-			const physx::PxVehicleEngineParams *&engineParams,
-			physx::PxVehiclePhysXActor *&physxActor,
-			physx::PxVehiclePhysXSteerState *&physxSteerState,
-			physx::PxVehiclePhysXConstraints *&physxConstraints,
-			physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<physx::PxVehicleWheelRigidBody1dState> &wheelRigidBody1dStates,
-			physx::PxVehicleEngineState *&engineState) override {
-		axleDescription = &m_s->axle_description;
-		commands = &m_s->command_state;
-		if (m_s->arch == ARCHETYPE_ENGINE_DRIVE) {
-			transmissionCommands = &m_s->engine_transmission_command;
-			gearParams = &m_s->gearbox_params;
-			gearState = &m_s->gearbox_state;
-			engineParams = &m_s->engine_params;
-			engineState = &m_s->engine_state;
-		} else {
-			transmissionCommands = nullptr;
-			gearParams = nullptr;
-			gearState = nullptr;
-			engineParams = nullptr;
-			engineState = nullptr;
-		}
-		physxActor = &m_s->physx_actor;
-		physxSteerState = &m_s->physx_steer_state;
-		physxConstraints = &m_s->physx_constraints;
-		rigidBodyState = &m_s->rigid_body_state;
-		wheelRigidBody1dStates.setData(m_s->wheel_rigid_body_1d_states);
+	// PxVehicleRigidBodyComponent integrates gravity/velocity into the
+	// chassis pose itself, inside v.step() -- independent of whether
+	// PxScene::simulate() is ever called. In the editor (not Play), nothing
+	// steps the scene, but NOTIFICATION_INTERNAL_PHYSICS_PROCESS still fires
+	// on this node, so without this guard the car just falls forever right
+	// in the viewport the moment it's placed. Same precedent as
+	// PhysXDestructible3D: no physics runs in the editor at all, only real
+	// gameplay (Engine::is_editor_hint() == false).
+	if (Engine::get_singleton()->is_editor_hint()) {
+		return false;
 	}
-
-private:
-	Vehicle2State *m_s; // Pointer to the vehicle state data
-};
-
-class PhysXVehicle3D::CommandResponseComponent : public physx::PxVehicleDirectDriveCommandResponseComponent {
-public:
-	explicit CommandResponseComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForDirectDriveCommandResponseComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			physx::PxVehicleSizedArrayData<const physx::PxVehicleBrakeCommandResponseParams> &brakeResponseParams,
-			const physx::PxVehicleDirectDriveThrottleCommandResponseParams *&throttleResponseParams,
-			const physx::PxVehicleSteerCommandResponseParams *&steerResponseParams,
-			physx::PxVehicleSizedArrayData<const physx::PxVehicleAckermannParams> &ackermannParams,
-			const physx::PxVehicleCommandState *&commands,
-			const physx::PxVehicleDirectDriveTransmissionCommandState *&transmissionCommands,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<physx::PxReal> &brakeResponseStates,
-			physx::PxVehicleArrayData<physx::PxReal> &throttleResponseStates,
-			physx::PxVehicleArrayData<physx::PxReal> &steerResponseStates) override {
-		axleDescription = &m_s->axle_description;
-		brakeResponseParams.setDataAndCount(m_s->brake_response_params, m_s->nb_brake_response_params);
-		throttleResponseParams = &m_s->throttle_response_params;
-		steerResponseParams = &m_s->steer_response_params;
-		ackermannParams.setEmpty();
-		commands = &m_s->command_state;
-		transmissionCommands = &m_s->direct_transmission_command;
-		rigidBodyState = &m_s->rigid_body_state;
-		brakeResponseStates.setData(m_s->brake_response_states);
-		throttleResponseStates.setData(m_s->throttle_response_states);
-		steerResponseStates.setData(m_s->steer_response_states);
+	if (!is_inside_world() || get_world_3d().is_null()) {
+		return false;
 	}
-
-private:
-	Vehicle2State *m_s; // Pointer to the vehicle state data
-};
-
-class PhysXVehicle3D::ActuationComponent : public physx::PxVehicleDirectDriveActuationStateComponent {
-public:
-	explicit ActuationComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForDirectDriveActuationStateComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			physx::PxVehicleArrayData<const physx::PxReal> &brakeResponseStates,
-			physx::PxVehicleArrayData<const physx::PxReal> &throttleResponseStates,
-			physx::PxVehicleArrayData<physx::PxVehicleWheelActuationState> &actuationStates) override {
-		axleDescription = &m_s->axle_description;
-		brakeResponseStates.setData(m_s->brake_response_states);
-		throttleResponseStates.setData(m_s->throttle_response_states);
-		actuationStates.setData(m_s->actuation_states);
-	}
-
-private:
-	Vehicle2State *m_s; // Pointer to the vehicle state data
-};
-
-class PhysXVehicle3D::RoadGeometryComponent : public physx::PxVehiclePhysXRoadGeometrySceneQueryComponent {
-public:
-	explicit RoadGeometryComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForPhysXRoadGeometrySceneQueryComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehiclePhysXRoadGeometryQueryParams *&roadGeomParams,
-			physx::PxVehicleArrayData<const physx::PxReal> &steerResponseStates,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionParams> &suspensionParams,
-			physx::PxVehicleArrayData<const physx::PxVehiclePhysXMaterialFrictionParams> &materialFrictionParams,
-			physx::PxVehicleArrayData<physx::PxVehicleRoadGeometryState> &roadGeometryStates,
-			physx::PxVehicleArrayData<physx::PxVehiclePhysXRoadGeometryQueryState> &physxRoadGeometryStates) override {
-		axleDescription = &m_s->axle_description;
-		roadGeomParams = &m_s->road_geom_params;
-		steerResponseStates.setData(m_s->steer_response_states);
-		rigidBodyState = &m_s->rigid_body_state;
-		wheelParams.setData(m_s->wheel_params);
-		suspensionParams.setData(m_s->suspension_params);
-		materialFrictionParams.setData(m_s->material_friction_params);
-		roadGeometryStates.setData(m_s->road_geometry_states);
-		physxRoadGeometryStates.setData(m_s->physx_road_geometry_states);
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::SuspensionComponent : public physx::PxVehicleSuspensionComponent {
-public:
-	explicit SuspensionComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForSuspensionComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleRigidBodyParams *&rigidBodyParams,
-			const physx::PxVehicleSuspensionStateCalculationParams *&suspensionStateCalculationParams,
-			physx::PxVehicleArrayData<const physx::PxReal> &steerResponseStates,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionParams> &suspensionParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionComplianceParams> &suspensionComplianceParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionForceParams> &suspensionForceParams,
-			physx::PxVehicleSizedArrayData<const physx::PxVehicleAntiRollForceParams> &antiRollForceParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleRoadGeometryState> &wheelRoadGeomStates,
-			physx::PxVehicleArrayData<physx::PxVehicleSuspensionState> &suspensionStates,
-			physx::PxVehicleArrayData<physx::PxVehicleSuspensionComplianceState> &suspensionComplianceStates,
-			physx::PxVehicleArrayData<physx::PxVehicleSuspensionForce> &suspensionForces,
-			physx::PxVehicleAntiRollTorque *&antiRollTorque) override {
-		axleDescription = &m_s->axle_description;
-		rigidBodyParams = &m_s->rigid_body_params;
-		suspensionStateCalculationParams = &m_s->susp_state_calc_params;
-		steerResponseStates.setData(m_s->steer_response_states);
-		rigidBodyState = &m_s->rigid_body_state;
-		wheelParams.setData(m_s->wheel_params);
-		suspensionParams.setData(m_s->suspension_params);
-		suspensionComplianceParams.setData(m_s->suspension_compliance_params);
-		suspensionForceParams.setData(m_s->suspension_force_params);
-		antiRollForceParams.setDataAndCount(m_s->anti_roll_params, m_s->nb_anti_roll_bars);
-		wheelRoadGeomStates.setData(m_s->road_geometry_states);
-		suspensionStates.setData(m_s->suspension_states);
-		suspensionComplianceStates.setData(m_s->suspension_compliance_states);
-		suspensionForces.setData(m_s->suspension_forces);
-		antiRollTorque = (m_s->nb_anti_roll_bars > 0) ? &m_s->anti_roll_torque : nullptr;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::TireComponent : public physx::PxVehicleTireComponent {
-public:
-	explicit TireComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForTireComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			physx::PxVehicleArrayData<const physx::PxReal> &steerResponseStates,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelActuationState> &actuationStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionParams> &suspensionParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleTireForceParams> &tireForceParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleRoadGeometryState> &roadGeomStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionState> &suspensionStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionComplianceState> &suspensionComplianceStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionForce> &suspensionForces,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelRigidBody1dState> &wheelRigidBody1DStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireGripState> &tireGripStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireDirectionState> &tireDirectionStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireSpeedState> &tireSpeedStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireSlipState> &tireSlipStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireCamberAngleState> &tireCamberAngleStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireStickyState> &tireStickyStates,
-			physx::PxVehicleArrayData<physx::PxVehicleTireForce> &tireForces) override {
-		axleDescription = &m_s->axle_description;
-		steerResponseStates.setData(m_s->steer_response_states);
-		rigidBodyState = &m_s->rigid_body_state;
-		actuationStates.setData(m_s->actuation_states);
-		wheelParams.setData(m_s->wheel_params);
-		suspensionParams.setData(m_s->suspension_params);
-		tireForceParams.setData(m_s->tire_params);
-		roadGeomStates.setData(m_s->road_geometry_states);
-		suspensionStates.setData(m_s->suspension_states);
-		suspensionComplianceStates.setData(m_s->suspension_compliance_states);
-		suspensionForces.setData(m_s->suspension_forces);
-		wheelRigidBody1DStates.setData(m_s->wheel_rigid_body_1d_states);
-		tireGripStates.setData(m_s->tire_grip_states);
-		tireDirectionStates.setData(m_s->tire_direction_states);
-		tireSpeedStates.setData(m_s->tire_speed_states);
-		tireSlipStates.setData(m_s->tire_slip_states);
-		tireCamberAngleStates.setData(m_s->tire_camber_states);
-		tireStickyStates.setData(m_s->tire_sticky_states);
-		tireForces.setData(m_s->tire_forces);
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::DirectDrivetrainComponent : public physx::PxVehicleDirectDrivetrainComponent {
-public:
-	explicit DirectDrivetrainComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForDirectDrivetrainComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			physx::PxVehicleArrayData<const physx::PxReal> &brakeResponseStates,
-			physx::PxVehicleArrayData<const physx::PxReal> &throttleResponseStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelActuationState> &actuationStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleTireForce> &tireForces,
-			physx::PxVehicleArrayData<physx::PxVehicleWheelRigidBody1dState> &wheelRigidBody1dStates) override {
-		axleDescription = &m_s->axle_description;
-		brakeResponseStates.setData(m_s->brake_response_states);
-		throttleResponseStates.setData(m_s->throttle_response_states);
-		wheelParams.setData(m_s->wheel_params);
-		actuationStates.setData(m_s->actuation_states);
-		tireForces.setData(m_s->tire_forces);
-		wheelRigidBody1dStates.setData(m_s->wheel_rigid_body_1d_states);
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-// --- EngineDrive components ---
-
-class PhysXVehicle3D::EngineDriveCommandResponseComponent : public physx::PxVehicleEngineDriveCommandResponseComponent {
-public:
-	explicit EngineDriveCommandResponseComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForEngineDriveCommandResponseComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			physx::PxVehicleSizedArrayData<const physx::PxVehicleBrakeCommandResponseParams> &brakeResponseParams,
-			const physx::PxVehicleSteerCommandResponseParams *&steerResponseParams,
-			physx::PxVehicleSizedArrayData<const physx::PxVehicleAckermannParams> &ackermannParams,
-			const physx::PxVehicleGearboxParams *&gearboxParams,
-			const physx::PxVehicleClutchCommandResponseParams *&clutchResponseParams,
-			const physx::PxVehicleEngineParams *&engineParams,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			const physx::PxVehicleEngineState *&engineState,
-			const physx::PxVehicleAutoboxParams *&autoboxParams,
-			const physx::PxVehicleCommandState *&commands,
-			const physx::PxVehicleEngineDriveTransmissionCommandState *&transmissionCommands,
-			physx::PxVehicleArrayData<physx::PxReal> &brakeResponseStates,
-			physx::PxVehicleEngineDriveThrottleCommandResponseState *&throttleResponseState,
-			physx::PxVehicleArrayData<physx::PxReal> &steerResponseStates,
-			physx::PxVehicleGearboxState *&gearboxResponseState,
-			physx::PxVehicleClutchCommandResponseState *&clutchResponseState,
-			physx::PxVehicleAutoboxState *&autoboxState) override {
-		axleDescription = &m_s->axle_description;
-		brakeResponseParams.setDataAndCount(m_s->brake_response_params, m_s->nb_brake_response_params);
-		steerResponseParams = &m_s->steer_response_params;
-		ackermannParams.setEmpty();
-		gearboxParams = &m_s->gearbox_params;
-		clutchResponseParams = &m_s->clutch_response_params;
-		engineParams = &m_s->engine_params;
-		rigidBodyState = &m_s->rigid_body_state;
-		engineState = &m_s->engine_state;
-		autoboxParams = &m_s->autobox_params;
-		commands = &m_s->command_state;
-		transmissionCommands = &m_s->engine_transmission_command;
-		brakeResponseStates.setData(m_s->brake_response_states);
-		throttleResponseState = &m_s->engine_throttle_response_state;
-		steerResponseStates.setData(m_s->steer_response_states);
-		gearboxResponseState = &m_s->gearbox_state;
-		clutchResponseState = &m_s->clutch_response_state;
-		autoboxState = &m_s->autobox_state;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::FourWheelDriveDifferentialStateComponent : public physx::PxVehicleFourWheelDriveDifferentialStateComponent {
-public:
-	explicit FourWheelDriveDifferentialStateComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForFourWheelDriveDifferentialStateComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleFourWheelDriveDifferentialParams *&differentialParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelRigidBody1dState> &wheelRigidbody1dStates,
-			physx::PxVehicleDifferentialState *&differentialState,
-			physx::PxVehicleWheelConstraintGroupState *&wheelConstraintGroupState) override {
-		axleDescription = &m_s->axle_description;
-		differentialParams = &m_s->diff_params;
-		wheelRigidbody1dStates.setData(m_s->wheel_rigid_body_1d_states);
-		differentialState = &m_s->diff_state;
-		wheelConstraintGroupState = &m_s->constraint_group_state;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::EngineDriveActuationStateComponent : public physx::PxVehicleEngineDriveActuationStateComponent {
-public:
-	explicit EngineDriveActuationStateComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForEngineDriveActuationStateComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleGearboxParams *&gearboxParams,
-			physx::PxVehicleArrayData<const physx::PxReal> &brakeResponseStates,
-			const physx::PxVehicleEngineDriveThrottleCommandResponseState *&throttleResponseState,
-			const physx::PxVehicleGearboxState *&gearboxState,
-			const physx::PxVehicleDifferentialState *&differentialState,
-			const physx::PxVehicleClutchCommandResponseState *&clutchResponseState,
-			physx::PxVehicleArrayData<physx::PxVehicleWheelActuationState> &actuationStates) override {
-		axleDescription = &m_s->axle_description;
-		gearboxParams = &m_s->gearbox_params;
-		brakeResponseStates.setData(m_s->brake_response_states);
-		throttleResponseState = &m_s->engine_throttle_response_state;
-		gearboxState = &m_s->gearbox_state;
-		differentialState = &m_s->diff_state;
-		clutchResponseState = &m_s->clutch_response_state;
-		actuationStates.setData(m_s->actuation_states);
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::EngineDrivetrainComponent : public physx::PxVehicleEngineDrivetrainComponent {
-public:
-	explicit EngineDrivetrainComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForEngineDrivetrainComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
-			const physx::PxVehicleEngineParams *&engineParams,
-			const physx::PxVehicleClutchParams *&clutchParams,
-			const physx::PxVehicleGearboxParams *&gearboxParams,
-			physx::PxVehicleArrayData<const physx::PxReal> &brakeResponseStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelActuationState> &actuationStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleTireForce> &tireForces,
-			const physx::PxVehicleEngineDriveThrottleCommandResponseState *&throttleResponseState,
-			const physx::PxVehicleClutchCommandResponseState *&clutchResponseState,
-			const physx::PxVehicleDifferentialState *&differentialState,
-			const physx::PxVehicleWheelConstraintGroupState *&constraintGroupState,
-			physx::PxVehicleArrayData<physx::PxVehicleWheelRigidBody1dState> &wheelRigidBody1dStates,
-			physx::PxVehicleEngineState *&engineState,
-			physx::PxVehicleGearboxState *&gearboxState,
-			physx::PxVehicleClutchSlipState *&clutchState) override {
-		axleDescription = &m_s->axle_description;
-		wheelParams.setData(m_s->wheel_params);
-		engineParams = &m_s->engine_params;
-		clutchParams = &m_s->clutch_params;
-		gearboxParams = &m_s->gearbox_params;
-		brakeResponseStates.setData(m_s->brake_response_states);
-		actuationStates.setData(m_s->actuation_states);
-		tireForces.setData(m_s->tire_forces);
-		throttleResponseState = &m_s->engine_throttle_response_state;
-		clutchResponseState = &m_s->clutch_response_state;
-		differentialState = &m_s->diff_state;
-		constraintGroupState = &m_s->constraint_group_state;
-		wheelRigidBody1dStates.setData(m_s->wheel_rigid_body_1d_states);
-		engineState = &m_s->engine_state;
-		gearboxState = &m_s->gearbox_state;
-		clutchState = &m_s->clutch_slip_state;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::ConstraintComponent : public physx::PxVehiclePhysXConstraintComponent {
-public:
-	explicit ConstraintComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForPhysXConstraintComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionParams> &suspensionParams,
-			physx::PxVehicleArrayData<const physx::PxVehiclePhysXSuspensionLimitConstraintParams> &suspensionLimitParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionState> &suspensionStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionComplianceState> &suspensionComplianceStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleRoadGeometryState> &wheelRoadGeomStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleTireDirectionState> &tireDirectionStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleTireStickyState> &tireStickyStates,
-			physx::PxVehiclePhysXConstraints *&constraints) override {
-		axleDescription = &m_s->axle_description;
-		rigidBodyState = &m_s->rigid_body_state;
-		suspensionParams.setData(m_s->suspension_params);
-		suspensionLimitParams.setData(m_s->suspension_limit_params);
-		suspensionStates.setData(m_s->suspension_states);
-		suspensionComplianceStates.setData(m_s->suspension_compliance_states);
-		wheelRoadGeomStates.setData(m_s->road_geometry_states);
-		tireDirectionStates.setData(m_s->tire_direction_states);
-		tireStickyStates.setData(m_s->tire_sticky_states);
-		constraints = &m_s->physx_constraints;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-// Forward-integrates the rigid body with the accumulated suspension + tire
-// forces (plus gravity). Without this component the forces computed by the
-// suspension/tire components never reach rigidBodyState, so the actor end
-// component writes back an unchanged state and the vehicle never moves.
-class PhysXVehicle3D::RigidBodyComponent : public physx::PxVehicleRigidBodyComponent {
-public:
-	explicit RigidBodyComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForRigidBodyComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleRigidBodyParams *&rigidBodyParams,
-			physx::PxVehicleArrayData<const physx::PxVehicleSuspensionForce> &suspensionForces,
-			physx::PxVehicleArrayData<const physx::PxVehicleTireForce> &tireForces,
-			const physx::PxVehicleAntiRollTorque *&antiRollTorque,
-			physx::PxVehicleRigidBodyState *&rigidBodyState) override {
-		axleDescription = &m_s->axle_description;
-		rigidBodyParams = &m_s->rigid_body_params;
-		suspensionForces.setData(m_s->suspension_forces);
-		tireForces.setData(m_s->tire_forces);
-		antiRollTorque = (m_s->nb_anti_roll_bars > 0) ? &m_s->anti_roll_torque : nullptr;
-		rigidBodyState = &m_s->rigid_body_state;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-class PhysXVehicle3D::EndComponent : public physx::PxVehiclePhysXActorEndComponent {
-public:
-	explicit EndComponent(Vehicle2State *s) : m_s(s) {}
-	void getDataForPhysXActorEndComponent(
-			const physx::PxVehicleAxleDescription *&axleDescription,
-			const physx::PxVehicleRigidBodyState *&rigidBodyState,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
-			physx::PxVehicleArrayData<const physx::PxTransform> &wheelShapeLocalPoses,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelRigidBody1dState> &wheelRigidBody1dStates,
-			physx::PxVehicleArrayData<const physx::PxVehicleWheelLocalPose> &wheelLocalPoses,
-			const physx::PxVehicleGearboxState *&gearState,
-			const physx::PxReal *&throttle,
-			physx::PxVehiclePhysXActor *&physxActor) override {
-		axleDescription = &m_s->axle_description;
-		rigidBodyState = &m_s->rigid_body_state;
-		wheelParams.setData(m_s->wheel_params);
-		wheelShapeLocalPoses.setData(m_s->wheel_shape_local_poses);
-		wheelRigidBody1dStates.setData(m_s->wheel_rigid_body_1d_states);
-		wheelLocalPoses.setData(m_s->wheel_local_poses);
-		gearState = (m_s->arch == ARCHETYPE_ENGINE_DRIVE) ? &m_s->gearbox_state : nullptr;
-		throttle = &m_s->command_state.throttle;
-		physxActor = &m_s->physx_actor;
-	}
-
-private:
-	Vehicle2State *m_s;
-};
-
-// ============================================================================
-// Vehicle2State array/component lifecycle
-// ============================================================================
-
-void PhysXVehicle3D::Vehicle2State::allocate_arrays(int p_n) {
-	if (p_n < 0) {
-		p_n = 0;
-	}
-	free_arrays();
-	nb_wheels = p_n;
-	if (p_n == 0) {
-		return;
-	}
-
-	wheel_params = new physx::PxVehicleWheelParams[p_n];
-	suspension_params = new physx::PxVehicleSuspensionParams[p_n];
-	suspension_force_params = new physx::PxVehicleSuspensionForceParams[p_n];
-	tire_params = new physx::PxVehicleTireForceParams[p_n];
-	wheel_shape_local_poses = new physx::PxTransform[p_n];
-	suspension_compliance_params = new physx::PxVehicleSuspensionComplianceParams[p_n]();
-	material_friction_params = new physx::PxVehiclePhysXMaterialFrictionParams[p_n]();
-	suspension_limit_params = new physx::PxVehiclePhysXSuspensionLimitConstraintParams[p_n]();
-	anti_roll_params = new physx::PxVehicleAntiRollForceParams[p_n]();
-	surface_pairs = new physx::PxVehiclePhysXMaterialFriction[p_n * MAX_SURFACE_PAIRS]();
-	surface_pair_bodies = new RID[p_n * MAX_SURFACE_PAIRS]();
-
-	road_geometry_states = new physx::PxVehicleRoadGeometryState[p_n]();
-	physx_road_geometry_states = new physx::PxVehiclePhysXRoadGeometryQueryState[p_n]();
-	suspension_states = new physx::PxVehicleSuspensionState[p_n]();
-	suspension_compliance_states = new physx::PxVehicleSuspensionComplianceState[p_n]();
-	suspension_forces = new physx::PxVehicleSuspensionForce[p_n]();
-	tire_grip_states = new physx::PxVehicleTireGripState[p_n]();
-	tire_direction_states = new physx::PxVehicleTireDirectionState[p_n]();
-	tire_speed_states = new physx::PxVehicleTireSpeedState[p_n]();
-	tire_slip_states = new physx::PxVehicleTireSlipState[p_n]();
-	tire_camber_states = new physx::PxVehicleTireCamberAngleState[p_n]();
-	tire_sticky_states = new physx::PxVehicleTireStickyState[p_n]();
-	tire_forces = new physx::PxVehicleTireForce[p_n]();
-	wheel_rigid_body_1d_states = new physx::PxVehicleWheelRigidBody1dState[p_n]();
-	actuation_states = new physx::PxVehicleWheelActuationState[p_n]();
-	wheel_local_poses = new physx::PxVehicleWheelLocalPose[p_n]();
-	steer_response_states = new physx::PxReal[p_n]();
-	brake_response_states = new physx::PxReal[p_n]();
-	throttle_response_states = new physx::PxReal[p_n]();
-
-	for (int i = 0; i < p_n; i++) {
-		_set_wheel_param_defaults(wheel_params[i], suspension_params[i],
-				suspension_force_params[i], tire_params[i]);
-		wheel_shape_local_poses[i] = physx::PxTransform(physx::PxIdentity);
-		material_friction_params[i].defaultFriction = 1.0f;
-	}
-}
-
-void PhysXVehicle3D::Vehicle2State::free_arrays() {
-#define _DEL(a) delete[] a; a = nullptr;
-	_DEL(wheel_params)
-	_DEL(suspension_params)
-	_DEL(suspension_force_params)
-	_DEL(suspension_compliance_params)
-	_DEL(tire_params)
-	_DEL(material_friction_params)
-	_DEL(suspension_limit_params)
-	_DEL(anti_roll_params)
-	_DEL(surface_pairs)
-	_DEL(surface_pair_bodies)
-	_DEL(wheel_shape_local_poses)
-	_DEL(road_geometry_states)
-	_DEL(physx_road_geometry_states)
-	_DEL(suspension_states)
-	_DEL(suspension_compliance_states)
-	_DEL(suspension_forces)
-	_DEL(tire_grip_states)
-	_DEL(tire_direction_states)
-	_DEL(tire_speed_states)
-	_DEL(tire_slip_states)
-	_DEL(tire_camber_states)
-	_DEL(tire_sticky_states)
-	_DEL(tire_forces)
-	_DEL(wheel_rigid_body_1d_states)
-	_DEL(actuation_states)
-	_DEL(wheel_local_poses)
-	_DEL(steer_response_states)
-	_DEL(brake_response_states)
-	_DEL(throttle_response_states)
-#undef _DEL
-}
-
-void PhysXVehicle3D::Vehicle2State::free_components() {
-	delete road_geometry_filter;
-	road_geometry_filter = nullptr;
-#define _DELC(c) delete c; c = nullptr;
-	_DELC(comp_begin)
-	_DELC(comp_cmd_response)
-	_DELC(comp_actuation)
-	_DELC(comp_drivetrain)
-	_DELC(comp_engine_cmd_response)
-	_DELC(comp_diff_state)
-	_DELC(comp_engine_actuation)
-	_DELC(comp_engine_drivetrain)
-	_DELC(comp_road_geom)
-	_DELC(comp_suspension)
-	_DELC(comp_tire)
-	_DELC(comp_constraint)
-	_DELC(comp_rigid_body)
-	_DELC(comp_end)
-#undef _DELC
-}
-
-// ============================================================================
-// Lifecycle: set_space
-// ============================================================================
-
-void PhysXVehicle3D::set_space(PhysXSpace3D *p_space) {
-	if (space == p_space) {
-		return;
-	}
-	if (space) {
-		space->unregister_vehicle(this);
-	}
-	space = p_space;
-	if (space && v2) {
-		space->register_vehicle(this);
-	}
-}
-
-// ============================================================================
-// Shared state init (arrays + axle + rigid body + shared singletons)
-// ============================================================================
-
-void PhysXVehicle3D::_init_shared_state(Vehicle2State *s, physx::PxRigidDynamic &p_chassis, int p_wheel_count) {
-	s->allocate_arrays(p_wheel_count);
-
-	// axle description: all wheels on a single axle (first-pass).
-	s->axle_description.setToDefault();
-	if (p_wheel_count > 0) {
-		physx::PxU32 ids[physx::PxVehicleLimits::eMAX_NB_WHEELS];
-		for (int i = 0; i < p_wheel_count; i++) {
-			ids[i] = (physx::PxU32)i;
-		}
-		s->axle_description.addAxle((physx::PxU32)p_wheel_count, ids);
-	}
-
-	// rigid body params from the chassis actor.
-	s->rigid_body_params.mass = p_chassis.getMass();
-	s->rigid_body_params.moi = p_chassis.getMassSpaceInertiaTensor();
-	if (s->rigid_body_params.mass <= 0.0f) {
-		s->rigid_body_params.mass = 1500.0f;
-	}
-	if (s->rigid_body_params.moi.isZero()) {
-		s->rigid_body_params.moi = physx::PxVec3(1000.0f, 1000.0f, 1000.0f);
-	}
-
-	// shared singleton defaults
-	s->rigid_body_state.setToDefault();
-	s->susp_state_calc_params.suspensionJounceCalculationType =
-			physx::PxVehicleSuspensionJounceCalculationType::eRAYCAST;
-	s->susp_state_calc_params.limitSuspensionExpansionVelocity = true;
-	s->physx_actor.setToDefault();
-	s->physx_actor.rigidBody = &p_chassis;
-	s->physx_steer_state.setToDefault();
-	s->command_state.setToDefault();
-	s->road_geom_params.roadGeometryQueryType = physx::PxVehiclePhysXRoadGeometryQueryType::eRAYCAST;
-	s->road_geom_params.filterDataEntries = nullptr;
-	s->road_geom_params.filterCallback = nullptr;
-	s->road_geom_params.defaultFilterData = physx::PxQueryFilterData(
-			physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::ePREFILTER);
-}
-
-// ============================================================================
-// Lifecycle: adopt
-// ============================================================================
-
-bool PhysXVehicle3D::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_chassis_body) {
-	if (!p_chassis) {
+	if (wheels.size() != 4) {
+		// Not a real error -- this fires transiently while wheel children are
+		// still entering the tree one at a time (see PhysXVehicleWheel3D's
+		// own NOTIFICATION_ENTER_TREE), and permanently if the scene author
+		// hasn't added exactly 4 yet. get_configuration_warnings() surfaces
+		// the permanent case in the Inspector.
 		return false;
 	}
 
-	// Validate prerequisites BEFORE tearing down the previous configuration:
-	// a failed adopt used to leave the new chassis registered (and the old one
-	// un-flagged) with no vehicle state attached.
-	PhysXServer3D *server = PhysXServer3D::get_singleton();
-	physx::PxPhysics *px_physics = server ? server->try_get_physics() : nullptr;
-	if (!px_physics) {
-		WARN_PRINT_ONCE("PhysX: vehicle adopt skipped -- PhysX not initialized.");
-		return false;
-	}
-
-	if (space) {
-		space->unregister_vehicle(this);
-	}
-	if (v2) {
-		// Release the low-speed tire-model constraints before the state they
-		// reference (chassis actor, per-wheel params) goes away.
-		physx::PxVehicleConstraintsDestroy(v2->physx_constraints);
-	}
-	delete v2;
-	v2 = nullptr;
-
-	// Clear the old chassis's vehicle flags before adopting a new one.
-	// If the old chassis is not freed, it would float (eDISABLE_GRAVITY set)
-	// and report is_vehicle_chassis=true without being part of a vehicle.
-	if (chassis_actor) {
-		chassis_actor->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY, false);
-	}
-	if (chassis_body) {
-		chassis_body->set_is_vehicle_chassis(false);
-		chassis_body->remove_chassis_vehicle(this);
-	}
-
-	chassis_actor = p_chassis;
-	chassis_body = p_chassis_body;
-	// Register for space-follow notifications: when the chassis body moves to
-	// another space (body_set_space), this vehicle re-homes with it so road
-	// geometry, gravity and the step loop come from the chassis's actual scene.
-	if (chassis_body) {
-		chassis_body->add_chassis_vehicle(this);
-	}
-
-	Vehicle2State *state = (archetype == ARCHETYPE_DIRECT_DRIVE)
-			? build_direct_drive(*px_physics, *p_chassis, wheel_count)
-			: build_engine_drive(*px_physics, *p_chassis, wheel_count);
-	if (!state) {
-		return false;
-	}
-
-	v2 = state;
-
-	// vehicle2 applies gravity through the simulation context, so the chassis
-	// must be gravity-disabled. Mark the body as a vehicle chassis so its
-	// on_pre_step() skips manual gravity (avoids double-gravity — plan R3).
-	p_chassis->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY, true);
-	if (chassis_body) {
-		chassis_body->set_is_vehicle_chassis(true);
-	}
-
-	// Instantiate the low-speed tire-model constraints (excess suspension
-	// compression + velocity constraints). The ConstraintComponent in the
-	// sequence only fills constraintStates -- without these PhysX-side
-	// objects the component had no simulation effect, so vehicles crept and
-	// over-compressed their suspension at low speed.
-	physx::PxVehicleConstraintsCreate(state->axle_description, *px_physics, *p_chassis,
-			state->physx_constraints);
-
-	_update_response_params();
-
-	// Adopt the chassis's space when none was set explicitly. The vehicle
-	// must live in the same PhysXSpace3D as its chassis so the space's step
-	// loop calls update()/post_step() for it. Without this, the common setup
-	// path (vehicle_create -> vehicle_set_chassis_body -> wheel config, no
-	// explicit vehicle_set_space) left the vehicle unregistered — the whole
-	// subsystem stayed inert because update() was never invoked. A later
-	// explicit vehicle_set_space() still overrides this (set_space handles
-	// unregister/re-register).
-	if (!space && chassis_body) {
-		space = chassis_body->get_space();
-	}
-	if (space) {
-		space->register_vehicle(this);
-	}
-	configured = true;
-	return true;
-}
-
-// ============================================================================
-// Lifecycle: release
-// ============================================================================
-
-void PhysXVehicle3D::release() {
-	if (space) {
-		space->unregister_vehicle(this);
-	}
-	if (chassis_body) {
-		chassis_body->set_is_vehicle_chassis(false);
-		chassis_body->remove_chassis_vehicle(this);
-	}
-	if (chassis_actor) {
-		chassis_actor->setActorFlag(physx::PxActorFlag::eDISABLE_GRAVITY, false);
-	}
-	if (v2) {
-		physx::PxVehicleConstraintsDestroy(v2->physx_constraints);
-	}
-	delete v2;
-	v2 = nullptr;
-	chassis_body = nullptr;
-	chassis_actor = nullptr;
-	space = nullptr;
-	configured = false;
-	inputs_dirty = true;
-	telemetry_valid = false;
-}
-
-// ============================================================================
-// Factories
-// ============================================================================
-
-PhysXVehicle3D::Vehicle2State *PhysXVehicle3D::build_direct_drive(
-		physx::PxPhysics &p_physics,
-		physx::PxRigidDynamic &p_chassis,
-		int p_wheel_count) {
-	(void)p_physics;
-
-	Vehicle2State *s = new Vehicle2State();
-	s->arch = ARCHETYPE_DIRECT_DRIVE;
-	_init_shared_state(s, p_chassis, p_wheel_count);
-	s->direct_transmission_command.setToDefault();
-
-	s->comp_begin = new BeginComponent(s);
-	s->comp_cmd_response = new CommandResponseComponent(s);
-	s->comp_actuation = new ActuationComponent(s);
-	s->comp_road_geom = new RoadGeometryComponent(s);
-	s->comp_suspension = new SuspensionComponent(s);
-	s->comp_tire = new TireComponent(s);
-	s->comp_drivetrain = new DirectDrivetrainComponent(s);
-	s->comp_constraint = new ConstraintComponent(s);
-	s->comp_rigid_body = new RigidBodyComponent(s);
-	s->comp_end = new EndComponent(s);
-
-	s->sequence.add(s->comp_begin);
-	s->sequence.add(s->comp_cmd_response);
-	s->sequence.add(s->comp_actuation);
-	s->sequence.add(s->comp_road_geom);
-	s->sequence.add(s->comp_suspension);
-	s->sequence.add(s->comp_tire);
-	s->sequence.add(s->comp_drivetrain);
-	s->sequence.add(s->comp_constraint);
-	s->sequence.add(s->comp_rigid_body);
-	s->sequence.add(s->comp_end);
-	return s;
-}
-
-PhysXVehicle3D::Vehicle2State *PhysXVehicle3D::build_engine_drive(
-		physx::PxPhysics &p_physics,
-		physx::PxRigidDynamic &p_chassis,
-		int p_wheel_count) {
-	(void)p_physics;
-
-	Vehicle2State *s = new Vehicle2State();
-	s->arch = ARCHETYPE_ENGINE_DRIVE;
-	_init_shared_state(s, p_chassis, p_wheel_count);
-
-	// --- Engine params (torque curve + MOI + rev range + damping). ---
-	s->engine_params.moi = 1.0f;
-	s->engine_params.peakTorque = 500.0f;
-	s->engine_params.maxOmega = 600.0f; // ~5730 rpm
-	s->engine_params.idleOmega = 80.0f;
-	s->engine_params.dampingRateFullThrottle = 0.15f;
-	s->engine_params.dampingRateZeroThrottleClutchEngaged = 2.0f;
-	s->engine_params.dampingRateZeroThrottleClutchDisengaged = 0.35f;
-	s->engine_params.torqueCurve.clear();
-	s->engine_params.torqueCurve.addPair(0.0f, 0.8f);
-	s->engine_params.torqueCurve.addPair(0.33f, 1.0f);
-	s->engine_params.torqueCurve.addPair(1.0f, 0.8f);
-
-	// --- Clutch. ---
-	s->clutch_params.accuracyMode = physx::PxVehicleClutchAccuracyMode::eBEST_POSSIBLE;
-	s->clutch_params.estimateIterations = 4; // unused in eBEST_POSSIBLE but set for safety
-	s->clutch_response_params.maxResponse = 40.0f;
-
-	// --- Gearbox: 1 reverse, neutral, 5 forward (ratios must descend). ---
-	s->gearbox_params.neutralGear = 1;
-	s->gearbox_params.ratios[0] = -4.0f; // reverse
-	s->gearbox_params.ratios[1] = 0.0f; // neutral
-	s->gearbox_params.ratios[2] = 4.0f; // 1st
-	s->gearbox_params.ratios[3] = 2.0f; // 2nd
-	s->gearbox_params.ratios[4] = 1.5f; // 3rd
-	s->gearbox_params.ratios[5] = 1.1f; // 4th
-	s->gearbox_params.ratios[6] = 0.9f; // 5th
-	s->gearbox_params.nbRatios = 7;
-	s->gearbox_params.finalRatio = 3.5f;
-	s->gearbox_params.switchTime = 0.5f;
-
-	// --- Autobox (automatic up/down shift thresholds + latency). ---
-	for (int i = 0; i < physx::PxVehicleGearboxParams::eMAX_NB_GEARS; i++) {
-		s->autobox_params.upRatios[i] = 0.65f;
-		s->autobox_params.downRatios[i] = 0.40f;
-	}
-	s->autobox_params.latency = 2.0f;
-
-	// --- Differential: open 4-wheel with equal torque split (ratios sum to 1). ---
-	s->diff_params.setToDefault();
-	if (p_wheel_count > 0) {
-		const float r = 1.0f / (float)p_wheel_count;
-		for (int i = 0; i < p_wheel_count; i++) {
-			s->diff_params.torqueRatios[i] = r;
-			s->diff_params.aveWheelSpeedRatios[i] = r;
-		}
-	}
-	// frontWheelIds/rearWheelIds/biases stay 0 -> open diff (not validated).
-
-	// --- EngineDrive states. ---
-	s->engine_state.setToDefault();
-	s->gearbox_state.setToDefault();
-	s->clutch_response_state.setToDefault();
-	s->diff_state.setToDefault();
-	s->autobox_state.setToDefault();
-	s->clutch_slip_state.setToDefault();
-	s->constraint_group_state.setToDefault();
-	s->engine_throttle_response_state.setToDefault();
-	s->engine_transmission_command.setToDefault();
-
-	// --- Components (EngineDrive sequence). ---
-	s->comp_begin = new BeginComponent(s);
-	s->comp_engine_cmd_response = new EngineDriveCommandResponseComponent(s);
-	s->comp_diff_state = new FourWheelDriveDifferentialStateComponent(s);
-	s->comp_engine_actuation = new EngineDriveActuationStateComponent(s);
-	s->comp_road_geom = new RoadGeometryComponent(s);
-	s->comp_suspension = new SuspensionComponent(s);
-	s->comp_tire = new TireComponent(s);
-	s->comp_engine_drivetrain = new EngineDrivetrainComponent(s);
-	s->comp_constraint = new ConstraintComponent(s);
-	s->comp_rigid_body = new RigidBodyComponent(s);
-	s->comp_end = new EndComponent(s);
-
-	s->sequence.add(s->comp_begin);
-	s->sequence.add(s->comp_engine_cmd_response);
-	s->sequence.add(s->comp_diff_state);
-	s->sequence.add(s->comp_engine_actuation);
-	s->sequence.add(s->comp_road_geom);
-	s->sequence.add(s->comp_suspension);
-	s->sequence.add(s->comp_tire);
-	s->sequence.add(s->comp_engine_drivetrain);
-	s->sequence.add(s->comp_constraint);
-	s->sequence.add(s->comp_rigid_body);
-	s->sequence.add(s->comp_end);
-	return s;
-}
-
-// ============================================================================
-// Response-param seeding + re-build
-// ============================================================================
-
-void PhysXVehicle3D::_update_response_params() {
-	if (!v2 || wheel_count <= 0) {
-		return;
-	}
-	delete v2->road_geometry_filter;
-	v2->road_geometry_filter = new PhysXQueryFilterCallback();
-	v2->road_geometry_filter->collision_mask = chassis_body ? chassis_body->get_collision_mask() : 0xFFFFFFFF;
-	v2->road_geometry_filter->collide_with_bodies = true;
-	v2->road_geometry_filter->collide_with_areas = false;
-	v2->road_geometry_filter->multi_hit = false;
-	v2->chassis_rid_set.clear();
-	if (chassis_body) {
-		v2->chassis_rid_set.insert(chassis_body->get_rid());
-	}
-	v2->road_geometry_filter->exclude_rids = &v2->chassis_rid_set;
-	v2->road_geom_params.filterCallback = v2->road_geometry_filter;
-
-	// Nominal max responses so a freshly-configured vehicle actually moves.
-	// Tuned via vehicle_set_response_params(); -1 keeps the built-in default.
-	// Steer and both brake channels apply to both archetypes; the throttle
-	// response struct is DirectDrive-only (EngineDrive drive torque comes from
-	// engine/gearbox params).
-	v2->throttle_response_params.maxResponse = (tune_drive_torque >= 0.0f) ? tune_drive_torque : 1000.0f; // DirectDrive: Nm/wheel at full throttle
-	v2->steer_response_params.maxResponse = (tune_max_steer_angle >= 0.0f) ? tune_max_steer_angle : 0.6f; // max steer angle (rad)
-	v2->brake_response_params[0].maxResponse = (tune_brake_torque >= 0.0f) ? tune_brake_torque : 2000.0f; // brake torque
-	v2->brake_response_params[1].maxResponse = (tune_handbrake_torque >= 0.0f) ? tune_handbrake_torque : 3000.0f; // handbrake torque
-
-	for (int i = 0; i < wheel_count; i++) {
-		const WheelFlags &wf = wheel_flags[i];
-		v2->throttle_response_params.wheelResponseMultipliers[i] = wf.traction ? 1.0f : 0.0f;
-		v2->steer_response_params.wheelResponseMultipliers[i] = wf.steer ? 1.0f : 0.0f;
-		v2->brake_response_params[0].wheelResponseMultipliers[i] = wf.brake ? 1.0f : 0.0f;
-		v2->brake_response_params[1].wheelResponseMultipliers[i] = 1.0f; // handbrake: all wheels
-	}
-
-	// EngineDrive: split differential torque across driven wheels only
-	// (RWD/FWD/4WD/6x4 via WheelFlags.traction). torqueRatios/aveWheelSpeedRatios
-	// must each sum to 1.0, so driven wheels share equally. DirectDrive ignores
-	// the differential (it has no differential component).
-	if (archetype == ARCHETYPE_ENGINE_DRIVE) {
-		int nb_driven = 0;
-		for (int i = 0; i < wheel_count; i++) {
-			if (wheel_flags[i].traction) {
-				nb_driven++;
-			}
-		}
-		const float r = (nb_driven > 0) ? (1.0f / (float)nb_driven) : (1.0f / (float)wheel_count);
-		for (int i = 0; i < wheel_count; i++) {
-			const bool driven = (nb_driven > 0) ? wheel_flags[i].traction : true;
-			v2->diff_params.torqueRatios[i] = driven ? r : 0.0f;
-			v2->diff_params.aveWheelSpeedRatios[i] = driven ? r : 0.0f;
-		}
-	}
-}
-
-void PhysXVehicle3D::_rebuild() {
-	if (!chassis_actor || !v2) {
-		return;
-	}
-	const bool was_registered = (space != nullptr);
-	if (space) {
-		space->unregister_vehicle(this);
-	}
-	if (v2) {
-		physx::PxVehicleConstraintsDestroy(v2->physx_constraints);
-	}
-	delete v2;
-	v2 = nullptr;
-
-	PhysXServer3D *server = PhysXServer3D::get_singleton();
-	physx::PxPhysics *px_physics = server ? server->try_get_physics() : nullptr;
-	if (!px_physics) {
-		configured = false;
-		return;
-	}
-
-	v2 = (archetype == ARCHETYPE_DIRECT_DRIVE)
-			? build_direct_drive(*px_physics, *chassis_actor, wheel_count)
-			: build_engine_drive(*px_physics, *chassis_actor, wheel_count);
-
-	// Re-apply the cached tuning: the fresh v2 carries defaults, but the
-	// per-wheel and EngineDrive configuration the user applied before the
-	// wheel-count change must survive the re-assembly.
-	for (int i = 0; i < wheel_count && i < (int)cached_wheel_params.size(); i++) {
-		if (!cached_wheel_params[i].is_empty()) {
-			apply_wheel_params(i, cached_wheel_params[i]);
-		}
-	}
-	if (archetype == ARCHETYPE_ENGINE_DRIVE && v2) {
-		if (!cached_engine_params.is_empty()) set_engine_params(cached_engine_params);
-		if (!cached_clutch_params.is_empty()) set_clutch_params(cached_clutch_params);
-		if (!cached_gearbox_params.is_empty()) set_gearbox_params(cached_gearbox_params);
-		if (!cached_autobox_params.is_empty()) set_autobox_params(cached_autobox_params);
-		if (!cached_differential_params.is_empty()) set_differential_params(cached_differential_params);
-	}
-
-	physx::PxVehicleConstraintsCreate(v2->axle_description, *px_physics, *chassis_actor,
-			v2->physx_constraints);
-
-	_update_response_params();
-
-	if (was_registered && space) {
-		space->register_vehicle(this);
-	}
-	configured = true;
-}
-
-// ============================================================================
-// Per-step: write_commands — input cache -> vehicle2 command state
-// ============================================================================
-
-// 2-wheeler roll-balance assist. Reads the chassis roll (lean) state, applies
-// the optional low-speed corrective torque, and computes the steer
-// augmentation consumed by write_commands(). A motorcycle is an inverted
-// pendulum: it stays up by steering into its own fall, which the PD law below
-// emulates. Sign conventions (validated by PHYSX-VEHI-016/017): lean > 0 means
-// the chassis tips toward its +X side, and a positive steer command yaws the
-// vehicle toward -X — so steering into a +X fall needs a NEGATIVE steer
-// contribution, hence the leading minus in the control law.
-void PhysXVehicle3D::_update_balance(float p_step) {
-	(void)p_step;
-	balance_steer_assist = 0.0f;
-	if (!balance_enabled || !chassis_actor || wheel_count != 2) {
-		balance_lean_angle = 0.0f;
-		balance_roll_rate = 0.0f;
-		return;
-	}
-
-	const physx::PxTransform pose = chassis_actor->getGlobalPose();
-	const physx::PxVec3 fwd = pose.q.rotate(physx::PxVec3(0, 0, -1));
-	const physx::PxVec3 up_chassis = pose.q.rotate(physx::PxVec3(0, 1, 0));
-	const physx::PxVec3 world_up(0, 1, 0);
-	physx::PxVec3 right = fwd.cross(world_up);
-	if (right.magnitudeSquared() < 1e-8f) {
-		return; // chassis stood on end; no meaningful roll axis this frame
-	}
-	right.normalize();
-
-	// Signed roll: 0 upright, positive = tipped toward the chassis +X side.
-	balance_lean_angle = Math::atan2(right.dot(up_chassis), world_up.dot(up_chassis));
-	// Roll rate: angular velocity about the forward axis (same sign as lean).
-	balance_roll_rate = chassis_actor->getAngularVelocity().dot(fwd);
-
-	// Steer into the fall, capped so the assist can never exceed a sane steer
-	// angle. Only meaningful while the contact line can generate lateral force.
-	balance_steer_assist = CLAMP(
-			-(balance_kp * balance_lean_angle + balance_kd * balance_roll_rate),
-			-balance_max_steer_assist, balance_max_steer_assist);
-
-	// Low-speed corrective torque: below ~3 m/s the front wheel's steer
-	// authority vanishes (little lateral force available), so a direct
-	// righting torque fades in. Scales with the param; 0 disables it.
-	if (balance_low_speed_torque > 0.0f) {
-		const float speed = chassis_actor->getLinearVelocity().magnitude();
-		const float fade = CLAMP(1.0f - speed / 3.0f, 0.0f, 1.0f);
-		if (fade > 0.0f) {
-			const float corr = -(balance_kp * balance_lean_angle + balance_kd * balance_roll_rate);
-			chassis_actor->addTorque(fwd * (corr * fade * balance_low_speed_torque));
-		}
-	}
-}
-
-void PhysXVehicle3D::write_commands() {
-	if (!v2) {
-		return;
-	}
-	v2->command_state.setToDefault();
-	v2->command_state.brakes[0] = in_brake;
-	v2->command_state.brakes[1] = in_handbrake;
-	v2->command_state.nbBrakes = 2;
-	// Effective scalar steer: rider input + balance assist (rad -> normalized
-	// against the steer lock).
-	const float steer_max = v2->steer_response_params.maxResponse;
-	const float steer_norm = (steer_max > 1e-4f)
-			? CLAMP(in_steer + balance_steer_assist / steer_max, -1.0f, 1.0f)
-			: CLAMP(in_steer, -1.0f, 1.0f);
-	v2->command_state.steer = steer_norm;
-
-	if (archetype == ARCHETYPE_DIRECT_DRIVE) {
-		// Direct drive: throttle sign selects direction.
-		if (in_throttle > 0.0f) {
-			v2->command_state.throttle = in_throttle;
-			v2->direct_transmission_command.gear =
-					physx::PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
-		} else if (in_throttle < 0.0f) {
-			v2->command_state.throttle = -in_throttle;
-			v2->direct_transmission_command.gear =
-					physx::PxVehicleDirectDriveTransmissionCommandState::eREVERSE;
-		} else {
-			v2->command_state.throttle = 0.0f;
-			v2->direct_transmission_command.gear =
-					physx::PxVehicleDirectDriveTransmissionCommandState::eNEUTRAL;
-		}
-
-		// Per-wheel control (P9): if any per-wheel value is non-zero, that
-		// channel switches to per-wheel mode — the scalar command becomes 1.0
-		// and the per-wheel value is encoded in the response multipliers
-		// (torque = maxResponse * multiplier * command). Per-channel auto-detect
-		// lets scalar (P8) and per-wheel (P9) coexist. When a channel is NOT in
-		// per-wheel mode its multipliers are re-seeded from the wheel flags, so
-		// a previous per-wheel encoding doesn't stick.
-		// Drive
-		bool pw_drive = false;
-		float drive_sum = 0.0f;
-		for (int i = 0; i < wheel_count; i++) {
-			if (in_wheel_drive_torque[i] != 0.0f) {
-				pw_drive = true;
-				drive_sum += in_wheel_drive_torque[i];
-			}
-		}
-		if (pw_drive) {
-			const float maxr = v2->throttle_response_params.maxResponse;
-			float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
-			v2->command_state.throttle = 1.0f;
-			// The gear flips the sign of the throttle response for the whole
-			// vehicle, so it follows the DOMINANT commanded direction (the
-			// sign of the torque sum) and each wheel's multiplier carries its
-			// own sign relative to that: multiplier = t * gearSign * inv.
-			// gearSign^2 == 1 cancels out of the applied torque, so every
-			// wheel drives in ITS commanded direction -- counter-rotating
-			// wheels (skid steering) work instead of silently clamping to
-			// the dominant direction.
-			const float gear_sign = (drive_sum >= 0.0f) ? 1.0f : -1.0f;
-			v2->direct_transmission_command.gear = (drive_sum >= 0.0f)
-					? physx::PxVehicleDirectDriveTransmissionCommandState::eFORWARD
-					: physx::PxVehicleDirectDriveTransmissionCommandState::eREVERSE;
-			for (int i = 0; i < wheel_count; i++) {
-				const float t = in_wheel_drive_torque[i];
-				const float demand = (t >= 0.0f) ? t : -t;
-				if (demand * inv > 1.0f) {
-					// A wheel torque above maxResponse would encode a multiplier > 1 --
-					// outside the response contract. Raise maxResponse to the largest
-					// demanded torque instead of clamping (clamping would silently
-					// weaken the other wheels' drive).
-					v2->throttle_response_params.maxResponse = demand;
-					inv = 1.0f / demand;
-				}
-				v2->throttle_response_params.wheelResponseMultipliers[i] = t * gear_sign * inv;
-			}
-		} else {
-			for (int i = 0; i < wheel_count; i++) {
-				v2->throttle_response_params.wheelResponseMultipliers[i] = wheel_flags[i].traction ? 1.0f : 0.0f;
-			}
-		}
-		// Brake (main brake channel; handbrake channel untouched)
-		bool pw_brake = false;
-		for (int i = 0; i < wheel_count; i++) {
-			if (in_wheel_brake_torque[i] != 0.0f) {
-				pw_brake = true;
-				break;
-			}
-		}
-		if (pw_brake) {
-			const float maxr = v2->brake_response_params[0].maxResponse;
-			float inv = (maxr > 0.0f) ? (1.0f / maxr) : 1.0f;
-			v2->command_state.brakes[0] = 1.0f;
-			// Brake magnitude only: a brake torque resists wheel rotation, it
-			// has no direction of its own, so the sign of the command is
-			// meaningless and |t| is the intended semantics.
-			for (int i = 0; i < wheel_count; i++) {
-				const float t = in_wheel_brake_torque[i];
-				const float demand = (t < 0.0f ? -t : t);
-				if (demand * inv > 1.0f) {
-					// Same contract as the drive channel: a brake torque above
-					// maxResponse must raise maxResponse, not clamp the multiplier.
-					v2->brake_response_params[0].maxResponse = demand;
-					inv = 1.0f / demand;
-				}
-				v2->brake_response_params[0].wheelResponseMultipliers[i] = demand * inv;
-			}
-		} else {
-			for (int i = 0; i < wheel_count; i++) {
-				v2->brake_response_params[0].wheelResponseMultipliers[i] = wheel_flags[i].brake ? 1.0f : 0.0f;
-			}
-		}
-	} else {
-		// EngineDrive: throttle in [0,1]; gear from in_target_gear (defaults to
-		// eAUTOMATIC_GEAR so the autobox shifts).
-		v2->command_state.throttle = in_throttle > 0.0f ? in_throttle : 0.0f;
-		v2->engine_transmission_command.clutch = 0.0f; // engaged (no separate clutch input yet)
-		v2->engine_transmission_command.targetGear = (physx::PxU32)in_target_gear;
-	}
-
-	// --- Steer resolution (shared by both archetypes) ---
-	// Priority: per-wheel steer mode (P9) > Ackermann geometry > flat scalar.
-	// The per-wheel road-wheel angles are cached for vehicle_get_wheel_steer_
-	// angles(); multipliers encode them as fractions of the steer lock.
-	computed_steer_angles.resize(wheel_count);
-	bool pw_steer = false;
-	for (int i = 0; i < wheel_count; i++) {
-		if (in_wheel_steer_angle[i] != 0.0f) {
-			pw_steer = true;
+	CollisionShape3D *chassis_shape_node = nullptr;
+	for (int i = 0; i < get_child_count(); i++) {
+		chassis_shape_node = Object::cast_to<CollisionShape3D>(get_child(i));
+		if (chassis_shape_node) {
 			break;
 		}
 	}
-	const float steer_inv = (steer_max > 1e-4f) ? (1.0f / steer_max) : 1.0f;
-	if (pw_steer) {
-		v2->command_state.steer = 1.0f;
-		for (int i = 0; i < wheel_count; i++) {
-			computed_steer_angles[i] = in_wheel_steer_angle[i];
-			v2->steer_response_params.wheelResponseMultipliers[i] = in_wheel_steer_angle[i] * steer_inv;
-		}
-	} else if (ackermann_enabled) {
-		// Geometry: wheelbase/track from the tuned values when given, else
-		// derived from the suspension attachments (chassis space, forward = -Z
-		// per the vehicle frame below: the steered axle is the more negative z).
-		float wheelbase = tune_ackermann_wheelbase;
-		float track = tune_ackermann_track;
-		if (wheelbase <= 0.0f || track <= 0.0f) {
-			float z_steer = 0.0f, z_rest = 0.0f;
-			int n_steer = 0, n_rest = 0;
-			float min_x = 0.0f, max_x = 0.0f;
-			bool have_x = false;
-			for (int i = 0; i < wheel_count; i++) {
-				const float x = v2->wheel_shape_local_poses[i].p.x;
-				const float z = v2->wheel_shape_local_poses[i].p.z;
-				if (wheel_flags[i].steer) {
-					z_steer += z;
-					n_steer++;
-					if (!have_x || x < min_x) {
-						min_x = x;
-					}
-					if (!have_x || x > max_x) {
-						max_x = x;
-					}
-					have_x = true;
-				} else {
-					z_rest += z;
-					n_rest++;
-				}
-			}
-			if (n_steer > 0 && n_rest > 0) {
-				wheelbase = Math::abs(z_steer / n_steer - z_rest / n_rest);
-			}
-			if (n_steer > 1) {
-				track = max_x - min_x;
-			}
-		}
-
-		const float delta = steer_norm * steer_max; // commanded road-wheel angle (rad)
-		if (wheelbase > 1e-4f && track > 1e-4f && Math::abs(delta) > 1e-4f) {
-			// Pure Ackermann: both steered wheels point at the same turn center.
-			// cot(inner) = cot(delta) - track/(2*wheelbase) (inner steers more).
-			// Work on |delta| and re-apply the sign: cot(delta) is negative for
-			// a right-hand (negative) command, and atan2(1, negative) returns a
-			// second-quadrant angle (~pi) which would steer the wheels clean
-			// around. Plain atan(1/x) on positive x stays in the right quadrant;
-			// positive-steer results are unchanged (atan2(1, x>0) == atan(1/x)).
-			const float adelta = Math::abs(delta);
-			const float cot = Math::cos(adelta) / Math::sin(adelta);
-			const float half_track_over_L = (0.5f * track) / wheelbase;
-			const float inner = Math::atan(1.0f / MAX(cot - half_track_over_L, 0.001f));
-			const float outer = Math::atan(1.0f / MAX(cot + half_track_over_L, 0.001f));
-			const float p = CLAMP(ackermann_percent, 0.0f, 100.0f) / 100.0f;
-			// Turn direction: delta > 0 yaws the vehicle toward its -X side
-			// (frame lng = -Z, lat = -X; validated by PHYSX-VEHI-014, which
-			// measures the yaw response rather than trusting this comment).
-			const bool turn_toward_neg_x = (delta > 0.0f);
-			v2->command_state.steer = 1.0f; // signed per-wheel multipliers carry the angle
-			for (int i = 0; i < wheel_count; i++) {
-				if (wheel_flags[i].steer) {
-					const bool wheel_on_neg_x = v2->wheel_shape_local_poses[i].p.x < 0.0f;
-					const bool is_inner = (wheel_on_neg_x == turn_toward_neg_x);
-					const float target = (delta > 0.0f ? 1.0f : -1.0f) *
-							(adelta + p * ((is_inner ? inner : outer) - adelta));
-					computed_steer_angles[i] = target;
-					v2->steer_response_params.wheelResponseMultipliers[i] = target * steer_inv;
-				} else {
-					computed_steer_angles[i] = 0.0f;
-					v2->steer_response_params.wheelResponseMultipliers[i] = 0.0f;
-				}
-			}
-		} else {
-			// Straight (or degenerate geometry): flat steer from the flags.
-			v2->command_state.steer = steer_norm;
-			for (int i = 0; i < wheel_count; i++) {
-				computed_steer_angles[i] = wheel_flags[i].steer ? (steer_norm * steer_max) : 0.0f;
-				v2->steer_response_params.wheelResponseMultipliers[i] = wheel_flags[i].steer ? 1.0f : 0.0f;
-			}
-		}
-	} else {
-		v2->command_state.steer = steer_norm;
-		for (int i = 0; i < wheel_count; i++) {
-			computed_steer_angles[i] = wheel_flags[i].steer ? (steer_norm * steer_max) : 0.0f;
-			v2->steer_response_params.wheelResponseMultipliers[i] = wheel_flags[i].steer ? 1.0f : 0.0f;
-		}
+	if (!chassis_shape_node || chassis_shape_node->get_shape().is_null()) {
+		return false;
+	}
+	Ref<BoxShape3D> box_shape = chassis_shape_node->get_shape();
+	if (box_shape.is_null()) {
+		ERR_PRINT("PhysXVehicle3D: chassis CollisionShape3D must use a BoxShape3D.");
+		return false;
 	}
 
-	inputs_dirty = false;
+	PhysXServer3D *server = PhysXServer3D::get_singleton();
+	if (!server) {
+		return false;
+	}
+	PhysXSpace3D *space = server->get_space(get_world_3d()->get_space());
+	if (!space) {
+		// Not running on the PhysX backend -- this node offers PxVehicle2-
+		// specific capability and has no fallback for another backend.
+		return false;
+	}
+	PxPhysics *physics = space->get_px_physics();
+	PxScene *scene = space->get_px_scene();
+	if (!physics || !scene) {
+		return false;
+	}
+
+	Vehicle4WConfig cfg;
+	cfg.mass = mass;
+	cfg.moment_of_inertia = moment_of_inertia;
+	cfg.chassis_half_extents = box_shape->get_size() * 0.5;
+	cfg.chassis_box_center_local = chassis_shape_node->get_position();
+	cfg.chassis_com_local = center_of_mass_mode == CENTER_OF_MASS_MODE_CUSTOM ? center_of_mass : chassis_shape_node->get_position();
+	cfg.max_engine_torque = max_engine_torque;
+	cfg.max_brake_torque = max_brake_torque;
+	cfg.handbrake_torque = handbrake_torque;
+	cfg.max_steer_angle = max_steer_angle;
+	cfg.ackermann_strength = ackermann_strength;
+	cfg.front_anti_roll_stiffness = front_anti_roll_stiffness;
+	cfg.rear_anti_roll_stiffness = rear_anti_roll_stiffness;
+	cfg.collision_layer = collision_layer;
+	cfg.collision_mask = collision_mask;
+
+	for (int i = 0; i < 4; i++) {
+		PhysXVehicleWheel3D *w = wheels[i];
+		Vehicle4WWheelConfig &wc = cfg.wheels[i];
+		wc.position = w->get_position();
+		wc.basis = w->get_transform().basis;
+		wc.radius = w->get_radius();
+		wc.half_width = w->get_half_width();
+		wc.wheel_mass = w->get_wheel_mass();
+		wc.wheel_moment_of_inertia = w->get_wheel_moment_of_inertia();
+		wc.damping_rate = w->get_damping_rate();
+		wc.suspension_travel = w->get_suspension_travel();
+		wc.suspension_stiffness = w->get_suspension_stiffness();
+		wc.suspension_damping = w->get_suspension_damping();
+		wc.tire_lateral_stiffness = w->get_tire_lateral_stiffness();
+		wc.tire_longitudinal_stiffness = w->get_tire_longitudinal_stiffness();
+		wc.tire_camber_stiffness = w->get_tire_camber_stiffness();
+		wc.tire_friction = w->get_tire_friction();
+		wc.tire_rest_grip = w->get_tire_rest_grip();
+		wc.tire_slide_grip = w->get_tire_slide_grip();
+		wc.use_as_steering = w->is_used_as_steering();
+		wc.use_as_traction = w->is_used_as_traction();
+	}
+
+	if (!configure_vehicle4w(impl->vehicle, cfg, *physics, *scene, impl->simulationContext, impl->wheel_order)) {
+		return false;
+	}
+
+	Vehicle4W &v = impl->vehicle;
+	v.physxActor.rigidBody->setGlobalPose(physx_to_px(get_global_transform()));
+	impl->sleep_threshold = (PxReal)space->get_sleep_energy_threshold();
+	impl->time_before_sleep = (PxReal)space->get_time_before_sleep();
+	PxRigidDynamic *dynamic_body = v.physxActor.rigidBody->is<PxRigidDynamic>();
+	ERR_FAIL_NULL_V(dynamic_body, false);
+	dynamic_body->setSleepThreshold(can_sleep && PhysXProjectSettings::allow_sleep ? impl->sleep_threshold : 0.0f);
+	dynamic_body->setWakeCounter(impl->time_before_sleep);
+	scene->addActor(*v.physxActor.rigidBody);
+	v.physxActor.rigidBody->setName("PhysXVehicle3D");
+
+	impl->scene = scene;
+	impl->built = true;
+	return true;
 }
 
-// ============================================================================
-// Per-step: update — build the PhysX simulation context + step the sequence.
-// ============================================================================
-
-void PhysXVehicle3D::update(float p_step) {
-	if (!v2 || !configured || !chassis_actor || !space) {
-		return;
-	}
-	// Balance assist first: it reads the freshest chassis roll state and may
-	// adjust the steer command consumed by write_commands below.
-	_update_balance(p_step);
-	// Re-write commands whenever the assist is live (the steer augmentation
-	// changes every frame even with constant rider input), not just when the
-	// cached inputs changed.
-	if (inputs_dirty || balance_enabled || ackermann_enabled) {
-		write_commands();
-	}
-
-	physx::PxScene *px_scene = space->get_px_scene();
-	if (!px_scene) {
-		return;
-	}
-
-	physx::PxVehiclePhysXSimulationContext ctx;
-	ctx.setToDefault();
-	ctx.physxScene = px_scene;
-	ctx.gravity = px_scene->getGravity();
-	// Godot frame: forward -Z, up +Y (lateral -X for a proper right-handed frame).
-	// TODO(P13): calibrate lateral sign + verify against Godot's conventions.
-	ctx.frame.lngAxis = physx::PxVehicleAxes::eNegZ;
-	ctx.frame.latAxis = physx::PxVehicleAxes::eNegX;
-	ctx.frame.vrtAxis = physx::PxVehicleAxes::ePosY;
-	ctx.scale.scale = 1.0f;
-	ctx.physxActorUpdateMode = physx::PxVehiclePhysXActorUpdateMode::eAPPLY_ACCELERATION;
-
-	// Mark the constraints dirty so the PhysX scene processes them this step
-	// (the SDK contract for PxVehicleConstraintsCreate'd objects).
-	physx::PxVehicleConstraintsDirtyStateUpdate(v2->physx_constraints);
-
-	// NOTE: gravity is NOT applied manually here. The RigidBodyComponent in
-	// the sequence integrates gravity into rigidBodyState, and the actor end
-	// component writes the resulting velocity delta back as an acceleration
-	// on the chassis (which has eDISABLE_GRAVITY). A manual addForce here
-	// would double gravity.
-
-	v2->sequence.update(p_step, ctx);
-}
-
-// ============================================================================
-// Post-step: read vehicle2 state -> telemetry cache
-// ============================================================================
-
-void PhysXVehicle3D::post_step(float p_step) {
-	if (!v2) {
-		return;
-	}
-	(void)p_step;
-
-	wheel_telemetry.clear();
-	wheel_telemetry.resize(v2->nb_wheels);
-	for (int i = 0; i < v2->nb_wheels; i++) {
-		WheelTelemetry &wt = wheel_telemetry[i];
-		const physx::PxVehicleRoadGeometryState &rg = v2->road_geometry_states[i];
-		const physx::PxVehiclePhysXRoadGeometryQueryState &pxrg = v2->physx_road_geometry_states[i];
-		wt.in_contact = rg.hitState ? true : false;
-		if (wt.in_contact) {
-			wt.contact_point = Vector3((real_t)pxrg.hitPosition.x, (real_t)pxrg.hitPosition.y, (real_t)pxrg.hitPosition.z);
-			wt.contact_normal = Vector3((real_t)rg.plane.n.x, (real_t)rg.plane.n.y, (real_t)rg.plane.n.z);
-			wt.contact_body_rid = resolve_contact_body(pxrg.actor);
-		} else {
-			wt.contact_point = Vector3();
-			wt.contact_normal = Vector3();
-			wt.contact_body_rid = RID();
+void PhysXVehicle3D::_destroy() {
+	if (impl->built) {
+		if (impl->scene) {
+			impl->scene->removeActor(*impl->vehicle.physxActor.rigidBody);
 		}
-		// Wheel rotation: rad/s -> rpm, plus accumulated angle (rad).
-		wt.rpm = v2->wheel_rigid_body_1d_states[i].rotationSpeed * (60.0f / 6.28318530717958647692f);
-		wt.rotation = (real_t)v2->wheel_rigid_body_1d_states[i].rotationAngle;
-		// Longitudinal/lateral tire slip ratios as the skid indicators.
-		wt.skid = (real_t)v2->tire_slip_states[i].slips[physx::PxVehicleTireDirectionModes::eLONGITUDINAL];
-		wt.skid_lateral = (real_t)v2->tire_slip_states[i].slips[physx::PxVehicleTireDirectionModes::eLATERAL];
-	}
-
-	// EngineDrive telemetry.
-	if (archetype == ARCHETYPE_ENGINE_DRIVE) {
-		// rad/s -> rpm: rpm = omega * 60 / (2*pi).
-		engine_rpm = v2->engine_state.rotationSpeed * (60.0f / 6.28318530717958647692f);
-		engine_gear = (int)v2->gearbox_state.currentGear;
-		clutch_resp = v2->clutch_response_state.commandResponse;
-	}
-	telemetry_valid = true;
-}
-
-// ============================================================================
-// Wheel configuration helpers (Phase 6)
-// ============================================================================
-
-void PhysXVehicle3D::allocate_wheel_buffers(int p_count) {
-	const int old_count = wheel_count;
-	wheel_count = p_count;
-
-	// Size the Godot-side per-wheel caches first so _update_response_params()
-	// (called inside _rebuild) sees a correctly-sized wheel_flags.
-	wheel_flags.resize(p_count);
-	in_wheel_drive_torque.resize(p_count);
-	in_wheel_brake_torque.resize(p_count);
-	in_wheel_steer_angle.resize(p_count);
-	// The steer-angle cache must match the wheel count immediately:
-	// vehicle_get_wheel_steer_angles() reads it before the first
-	// write_commands() has ever run (scripts poll it between
-	// vehicle_set_wheel_count() and the first completed step).
-	computed_steer_angles.resize(p_count);
-	for (float &angle : computed_steer_angles) {
-		angle = 0.0f;
-	}
-	for (int i = old_count; i < p_count; i++) {
-		wheel_flags[i] = WheelFlags();
-		in_wheel_drive_torque[i] = 0.0f;
-		in_wheel_brake_torque[i] = 0.0f;
-		in_wheel_steer_angle[i] = 0.0f;
-	}
-
-	if (v2) {
-		// A wheel-count change requires re-assembling the component sequence
-		// (components bind to per-wheel array addresses, which move on realloc).
-		_rebuild();
+		impl->vehicle.destroy();
+		impl->built = false;
+		impl->scene = nullptr;
 	}
 }
 
-void PhysXVehicle3D::apply_wheel_params(int p_idx, const Dictionary &p_params) {
-	// Cache for _rebuild re-apply (see cached_wheel_params' own note).
-	if (p_idx >= 0) {
-		if (p_idx >= (int)cached_wheel_params.size()) {
-			cached_wheel_params.resize(p_idx + 1);
-		}
-		cached_wheel_params[p_idx] = p_params;
-	}
-
-	if (!v2 || p_idx < 0 || p_idx >= wheel_count) {
+void PhysXVehicle3D::_rebuild_if_live() {
+	if (!is_inside_world()) {
+		// Not in the tree/world yet -- NOTIFICATION_ENTER_WORLD will do the
+		// real first build once it is.
 		return;
 	}
+	// Unconditional, not just "if already built" -- a wheel child can finish
+	// registering (e.g. the 4th of 4, added after this node's own
+	// NOTIFICATION_ENTER_WORLD already ran and failed with too few wheels)
+	// and that later success needs a real attempt here, not just a rebuild
+	// of something that was never built. Also toggles physics processing
+	// itself -- NOTIFICATION_ENTER_WORLD isn't the only path that can
+	// transition built false->true (a wheel registering after is exactly
+	// that), so it can't be the only place this gets turned on.
+	_destroy();
+	set_physics_process_internal(_build());
+}
 
-	physx::PxVehicleWheelParams &wp = v2->wheel_params[p_idx];
-	physx::PxVehicleSuspensionParams &sp = v2->suspension_params[p_idx];
-	physx::PxVehicleSuspensionForceParams &sfp = v2->suspension_force_params[p_idx];
-	physx::PxVehicleTireForceParams &tp = v2->tire_params[p_idx];
-	WheelFlags &wf = wheel_flags[p_idx];
-
-	if (p_params.has("radius")) wp.radius = (float)(double)p_params["radius"];
-	if (p_params.has("wheel_mass")) wp.mass = (float)(double)p_params["wheel_mass"];
-	if (p_params.has("wheel_moi")) wp.moi = (float)(double)p_params["wheel_moi"];
-	if (p_params.has("wheel_damping")) wp.dampingRate = (float)(double)p_params["wheel_damping"];
-
-	if (p_params.has("suspension_travel")) sp.suspensionTravelDist = (float)(double)p_params["suspension_travel"];
-	if (p_params.has("local_pose")) {
-		physx::PxTransform shape_pose = _to_px_transform((Transform3D)p_params["local_pose"]);
-		// vehicle2's rigid-body frame is the chassis CENTER-OF-MASS frame,
-		// while the caller specifies the wheel attachment in the chassis
-		// actor (body) frame. Convert so the suspension raycasts land where
-		// the caller positioned them; without this, any chassis whose COM is
-		// offset from the body origin (every real vehicle with asymmetric
-		// collision shapes) casts its wheel rays from a displaced position
-		// and the wheels miss the ground.
-		if (chassis_actor) {
-			const physx::PxTransform com = chassis_actor->getCMassLocalPose();
-			shape_pose = com.getInverse() * shape_pose;
-		}
-		sp.suspensionAttachment = shape_pose;
-		v2->wheel_shape_local_poses[p_idx] = shape_pose;
-		v2->wheel_local_poses[p_idx].localPose = shape_pose;
-	}
-
-	if (p_params.has("suspension_stiffness")) sfp.stiffness = (float)(double)p_params["suspension_stiffness"];
-	if (p_params.has("suspension_damping")) sfp.damping = (float)(double)p_params["suspension_damping"];
-	if (p_params.has("suspension_sprung_mass")) sfp.sprungMass = (float)(double)p_params["suspension_sprung_mass"];
-
-	if (p_params.has("tire_friction")) {
-		const float f = (float)(double)p_params["tire_friction"];
-		tp.frictionVsSlip[0][0] = 0.0f; tp.frictionVsSlip[0][1] = f;
-		tp.frictionVsSlip[1][0] = 0.1f; tp.frictionVsSlip[1][1] = f;
-		tp.frictionVsSlip[2][0] = 1.0f; tp.frictionVsSlip[2][1] = f;
-	}
-	if (p_params.has("tire_long_stiffness")) tp.longStiff = (float)(double)p_params["tire_long_stiffness"];
-
-	if (p_params.has("surface_friction_default")) {
-		// Friction used when the ground material has no explicit mapping.
-		v2->material_friction_params[p_idx].defaultFriction = (float)(double)p_params["surface_friction_default"];
-	}
-	if (p_params.has("surface_frictions")) {
-		// Per-wheel grip table: { ground_body_rid: friction }, resolved to the
-		// ground body's PxMaterial. Surfaces not listed use defaultFriction.
-		// The RID of each source body is recorded in the parallel
-		// surface_pair_bodies table so invalidate_surface_pairs_for_body() can
-		// drop entries when a ground body (and its material) is freed.
-		const Dictionary pairs = p_params["surface_frictions"];
-		physx::PxVehiclePhysXMaterialFriction *dst = v2->surface_pairs + p_idx * MAX_SURFACE_PAIRS;
-		RID *dst_bodies = v2->surface_pair_bodies + p_idx * MAX_SURFACE_PAIRS;
-		int n = 0;
-		for (const KeyValue<Variant, Variant> &kv : pairs) {
-			if (n >= (int)MAX_SURFACE_PAIRS) {
+void PhysXVehicle3D::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_ENTER_WORLD: {
+			set_physics_process_internal(_build());
+		} break;
+		case NOTIFICATION_EXIT_WORLD: {
+			set_physics_process_internal(false);
+			_destroy();
+		} break;
+		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS: {
+			if (!impl->built) {
 				break;
 			}
-			PhysXBody3D *ground = PhysXServer3D::get_singleton()->get_body(kv.key);
-			ERR_CONTINUE_MSG(!ground, "PhysX: surface_frictions key is not a body RID.");
-			dst[n].material = ground->get_shape_material();
-			dst[n].friction = (float)(double)kv.value;
-			dst_bodies[n] = ground->get_rid();
-			n++;
-		}
-		// Stale RIDs beyond the live count must not resurface: a later call
-		// rewrites 0..n-1 wholesale, but invalidate_surface_pairs_for_body()
-		// matches on RID and would otherwise compare dead slots.
-		for (int i = n; i < (int)MAX_SURFACE_PAIRS; i++) {
-			dst_bodies[i] = RID();
-		}
-		v2->material_friction_params[p_idx].materialFrictions = dst;
-		v2->material_friction_params[p_idx].nbMaterialFrictions = n;
-	}
-
-	if (p_params.has("steer")) wf.steer = (bool)p_params["steer"];
-	if (p_params.has("traction")) wf.traction = (bool)p_params["traction"];
-	if (p_params.has("brake")) wf.brake = (bool)p_params["brake"];
-	if (p_params.has("front")) wf.front = (bool)p_params["front"];
-
-	// Role flags may have changed -> re-seed the response multipliers.
-	_update_response_params();
-}
-
-void PhysXVehicle3D::invalidate_surface_pairs_for_body(const PhysXBody3D *p_body) {
-	if (!v2 || !p_body) {
-		return;
-	}
-	const RID body_rid = p_body->get_rid();
-	for (int w = 0; w < v2->nb_wheels; w++) {
-		const int base = w * MAX_SURFACE_PAIRS;
-		int nb = v2->material_friction_params[w].nbMaterialFrictions;
-		int i = 0;
-		while (i < nb) {
-			if (v2->surface_pair_bodies[base + i] == body_rid) {
-				// Compact the wheel's block, keeping order stable so the grip
-				// table stays deterministic across a ground-body free.
-				for (int j = i; j < nb - 1; j++) {
-					v2->surface_pairs[base + j] = v2->surface_pairs[base + j + 1];
-					v2->surface_pair_bodies[base + j] = v2->surface_pair_bodies[base + j + 1];
+			// Two-way transform contract: the node's transform normally
+			// follows the chassis (synced below), so a mismatch here means a
+			// script wrote global_transform since our last sync -- push it
+			// INTO the chassis, hard-setting the pose and zeroing all
+			// velocities (reset/respawn semantics, RigidBody3D-style).
+			{
+				const Transform3D node_xform = get_global_transform();
+				if (!_last_synced_valid || !node_xform.is_equal_approx(_last_synced_xform)) {
+					if (PxRigidDynamic *dynamic_body = impl->vehicle.physxActor.rigidBody->is<PxRigidDynamic>()) {
+						dynamic_body->setGlobalPose(physx_to_px(node_xform), true);
+						dynamic_body->setLinearVelocity(PxVec3(0, 0, 0));
+						dynamic_body->setAngularVelocity(PxVec3(0, 0, 0));
+					}
+					_last_synced_xform = node_xform;
+					_last_synced_valid = true;
 				}
-				v2->surface_pair_bodies[base + nb - 1] = RID();
-				nb--;
-			} else {
-				i++;
 			}
-		}
-		v2->material_friction_params[w].nbMaterialFrictions = nb;
+			Vehicle4W &v = impl->vehicle;
+			// Negated: with the frame's lngAxis = eNegZ the SDK's direct drive
+			// rolls the vehicle toward +Z_local (measured on 5.11), but this
+			// composition declares Godot convention forward = -Z -- the
+			// steered axle leads at -Z. Negating the command torque makes
+			// forward throttle roll the car nose-first (-Z), and `reverse`
+			// (eREVERSE) rolls +Z as expected. The tire model is slip-sign
+			// symmetric, so nothing else moves.
+			v.commandState.throttle = -(PxReal)throttle;
+			v.commandState.brakes[0] = (PxReal)brake;
+			v.commandState.brakes[1] = (PxReal)handbrake;
+			v.commandState.nbBrakes = 2;
+			v.commandState.steer = (PxReal)steer;
+			v.transmissionCommandState.gear = reverse ? PxVehicleDirectDriveTransmissionCommandState::eREVERSE : PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
+			v.step((PxReal)get_physics_process_delta_time(), impl->simulationContext);
+			// v.rigidBodyState.pose is CoM-relative, not the actor's real
+			// origin (confirmed directly by comparing it against a raw
+			// getGlobalPose() read while root-causing the chassis-collision
+			// regression) -- the CollisionShape3D/wheel/mesh children are all
+			// positioned relative to the actor's own origin (that's the frame
+			// PxVehiclePhysXActorCreate cooked the real PxShape geometry
+			// into), so this node's own transform has to track that same
+			// origin, not the CoM. Using rigidBodyState.pose here left the
+			// visual body a constant offset away from where the real
+			// collision geometry actually sits at rest, and made that offset
+			// visibly swing whenever the body rotated (braking, cornering, a
+			// bump) since it rotates with the body.
+			_last_synced_xform = physx_to_godot(v.physxActor.rigidBody->getGlobalPose());
+			_last_synced_valid = true;
+			set_global_transform(_last_synced_xform);
+			// Push each wheel's live pose (suspension jounce + steer angle +
+			// roll spin, all baked into wheelLocalPoses by PxVehicleWheelComponent)
+			// onto that wheel's own node -- same idea as VehicleBody3D's own
+			// _update_wheel_transform(): the wheel NODE moves, and any
+			// MeshInstance3D the scene author parented under it inherits that
+			// motion automatically, no separate mesh-transform wiring needed.
+			//
+			// wheelLocalPoses[i].localPose is in the CoM frame, NOT the actor's
+			// own origin frame (confirmed directly in PhysX's own write-back
+			// code, VhPhysXActorFunctions.cpp: "Local pose in actor frame" is
+			// computed as cmassLocalPose * wheelLocalPose, not wheelLocalPose
+			// alone) -- this node's own transform above is the actor's real
+			// origin, so composing wheelLocalPose directly onto it left every
+			// wheel a constant offset away (equal to the CoM offset, ~0.35m by
+			// default) from where it should be, visible as wheels sunk deep
+			// into the ground regardless of wheel radius (a real regression
+			// caught by an A/B on radius that showed the SAME absolute
+			// penetration depth for two different radii -- ruling out anything
+			// radius-proportional and pointing straight at a fixed frame
+			// offset instead).
+			const PxTransform cmass_local_pose = v.physxActor.rigidBody->getCMassLocalPose();
+			for (uint32_t i = 0; i < 4; i++) {
+				wheels[impl->wheel_order[i]]->set_transform(physx_to_godot(cmass_local_pose * v.wheelLocalPoses[i].localPose));
+			}
+		} break;
 	}
 }
 
-// ============================================================================
-// Control inputs + EngineDrive config (Phase 8)
-// ============================================================================
-
-void PhysXVehicle3D::set_control_inputs(float p_throttle, float p_brake, float p_steer, float p_handbrake) {
-	in_throttle = p_throttle;
-	in_brake = p_brake;
-	in_steer = p_steer;
-	in_handbrake = p_handbrake;
-	inputs_dirty = true;
+Vector3 PhysXVehicle3D::get_linear_velocity() const {
+	if (!impl->built) {
+		return Vector3();
+	}
+	return physx_to_godot(impl->vehicle.rigidBodyState.linearVelocity);
 }
 
-void PhysXVehicle3D::set_gear_command(int p_gear) {
-	in_target_gear = p_gear;
-	inputs_dirty = true;
+real_t PhysXVehicle3D::get_forward_speed() const {
+	if (!impl->built) {
+		return 0.0;
+	}
+	// frame.getLngAxis() is a fixed LOCAL-frame constant (e.g. (0,0,-1)),
+	// not a world-space direction -- rotate it into world space by the
+	// actor's current orientation before dotting against the world-space
+	// velocity, or this is only correct when yaw matches spawn orientation
+	// (found via a real bug report: correct at first, sign-flips as the
+	// vehicle yaws further away from its start heading).
+	const PxTransform actor_pose = impl->vehicle.physxActor.rigidBody->getGlobalPose();
+	// frame.getLngAxis() is a fixed LOCAL-frame constant (e.g. (0,0,-1)), not
+	// a world-space direction -- rotate it into world space by the actor's
+	// current orientation before dotting against the world-space velocity
+	// (upstream fix: otherwise this is only correct when yaw matches spawn
+	// orientation). Positive while driving forward, negative rolling backward.
+	const PxVec3 fwd = actor_pose.q.rotate(impl->vehicle.frame.getLngAxis());
+	return (real_t)impl->vehicle.rigidBodyState.linearVelocity.dot(fwd);
 }
 
-// Tuned command-response limits; a negative entry reverts that channel to the
-// built-in default (see _update_response_params).
-void PhysXVehicle3D::set_response_params(const Dictionary &p_params) {
-	if (p_params.has("drive_torque")) tune_drive_torque = (float)(double)p_params["drive_torque"];
-	if (p_params.has("max_steer_angle")) tune_max_steer_angle = (float)(double)p_params["max_steer_angle"];
-	if (p_params.has("brake_torque")) tune_brake_torque = (float)(double)p_params["brake_torque"];
-	if (p_params.has("handbrake_torque")) tune_handbrake_torque = (float)(double)p_params["handbrake_torque"];
-	_update_response_params();
-}
-
-// Anti-roll bars: "wheel_ids" is a flattened list of wheel-index pairs and
-// "stiffness" holds one stiffness per pair (unit: mass / time^2); an empty
-// "stiffness" disables anti-roll. Like the other vehicle2 params, the
-// configuration lives in the vehicle2 state and resets on rebuild.
-void PhysXVehicle3D::set_anti_roll_params(const Dictionary &p_params) {
-	if (!v2 || !p_params.has("stiffness")) {
-		return;
+real_t PhysXVehicle3D::get_wheel_jounce(int p_wheel) const {
+	if (!impl->built) {
+		return 0.0;
 	}
-	PackedFloat32Array stiffness = p_params["stiffness"];
-	PackedInt32Array wheel_ids = p_params.get("wheel_ids", PackedInt32Array());
-	int nb_bars = wheel_ids.size() / 2 < stiffness.size() ? wheel_ids.size() / 2 : stiffness.size();
-	if (nb_bars > wheel_count) {
-		nb_bars = wheel_count;
-	}
-	for (int i = 0; i < nb_bars; i++) {
-		const int w0 = wheel_ids[i * 2];
-		const int w1 = wheel_ids[i * 2 + 1];
-		ERR_FAIL_INDEX_MSG(w0, wheel_count, "PhysX: anti-roll wheel id out of range.");
-		ERR_FAIL_INDEX_MSG(w1, wheel_count, "PhysX: anti-roll wheel id out of range.");
-		v2->anti_roll_params[i].wheel0 = (physx::PxU32)w0;
-		v2->anti_roll_params[i].wheel1 = (physx::PxU32)w1;
-		v2->anti_roll_params[i].stiffness = stiffness[i];
-	}
-	v2->nb_anti_roll_bars = nb_bars;
-}
-
-// Ackermann steering geometry. "percent" blends between parallel steer (0) and
-// pure Ackermann (100); "wheelbase"/"track" override the auto-derived geometry
-// (negative = derive from the wheel suspension attachments).
-void PhysXVehicle3D::set_ackermann_params(const Dictionary &p_params) {
-	if (p_params.has("enabled")) {
-		ackermann_enabled = (bool)p_params["enabled"];
-	}
-	if (p_params.has("percent")) {
-		ackermann_percent = (float)(double)p_params["percent"];
-	}
-	if (p_params.has("wheelbase")) {
-		tune_ackermann_wheelbase = (float)(double)p_params["wheelbase"];
-	}
-	if (p_params.has("track")) {
-		tune_ackermann_track = (float)(double)p_params["track"];
-	}
-	inputs_dirty = true;
-}
-
-PackedFloat32Array PhysXVehicle3D::get_wheel_steer_angles() const {
-	PackedFloat32Array out;
-	out.resize(wheel_count);
-	for (int i = 0; i < wheel_count; i++) {
-		out.write[i] = (real_t)computed_steer_angles[i];
-	}
-	return out;
-}
-
-// 2-wheeler roll-balance assist (see _update_balance for the control law).
-void PhysXVehicle3D::set_balance_params(const Dictionary &p_params) {
-	if (p_params.has("enabled")) {
-		balance_enabled = (bool)p_params["enabled"];
-	}
-	if (p_params.has("kp")) {
-		balance_kp = MAX((float)(double)p_params["kp"], 0.0f);
-	}
-	if (p_params.has("kd")) {
-		balance_kd = MAX((float)(double)p_params["kd"], 0.0f);
-	}
-	if (p_params.has("max_steer_assist")) {
-		balance_max_steer_assist = MAX((float)(double)p_params["max_steer_assist"], 0.0f);
-	}
-	if (p_params.has("low_speed_torque")) {
-		balance_low_speed_torque = MAX((float)(double)p_params["low_speed_torque"], 0.0f);
-	}
-	inputs_dirty = true;
-}
-
-Dictionary PhysXVehicle3D::get_balance_state() const {
-	Dictionary d;
-	d["lean_angle"] = (real_t)balance_lean_angle;
-	d["roll_rate"] = (real_t)balance_roll_rate;
-	d["steer_assist"] = (real_t)balance_steer_assist;
-	return d;
-}
-
-void PhysXVehicle3D::set_wheel_drive_torque(int p_idx, float p_torque) {
-	if (p_idx < 0 || p_idx >= wheel_count) {
-		return;
-	}
-	in_wheel_drive_torque[p_idx] = p_torque;
-	inputs_dirty = true;
-}
-
-void PhysXVehicle3D::set_wheel_brake_torque(int p_idx, float p_torque) {
-	if (p_idx < 0 || p_idx >= wheel_count) {
-		return;
-	}
-	in_wheel_brake_torque[p_idx] = p_torque;
-	inputs_dirty = true;
-}
-
-void PhysXVehicle3D::set_wheel_steer_angle(int p_idx, float p_angle) {
-	if (p_idx < 0 || p_idx >= wheel_count) {
-		return;
-	}
-	in_wheel_steer_angle[p_idx] = p_angle;
-	inputs_dirty = true;
-}
-
-void PhysXVehicle3D::set_engine_params(const Dictionary &p_params) {
-	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
-		return;
-	}
-	cached_engine_params = p_params;
-	if (p_params.has("moi")) v2->engine_params.moi = (float)(double)p_params["moi"];
-	if (p_params.has("peak_torque")) v2->engine_params.peakTorque = (float)(double)p_params["peak_torque"];
-	if (p_params.has("idle_omega")) v2->engine_params.idleOmega = (float)(double)p_params["idle_omega"];
-	if (p_params.has("max_omega")) v2->engine_params.maxOmega = (float)(double)p_params["max_omega"];
-	if (p_params.has("damping_full_throttle")) v2->engine_params.dampingRateFullThrottle = (float)(double)p_params["damping_full_throttle"];
-	if (p_params.has("damping_zero_throttle_clutch_engaged")) v2->engine_params.dampingRateZeroThrottleClutchEngaged = (float)(double)p_params["damping_zero_throttle_clutch_engaged"];
-	if (p_params.has("damping_zero_throttle_clutch_disengaged")) v2->engine_params.dampingRateZeroThrottleClutchDisengaged = (float)(double)p_params["damping_zero_throttle_clutch_disengaged"];
-	if (p_params.has("torque_curve")) {
-		// Interleaved [x0,y0, x1,y1, ...] of (normalized omega, normalized torque).
-		v2->engine_params.torqueCurve.clear();
-		PackedFloat32Array pts = p_params["torque_curve"];
-		const float *r = pts.ptr();
-		const int n = pts.size() / 2;
-		for (int i = 0; i < n; i++) {
-			v2->engine_params.torqueCurve.addPair(r[i * 2], r[i * 2 + 1]);
+	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
+			return (real_t)impl->vehicle.suspensionStates[i].jounce;
 		}
 	}
+	return 0.0;
 }
 
-void PhysXVehicle3D::set_clutch_params(const Dictionary &p_params) {
-	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
-		return;
+real_t PhysXVehicle3D::get_wheel_separation(int p_wheel) const {
+	if (!impl->built) {
+		return 0.0;
 	}
-	cached_clutch_params = p_params;
-	if (p_params.has("max_response")) v2->clutch_response_params.maxResponse = (float)(double)p_params["max_response"];
-	if (p_params.has("estimate_iterations")) v2->clutch_params.estimateIterations = (int)p_params["estimate_iterations"];
-	if (p_params.has("accuracy_mode")) {
-		v2->clutch_params.accuracyMode = ((int)p_params["accuracy_mode"] == 1)
-				? physx::PxVehicleClutchAccuracyMode::eBEST_POSSIBLE
-				: physx::PxVehicleClutchAccuracyMode::eESTIMATE;
+	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
+			return (real_t)impl->vehicle.suspensionStates[i].separation;
+		}
 	}
+	return 0.0;
 }
 
-void PhysXVehicle3D::set_gearbox_params(const Dictionary &p_params) {
-	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
-		return;
+Vector3 PhysXVehicle3D::get_actor_position() const {
+	if (!impl->built) {
+		return Vector3();
 	}
-	cached_gearbox_params = p_params;
-	if (p_params.has("neutral_gear")) v2->gearbox_params.neutralGear = (int)p_params["neutral_gear"];
-	if (p_params.has("final_ratio")) v2->gearbox_params.finalRatio = (float)(double)p_params["final_ratio"];
-	if (p_params.has("switch_time")) v2->gearbox_params.switchTime = (float)(double)p_params["switch_time"];
-	if (p_params.has("ratios")) {
-		PackedFloat32Array ratios = p_params["ratios"];
-		const float *r = ratios.ptr();
-		int n = ratios.size();
-		const int cap = (int)physx::PxVehicleGearboxParams::eMAX_NB_GEARS;
-		if (n > cap) {
-			n = cap;
-		}
-		for (int i = 0; i < n; i++) {
-			v2->gearbox_params.ratios[i] = r[i];
-		}
-		v2->gearbox_params.nbRatios = n;
-	}
+	return physx_to_godot(impl->vehicle.physxActor.rigidBody->getGlobalPose().p);
 }
 
-void PhysXVehicle3D::set_autobox_params(const Dictionary &p_params) {
-	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
-		return;
-	}
-	cached_autobox_params = p_params;
-	const int cap = (int)physx::PxVehicleGearboxParams::eMAX_NB_GEARS;
-	if (p_params.has("up_ratio")) {
-		const float v = (float)(double)p_params["up_ratio"];
-		for (int i = 0; i < cap; i++) {
-			v2->autobox_params.upRatios[i] = v;
+PackedStringArray PhysXVehicle3D::get_configuration_warnings() const {
+	PackedStringArray warnings = Node3D::get_configuration_warnings();
+	bool has_box_shape = false;
+	for (int i = 0; i < get_child_count(); i++) {
+		CollisionShape3D *cs = Object::cast_to<CollisionShape3D>(get_child(i));
+		if (cs && cs->get_shape().is_valid() && Object::cast_to<BoxShape3D>(cs->get_shape().ptr())) {
+			has_box_shape = true;
+			break;
 		}
 	}
-	if (p_params.has("down_ratio")) {
-		const float v = (float)(double)p_params["down_ratio"];
-		for (int i = 0; i < cap; i++) {
-			v2->autobox_params.downRatios[i] = v;
+	if (!has_box_shape) {
+		warnings.push_back(RTR("PhysXVehicle3D needs a CollisionShape3D child with a BoxShape3D for its chassis."));
+	}
+	int nb_steering = 0;
+	for (uint32_t i = 0; i < wheels.size(); i++) {
+		if (wheels[i]->is_used_as_steering()) {
+			nb_steering++;
 		}
 	}
-	if (p_params.has("latency")) v2->autobox_params.latency = (float)(double)p_params["latency"];
+	if (wheels.size() != 4) {
+		warnings.push_back(vformat(RTR("PhysXVehicle3D needs exactly 4 PhysXVehicleWheel3D children (has %d)."), (int)wheels.size()));
+	} else if (nb_steering != 2) {
+		warnings.push_back(vformat(RTR("PhysXVehicle3D needs exactly 2 wheels with use_as_steering enabled (has %d)."), nb_steering));
+	}
+	return warnings;
 }
 
-void PhysXVehicle3D::set_differential_params(const Dictionary &p_params) {
-	if (!v2 || archetype != ARCHETYPE_ENGINE_DRIVE) {
+#define PHYSX_VEHICLE_SETTER(m_name, m_field)      \
+	void PhysXVehicle3D::set_##m_name(real_t p_v) { \
+		m_field = p_v;                              \
+		_rebuild_if_live();                         \
+	}
+
+void PhysXVehicle3D::set_mass(real_t p_mass) {
+	mass = p_mass;
+	// Wheel gizmos estimate rest ride height from this vehicle's own mass
+	// (sprung_mass = mass * 0.25, matching configure_vehicle4w()) -- refresh
+	// them so the editor preview stays accurate as mass is tuned.
+	for (PhysXVehicleWheel3D *w : wheels) {
+		w->update_gizmos();
+	}
+	_rebuild_if_live();
+}
+void PhysXVehicle3D::set_moment_of_inertia(const Vector3 &p_moi) {
+	moment_of_inertia = p_moi;
+	_rebuild_if_live();
+}
+void PhysXVehicle3D::set_center_of_mass_mode(CenterOfMassMode p_mode) {
+	if (center_of_mass_mode == p_mode) {
 		return;
 	}
-	cached_differential_params = p_params;
-	// Optional 4-wheel limited-slip biases/targets (0 = open). The per-wheel
-	// drive split (RWD/FWD/6x4) is handled in _update_response_params() from
-	// WheelFlags.traction, independent of these biases.
-	if (p_params.has("front_bias")) v2->diff_params.frontBias = (float)(double)p_params["front_bias"];
-	if (p_params.has("front_target")) v2->diff_params.frontTarget = (float)(double)p_params["front_target"];
-	if (p_params.has("rear_bias")) v2->diff_params.rearBias = (float)(double)p_params["rear_bias"];
-	if (p_params.has("rear_target")) v2->diff_params.rearTarget = (float)(double)p_params["rear_target"];
-	if (p_params.has("center_bias")) v2->diff_params.centerBias = (float)(double)p_params["center_bias"];
-	if (p_params.has("center_target")) v2->diff_params.centerTarget = (float)(double)p_params["center_target"];
-	if (p_params.has("rate")) v2->diff_params.rate = (float)(double)p_params["rate"];
-	if (p_params.has("front_wheel_ids")) {
-		PackedInt32Array ids = p_params["front_wheel_ids"];
-		const int32_t *r = ids.ptr();
-		const int n = ids.size() < 2 ? ids.size() : 2;
-		for (int i = 0; i < n; i++) {
-			v2->diff_params.frontWheelIds[i] = (physx::PxU32)r[i];
-		}
+	center_of_mass_mode = p_mode;
+	notify_property_list_changed();
+	_rebuild_if_live();
+}
+void PhysXVehicle3D::set_center_of_mass(const Vector3 &p_center_of_mass) {
+	if (center_of_mass == p_center_of_mass) {
+		return;
 	}
-	if (p_params.has("rear_wheel_ids")) {
-		PackedInt32Array ids = p_params["rear_wheel_ids"];
-		const int32_t *r = ids.ptr();
-		const int n = ids.size() < 2 ? ids.size() : 2;
-		for (int i = 0; i < n; i++) {
-			v2->diff_params.rearWheelIds[i] = (physx::PxU32)r[i];
+	ERR_FAIL_COND(center_of_mass_mode != CENTER_OF_MASS_MODE_CUSTOM);
+	center_of_mass = p_center_of_mass;
+	_rebuild_if_live();
+}
+void PhysXVehicle3D::set_can_sleep(bool p_can_sleep) {
+	if (can_sleep == p_can_sleep) {
+		return;
+	}
+	can_sleep = p_can_sleep;
+	if (impl->built) {
+		PxRigidDynamic *body = impl->vehicle.physxActor.rigidBody->is<PxRigidDynamic>();
+		ERR_FAIL_NULL(body);
+		body->setSleepThreshold(can_sleep && PhysXProjectSettings::allow_sleep ? impl->sleep_threshold : 0.0f);
+		body->setWakeCounter(impl->time_before_sleep);
+		if (!can_sleep) {
+			body->wakeUp();
 		}
 	}
 }
 
-// ============================================================================
-// Utility
-// ============================================================================
+bool PhysXVehicle3D::is_sleeping() const {
+	PxRigidDynamic *body = impl->built ? impl->vehicle.physxActor.rigidBody->is<PxRigidDynamic>() : nullptr;
+	return body && body->isSleeping();
+}
+PHYSX_VEHICLE_SETTER(max_engine_torque, max_engine_torque)
+PHYSX_VEHICLE_SETTER(max_brake_torque, max_brake_torque)
+PHYSX_VEHICLE_SETTER(handbrake_torque, handbrake_torque)
+PHYSX_VEHICLE_SETTER(max_steer_angle, max_steer_angle)
+PHYSX_VEHICLE_SETTER(ackermann_strength, ackermann_strength)
+PHYSX_VEHICLE_SETTER(front_anti_roll_stiffness, front_anti_roll_stiffness)
+PHYSX_VEHICLE_SETTER(rear_anti_roll_stiffness, rear_anti_roll_stiffness)
 
-RID PhysXVehicle3D::resolve_contact_body(const physx::PxRigidActor *p_hit) const {
-	if (!p_hit) {
-		return RID();
-	}
-	// The hit actor's userData is a PhysXActorUserData (set by every body/area
-	// the module creates). Resolve it back to the Godot RID.
-	const PhysXActorUserData *ud = static_cast<const PhysXActorUserData *>(p_hit->userData);
-	if (!ud || !ud->object) {
-		return RID();
-	}
-	return ud->rid;
+#undef PHYSX_VEHICLE_SETTER
+
+void PhysXVehicle3D::set_collision_layer(uint32_t p_layer) {
+	collision_layer = p_layer;
+	_rebuild_if_live();
+}
+void PhysXVehicle3D::set_collision_mask(uint32_t p_mask) {
+	collision_mask = p_mask;
+	_rebuild_if_live();
 }
 
-PhysXVehicle3D::Archetype PhysXVehicle3D::int_to_archetype(int p_kind) {
-	return (p_kind == 1) ? ARCHETYPE_ENGINE_DRIVE : ARCHETYPE_DIRECT_DRIVE;
+void PhysXVehicle3D::_validate_property(PropertyInfo &p_property) const {
+	if (center_of_mass_mode != CENTER_OF_MASS_MODE_CUSTOM && p_property.name == "center_of_mass") {
+		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
+	}
 }
 
-// ============================================================================
-// Constructor / Destructor
-// ============================================================================
+void PhysXVehicle3D::_bind_methods() {
+	BIND_ENUM_CONSTANT(CENTER_OF_MASS_MODE_AUTO);
+	BIND_ENUM_CONSTANT(CENTER_OF_MASS_MODE_CUSTOM);
 
-PhysXVehicle3D::PhysXVehicle3D() = default;
+	ClassDB::bind_method(D_METHOD("set_mass", "mass"), &PhysXVehicle3D::set_mass);
+	ClassDB::bind_method(D_METHOD("get_mass"), &PhysXVehicle3D::get_mass);
+	ClassDB::bind_method(D_METHOD("set_moment_of_inertia", "moi"), &PhysXVehicle3D::set_moment_of_inertia);
+	ClassDB::bind_method(D_METHOD("get_moment_of_inertia"), &PhysXVehicle3D::get_moment_of_inertia);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "mass", PROPERTY_HINT_RANGE, "1,10000,1,or_greater"), "set_mass", "get_mass");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "moment_of_inertia"), "set_moment_of_inertia", "get_moment_of_inertia");
+	ClassDB::bind_method(D_METHOD("set_center_of_mass_mode", "mode"), &PhysXVehicle3D::set_center_of_mass_mode);
+	ClassDB::bind_method(D_METHOD("get_center_of_mass_mode"), &PhysXVehicle3D::get_center_of_mass_mode);
+	ClassDB::bind_method(D_METHOD("set_center_of_mass", "center_of_mass"), &PhysXVehicle3D::set_center_of_mass);
+	ClassDB::bind_method(D_METHOD("get_center_of_mass"), &PhysXVehicle3D::get_center_of_mass);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "center_of_mass_mode", PROPERTY_HINT_ENUM, "Auto,Custom"), "set_center_of_mass_mode", "get_center_of_mass_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "center_of_mass", PROPERTY_HINT_RANGE, "-10,10,0.01,or_less,or_greater,suffix:m"), "set_center_of_mass", "get_center_of_mass");
+	ClassDB::bind_method(D_METHOD("set_can_sleep", "able_to_sleep"), &PhysXVehicle3D::set_can_sleep);
+	ClassDB::bind_method(D_METHOD("is_able_to_sleep"), &PhysXVehicle3D::is_able_to_sleep);
+	ClassDB::bind_method(D_METHOD("is_sleeping"), &PhysXVehicle3D::is_sleeping);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "can_sleep"), "set_can_sleep", "is_able_to_sleep");
 
-PhysXVehicle3D::~PhysXVehicle3D() {
-	release();
+	ClassDB::bind_method(D_METHOD("set_max_engine_torque", "value"), &PhysXVehicle3D::set_max_engine_torque);
+	ClassDB::bind_method(D_METHOD("get_max_engine_torque"), &PhysXVehicle3D::get_max_engine_torque);
+	ClassDB::bind_method(D_METHOD("set_max_brake_torque", "value"), &PhysXVehicle3D::set_max_brake_torque);
+	ClassDB::bind_method(D_METHOD("get_max_brake_torque"), &PhysXVehicle3D::get_max_brake_torque);
+	ClassDB::bind_method(D_METHOD("set_handbrake", "value"), &PhysXVehicle3D::set_handbrake);
+	ClassDB::bind_method(D_METHOD("get_handbrake"), &PhysXVehicle3D::get_handbrake);
+	ClassDB::bind_method(D_METHOD("set_handbrake_torque", "value"), &PhysXVehicle3D::set_handbrake_torque);
+	ClassDB::bind_method(D_METHOD("get_handbrake_torque"), &PhysXVehicle3D::get_handbrake_torque);
+	ClassDB::bind_method(D_METHOD("set_max_steer_angle", "value"), &PhysXVehicle3D::set_max_steer_angle);
+	ClassDB::bind_method(D_METHOD("get_max_steer_angle"), &PhysXVehicle3D::get_max_steer_angle);
+	ClassDB::bind_method(D_METHOD("set_ackermann_strength", "value"), &PhysXVehicle3D::set_ackermann_strength);
+	ClassDB::bind_method(D_METHOD("get_ackermann_strength"), &PhysXVehicle3D::get_ackermann_strength);
+	ClassDB::bind_method(D_METHOD("set_front_anti_roll_stiffness", "value"), &PhysXVehicle3D::set_front_anti_roll_stiffness);
+	ClassDB::bind_method(D_METHOD("get_front_anti_roll_stiffness"), &PhysXVehicle3D::get_front_anti_roll_stiffness);
+	ClassDB::bind_method(D_METHOD("set_rear_anti_roll_stiffness", "value"), &PhysXVehicle3D::set_rear_anti_roll_stiffness);
+	ClassDB::bind_method(D_METHOD("get_rear_anti_roll_stiffness"), &PhysXVehicle3D::get_rear_anti_roll_stiffness);
+	ADD_GROUP("Drivetrain", "");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_engine_torque", PROPERTY_HINT_RANGE, "0,5000,10,or_greater"), "set_max_engine_torque", "get_max_engine_torque");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_brake_torque", PROPERTY_HINT_RANGE, "0,20000,10,or_greater"), "set_max_brake_torque", "get_max_brake_torque");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "handbrake_torque", PROPERTY_HINT_RANGE, "0,20000,10,or_greater"), "set_handbrake_torque", "get_handbrake_torque");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "handbrake", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_handbrake", "get_handbrake");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_steer_angle", PROPERTY_HINT_RANGE, "0,1.5708,0.01"), "set_max_steer_angle", "get_max_steer_angle");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ackermann_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ackermann_strength", "get_ackermann_strength");
+	ADD_GROUP("Anti-Roll", "");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "front_anti_roll_stiffness", PROPERTY_HINT_RANGE, "-50000,50000,100,or_less,or_greater"), "set_front_anti_roll_stiffness", "get_front_anti_roll_stiffness");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "rear_anti_roll_stiffness", PROPERTY_HINT_RANGE, "-50000,50000,100,or_less,or_greater"), "set_rear_anti_roll_stiffness", "get_rear_anti_roll_stiffness");
+
+	ClassDB::bind_method(D_METHOD("set_throttle", "value"), &PhysXVehicle3D::set_throttle);
+	ClassDB::bind_method(D_METHOD("get_throttle"), &PhysXVehicle3D::get_throttle);
+	ClassDB::bind_method(D_METHOD("set_brake", "value"), &PhysXVehicle3D::set_brake);
+	ClassDB::bind_method(D_METHOD("get_brake"), &PhysXVehicle3D::get_brake);
+	ClassDB::bind_method(D_METHOD("set_steer", "value"), &PhysXVehicle3D::set_steer);
+	ClassDB::bind_method(D_METHOD("get_steer"), &PhysXVehicle3D::get_steer);
+	ADD_GROUP("Controls", "");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "throttle", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_throttle", "get_throttle");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "brake", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_brake", "get_brake");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "steer", PROPERTY_HINT_RANGE, "-1,1,0.01"), "set_steer", "get_steer");
+	ClassDB::bind_method(D_METHOD("set_reverse", "value"), &PhysXVehicle3D::set_reverse);
+	ClassDB::bind_method(D_METHOD("is_reverse"), &PhysXVehicle3D::is_reverse);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "reverse"), "set_reverse", "is_reverse");
+
+	ClassDB::bind_method(D_METHOD("set_collision_layer", "layer"), &PhysXVehicle3D::set_collision_layer);
+	ClassDB::bind_method(D_METHOD("get_collision_layer"), &PhysXVehicle3D::get_collision_layer);
+	ClassDB::bind_method(D_METHOD("set_collision_mask", "mask"), &PhysXVehicle3D::set_collision_mask);
+	ClassDB::bind_method(D_METHOD("get_collision_mask"), &PhysXVehicle3D::get_collision_mask);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");
+
+	ClassDB::bind_method(D_METHOD("get_linear_velocity"), &PhysXVehicle3D::get_linear_velocity);
+	ClassDB::bind_method(D_METHOD("get_forward_speed"), &PhysXVehicle3D::get_forward_speed);
+	ClassDB::bind_method(D_METHOD("get_wheel_jounce", "wheel"), &PhysXVehicle3D::get_wheel_jounce);
+	ClassDB::bind_method(D_METHOD("get_wheel_separation", "wheel"), &PhysXVehicle3D::get_wheel_separation);
+	ClassDB::bind_method(D_METHOD("get_actor_position"), &PhysXVehicle3D::get_actor_position);
 }

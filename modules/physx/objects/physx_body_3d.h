@@ -27,7 +27,7 @@ namespace physx {
 
 class PhysXArea3D;
 class PhysXJoint3D;
-class PhysXVehicle3D;
+class PhysXVehicleServer;
 class PhysXSpace3D;
 class PhysXDirectBodyState3D;
 
@@ -146,12 +146,12 @@ public:
 
     // --- Chassis links (vehicles borrowing this body as chassis register
     // themselves; the body notifies them when its space membership changes) ---
-    void add_chassis_vehicle(PhysXVehicle3D *p_vehicle) {
+    void add_chassis_vehicle(PhysXVehicleServer *p_vehicle) {
         if (!chassis_vehicles.has(p_vehicle)) {
             chassis_vehicles.push_back(p_vehicle);
         }
     }
-    void remove_chassis_vehicle(PhysXVehicle3D *p_vehicle) {
+    void remove_chassis_vehicle(PhysXVehicleServer *p_vehicle) {
         const int64_t idx = chassis_vehicles.find(p_vehicle);
         if (idx != -1) {
             chassis_vehicles.remove_at_unordered(idx);
@@ -333,7 +333,7 @@ private:
     /// Vehicles borrowing this body as chassis. Notified on set_space so the
     /// vehicle re-homes into the chassis's scene (road geometry, gravity and
     /// the step loop must come from the scene the chassis actually lives in).
-    LocalVector<PhysXVehicle3D *> chassis_vehicles;
+    LocalVector<PhysXVehicleServer *> chassis_vehicles;
 
     // Kinematic velocity tracking (AnimatableBody3D / sync_to_physics)
     Vector3 kinematic_linear_velocity;

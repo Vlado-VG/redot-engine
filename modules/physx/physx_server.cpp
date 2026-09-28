@@ -27,7 +27,7 @@
 #include "objects/physx_gpu_particle_fluid_3d.h"
 #include "objects/physx_articulation_3d.h"
 #include "joints/physx_joint_3d.h"
-#include "vehicles/physx_vehicle_3d.h"
+#include "vehicles/physx_vehicle_server.h"
 
 #include "foundation/PxFoundation.h"
 #include "PxPhysics.h"
@@ -601,7 +601,7 @@ PhysXJoint3D *PhysXServer3D::get_joint(RID p_rid) const {
 	return joint_owner.get_or_null(p_rid);
 }
 
-PhysXVehicle3D *PhysXServer3D::get_vehicle(RID p_rid) const {
+PhysXVehicleServer *PhysXServer3D::get_vehicle(RID p_rid) const {
 	return vehicle_owner.get_or_null(p_rid);
 }
 
@@ -1029,16 +1029,16 @@ RID PhysXServer3D::vehicle_create(int p_archetype) {
 	MutexLock lock(api_mutex);
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
         "PhysX: vehicle_create() called before PhysX initialization.");
-	PhysXVehicle3D *vehicle = memnew(PhysXVehicle3D);
+	PhysXVehicleServer *vehicle = memnew(PhysXVehicleServer);
 	RID rid = vehicle_owner.make_rid(vehicle);
 	vehicle->set_rid(rid);
-	vehicle->archetype = PhysXVehicle3D::int_to_archetype(p_archetype);
+	vehicle->archetype = PhysXVehicleServer::int_to_archetype(p_archetype);
 	return rid;
 }
 
 void PhysXServer3D::vehicle_set_chassis_body(RID p_vehicle, RID p_body) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 
 	PhysXBody3D *body = body_owner.get_or_null(p_body);
@@ -1062,7 +1062,7 @@ void PhysXServer3D::vehicle_set_chassis_body(RID p_vehicle, RID p_body) {
 
 void PhysXServer3D::vehicle_set_space(RID p_vehicle, RID p_space) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 
 	// Resolve the space RID; an invalid RID clears the space membership, mirroring
@@ -1077,14 +1077,14 @@ void PhysXServer3D::vehicle_set_space(RID p_vehicle, RID p_space) {
 
 int PhysXServer3D::vehicle_get_wheel_count(RID p_vehicle) const {
 	MutexLock lock(api_mutex);
-	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	const PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, 0);
 	return vehicle->get_wheel_count();
 }
 
 void PhysXServer3D::vehicle_set_wheel_count(RID p_vehicle, int p_count) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_COND_MSG(p_count < 0, "PhysX: vehicle wheel count must be >= 0.");
 	ERR_FAIL_COND_MSG(p_count > (int)physx::PxVehicleLimits::eMAX_NB_WHEELS,
@@ -1098,7 +1098,7 @@ void PhysXServer3D::vehicle_set_wheel_count(RID p_vehicle, int p_count) {
 
 int PhysXServer3D::vehicle_add_wheel(RID p_vehicle) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, -1);
 	ERR_FAIL_NULL_V_MSG(vehicle->get_chassis_body(), -1,
 			"PhysX: attach a chassis with vehicle_set_chassis_body before configuring wheels.");
@@ -1111,7 +1111,7 @@ int PhysXServer3D::vehicle_add_wheel(RID p_vehicle) {
 
 void PhysXServer3D::vehicle_set_wheel_params(RID p_vehicle, int p_idx, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
 	vehicle->apply_wheel_params(p_idx, p_params);
@@ -1119,70 +1119,70 @@ void PhysXServer3D::vehicle_set_wheel_params(RID p_vehicle, int p_idx, const Dic
 
 void PhysXServer3D::vehicle_set_control_inputs(RID p_vehicle, real_t p_throttle, real_t p_brake, real_t p_steer, real_t p_handbrake) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_control_inputs((float)p_throttle, (float)p_brake, (float)p_steer, (float)p_handbrake);
 }
 
 void PhysXServer3D::vehicle_set_gear_command(RID p_vehicle, int p_gear) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_gear_command(p_gear);
 }
 
 void PhysXServer3D::vehicle_set_response_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_response_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_anti_roll_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_anti_roll_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_engine_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_engine_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_clutch_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_clutch_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_gearbox_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_gearbox_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_autobox_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_autobox_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_differential_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_differential_params(p_params);
 }
 
 void PhysXServer3D::vehicle_set_wheel_drive_torque(RID p_vehicle, int p_idx, real_t p_torque) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
 	vehicle->set_wheel_drive_torque(p_idx, (float)p_torque);
@@ -1190,7 +1190,7 @@ void PhysXServer3D::vehicle_set_wheel_drive_torque(RID p_vehicle, int p_idx, rea
 
 void PhysXServer3D::vehicle_set_wheel_brake_torque(RID p_vehicle, int p_idx, real_t p_torque) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
 	vehicle->set_wheel_brake_torque(p_idx, (float)p_torque);
@@ -1198,7 +1198,7 @@ void PhysXServer3D::vehicle_set_wheel_brake_torque(RID p_vehicle, int p_idx, rea
 
 void PhysXServer3D::vehicle_set_wheel_steer_angle(RID p_vehicle, int p_idx, real_t p_angle) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	ERR_FAIL_INDEX(p_idx, vehicle->get_wheel_count());
 	vehicle->set_wheel_steer_angle(p_idx, (float)p_angle);
@@ -1207,7 +1207,7 @@ void PhysXServer3D::vehicle_set_wheel_steer_angle(RID p_vehicle, int p_idx, real
 Array PhysXServer3D::vehicle_get_wheel_states(RID p_vehicle) const {
 	MutexLock lock(api_mutex);
 	Array out;
-	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	const PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, out);
 	if (!vehicle->get_telemetry_valid()) {
 		return out;
@@ -1231,7 +1231,7 @@ Array PhysXServer3D::vehicle_get_wheel_states(RID p_vehicle) const {
 Dictionary PhysXServer3D::vehicle_get_engine_state(RID p_vehicle) const {
 	MutexLock lock(api_mutex);
 	Dictionary d;
-	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	const PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, d);
 	d["rpm"] = vehicle->get_engine_rpm();
 	d["gear"] = vehicle->get_engine_gear();
@@ -1241,28 +1241,28 @@ Dictionary PhysXServer3D::vehicle_get_engine_state(RID p_vehicle) const {
 
 void PhysXServer3D::vehicle_set_ackermann_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_ackermann_params(p_params);
 }
 
 PackedFloat32Array PhysXServer3D::vehicle_get_wheel_steer_angles(RID p_vehicle) const {
 	MutexLock lock(api_mutex);
-	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	const PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, PackedFloat32Array());
 	return vehicle->get_wheel_steer_angles();
 }
 
 void PhysXServer3D::vehicle_set_balance_params(RID p_vehicle, const Dictionary &p_params) {
 	MutexLock lock(api_mutex);
-	PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL(vehicle);
 	vehicle->set_balance_params(p_params);
 }
 
 Dictionary PhysXServer3D::vehicle_get_balance_state(RID p_vehicle) const {
 	MutexLock lock(api_mutex);
-	const PhysXVehicle3D *vehicle = vehicle_owner.get_or_null(p_vehicle);
+	const PhysXVehicleServer *vehicle = vehicle_owner.get_or_null(p_vehicle);
 	ERR_FAIL_NULL_V(vehicle, Dictionary());
 	return vehicle->get_balance_state();
 }
@@ -2394,7 +2394,7 @@ void PhysXServer3D::free(RID p_rid) {
 
 		// Detach all vehicles from this space before deleting it.
 		while (!sp->get_vehicles().is_empty()) {
-			const_cast<PhysXVehicle3D *>(sp->get_vehicles()[0])->set_space(nullptr);
+			const_cast<PhysXVehicleServer *>(sp->get_vehicles()[0])->set_space(nullptr);
 		}
 
 		// Detach all GPU fluids/cloths from this space before deleting it.
@@ -2432,7 +2432,7 @@ void PhysXServer3D::free(RID p_rid) {
 	}
 	// vehicle_owner —vehicles are freed here.
 	if (vehicle_owner.owns(p_rid)) {
-		PhysXVehicle3D *v = vehicle_owner.get_or_null(p_rid);
+		PhysXVehicleServer *v = vehicle_owner.get_or_null(p_rid);
 		v->release();
 		vehicle_owner.free(p_rid);
 		memdelete(v);
@@ -2731,7 +2731,7 @@ void PhysXServer3D::release_vehicles_for_body(PhysXBody3D *p_body) const {
 	// freeing it —the vehicle's chassis pointer would dangle.
 	LocalVector<RID> vehicles = vehicle_owner.get_owned_list();
 	for (int i = (int)vehicles.size() - 1; i >= 0; i--) {
-		PhysXVehicle3D *v = vehicle_owner.get_or_null(vehicles[i]);
+		PhysXVehicleServer *v = vehicle_owner.get_or_null(vehicles[i]);
 		if (v->get_chassis_body() == p_body) {
 			v->release();
 			vehicle_owner.free(vehicles[i]);
@@ -2748,7 +2748,7 @@ void PhysXServer3D::invalidate_vehicles_surface_pairs(PhysXBody3D *p_body) const
 	// consumed by the vehicle's per-step suspension update.
 	LocalVector<RID> vehicles = vehicle_owner.get_owned_list();
 	for (int i = (int)vehicles.size() - 1; i >= 0; i--) {
-		PhysXVehicle3D *v = vehicle_owner.get_or_null(vehicles[i]);
+		PhysXVehicleServer *v = vehicle_owner.get_or_null(vehicles[i]);
 		if (v) {
 			v->invalidate_surface_pairs_for_body(p_body);
 		}

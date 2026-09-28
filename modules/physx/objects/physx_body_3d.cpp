@@ -12,7 +12,7 @@
 #include "physx_direct_body_state_3d.h"
 #include "../physx_conversions.h"
 #include "../joints/physx_joint_3d.h"
-#include "../vehicles/physx_vehicle_3d.h"
+#include "../vehicles/physx_vehicle_server.h"
 #include "../physx_server.h"
 #include "../physx_project_settings.h"
 #include "../spaces/physx_space_3d.h"
@@ -138,7 +138,7 @@ void PhysXBody3D::_create_actor() {
 		// Native scene gravity (see PhysXSpace3D::_initialize_scene) is enabled
 		// on the actor; on_pre_step() applies only the correction delta on top
 		// of it (zero in the default case). A vehicle2 chassis re-enables
-		// eDISABLE_GRAVITY in PhysXVehicle3D::adopt() because vehicle2 owns
+		// eDISABLE_GRAVITY in PhysXVehicleServer::adopt() because vehicle2 owns
 		// the chassis gravity.
 
 		// Apply cached parameters to the freshly created actor.
@@ -218,7 +218,7 @@ void PhysXBody3D::set_space(PhysXSpace3D *p_space) {
 		// Vehicles borrowing this body as chassis follow it into the new
 		// space: a vehicle simulating in a different scene than its chassis
 		// would raycast road geometry and read gravity from the wrong PxScene.
-		for (PhysXVehicle3D *vehicle : chassis_vehicles) {
+		for (PhysXVehicleServer *vehicle : chassis_vehicles) {
 			vehicle->set_space(space);
 		}
 

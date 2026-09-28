@@ -24,6 +24,18 @@
 #include "nodes/physx_gas_3d.h"
 #include "nodes/physx_gas_emitter_3d.h"
 
+// Node-level vehicle stack (PxVehicle2 compositions behind plain Node3D
+// authoring): PhysXVehicle3D + PhysXVehicleWheel3D, PhysXMotorcycle3D,
+// PhysXTank3D, and the headless *Probe bridges used by the GDScript tests.
+// Coexists with the server-RID vehicle API (physx_vehicle_server.h).
+#include "vehicles/physx_vehicle_3d.h"
+#include "vehicles/physx_vehicle_wheel_3d.h"
+#include "vehicles/physx_motorcycle_3d.h"
+#include "vehicles/physx_tank_3d.h"
+#include "vehicles/physx_vehicle_probe.h"
+#include "vehicles/physx_motorcycle_probe.h"
+#include "vehicles/physx_tank_probe.h"
+
 #ifdef GODOT_PHYSX_BLAST
 #include "blast/physx_blast_asset.h"
 #include "blast/physx_blast_authoring.h"
@@ -90,6 +102,15 @@ void initialize_physx_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<PhysXParticleFluid3D>();
 		ClassDB::register_class<PhysXGas3D>();
 		ClassDB::register_class<PhysXGasEmitter3D>();
+		// Node-level vehicle stack (see the include block above). The *Probe
+		// classes are headless test bridges, kept registered like upstream.
+		ClassDB::register_class<PhysXVehicle3D>();
+		ClassDB::register_class<PhysXVehicleWheel3D>();
+		ClassDB::register_class<PhysXMotorcycle3D>();
+		ClassDB::register_class<PhysXTank3D>();
+		ClassDB::register_class<PhysXVehicleProbe>();
+		ClassDB::register_class<PhysXMotorcycleProbe>();
+		ClassDB::register_class<PhysXTankProbe>();
 #ifdef GODOT_PHYSX_BLAST
 		ClassDB::register_class<PhysXDestructible3D>();
 		ClassDB::register_class<PhysXBlastAsset>();

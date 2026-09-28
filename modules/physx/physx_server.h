@@ -33,7 +33,7 @@ class PhysXBody3D;
 class PhysXSpace3D;
 class PhysXArea3D;
 class PhysXJoint3D;
-class PhysXVehicle3D;
+class PhysXVehicleServer;
 class PhysXSoftBody3D;
 class PhysXGPUCloth3D;
 class PhysXGPUParticleFluid3D;
@@ -60,7 +60,7 @@ class PhysXServer3D : public PhysicsServer3D {
 	mutable RID_PtrOwner<PhysXSpace3D, true> space_owner;
 	mutable RID_PtrOwner<PhysXArea3D, true> area_owner;
 	mutable RID_PtrOwner<PhysXJoint3D, true> joint_owner;
-	mutable RID_PtrOwner<PhysXVehicle3D, true> vehicle_owner;
+	mutable RID_PtrOwner<PhysXVehicleServer, true> vehicle_owner;
 	mutable RID_PtrOwner<PhysXSoftBody3D, true> soft_body_owner;
 	mutable RID_PtrOwner<PhysXGPUParticleFluid3D, true> fluid_owner;
 	mutable RID_PtrOwner<PhysXGPUCloth3D, true> cloth_owner;
@@ -114,6 +114,13 @@ public:
 	~PhysXServer3D() = default;
 
 	static PhysXServer3D *get_singleton() { return singleton_ptr;}
+
+	/// Raw space lookup by RID (World3D::get_space()) for scene-level nodes
+	/// that need this module's PxScene/PxPhysics directly -- the node-level
+	/// vehicle stack borrows the simulation this way (PhysXVehicle3D & co).
+	/// Returns null when p_space_rid is not a PhysX space (i.e. another
+	/// physics backend is active).
+	PhysXSpace3D *get_space(RID p_space_rid) const { return space_owner.get_or_null(p_space_rid); }
 
 	// --- PhysX SDK accessors (used by shapes, bodies, spaces) ---
 	physx::PxPhysics &get_physics() const;
@@ -226,7 +233,7 @@ public:
 	PhysXArea3D* get_area(RID p_rid) const;
 	PhysXShape3D* get_shape(RID p_rid) const;
 	PhysXJoint3D* get_joint(RID p_rid) const;
-	PhysXVehicle3D* get_vehicle(RID p_rid) const;
+	PhysXVehicleServer* get_vehicle(RID p_rid) const;
 	virtual RID body_create() override;
 
 	virtual void body_set_space(RID p_body, RID p_space) override;
