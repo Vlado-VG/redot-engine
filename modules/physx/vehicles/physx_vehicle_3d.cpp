@@ -138,6 +138,31 @@ bool PhysXVehicle3D::_build() {
 	cfg.rear_anti_roll_stiffness = rear_anti_roll_stiffness;
 	cfg.collision_layer = collision_layer;
 	cfg.collision_mask = collision_mask;
+	cfg.engineDrive = use_gearbox;
+	if (use_gearbox) {
+		cfg.engine_peak_torque = engine_peak_torque;
+		cfg.engine_idle_omega = engine_idle_omega;
+		cfg.engine_max_omega = engine_max_omega;
+		cfg.clutch_strength = clutch_strength;
+		cfg.gear_final_ratio = gear_final_ratio;
+		cfg.gear_switch_time = gear_switch_time;
+		cfg.autobox_latency = autobox_latency;
+		cfg.autobox_up_ratio = autobox_up_ratio;
+		cfg.autobox_down_ratio = autobox_down_ratio;
+		cfg.use_autobox = use_autobox;
+		cfg.gear_neutral = 1;
+		// Empty PackedFloat32Array = keep the composition's default ratio
+		// table (Vehicle4WConfig::gear_ratios). Copying unconditionally left
+		// nbRatios at 0, which fails PxVehicleGearboxParams::isValid and
+		// silently no-ops the whole gearbox/engine-drivetrain update (an
+		// idle-locked engine that never shifts or drives).
+		if (gear_ratios.size() > 0) {
+			cfg.gear_ratios.clear();
+			for (int g = 0; g < gear_ratios.size(); g++) {
+				cfg.gear_ratios.push_back(gear_ratios[g]);
+			}
+		}
+	}
 
 	for (int i = 0; i < 4; i++) {
 		PhysXVehicleWheel3D *w = wheels[i];
@@ -242,19 +267,28 @@ void PhysXVehicle3D::_notification(int p_what) {
 				}
 			}
 			Vehicle4W &v = impl->vehicle;
-			// Negated: with the frame's lngAxis = eNegZ the SDK's direct drive
-			// rolls the vehicle toward +Z_local (measured on 5.11), but this
-			// composition declares Godot convention forward = -Z -- the
-			// steered axle leads at -Z. Negating the command torque makes
-			// forward throttle roll the car nose-first (-Z), and `reverse`
-			// (eREVERSE) rolls +Z as expected. The tire model is slip-sign
-			// symmetric, so nothing else moves.
-			v.commandState.throttle = -(PxReal)throttle;
 			v.commandState.brakes[0] = (PxReal)brake;
 			v.commandState.brakes[1] = (PxReal)handbrake;
 			v.commandState.nbBrakes = 2;
 			v.commandState.steer = (PxReal)steer;
-			v.transmissionCommandState.gear = reverse ? PxVehicleDirectDriveTransmissionCommandState::eREVERSE : PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
+			if (v.engineDrive) {
+				// Engine drive: the throttle is a 0..1 magnitude (never
+				// negated -- the gear ratios' signs pick the roll direction,
+				// see Vehicle4WConfig's ratio note) and the transmission
+				// command carries clutch + target gear. `reverse` selects
+				// the reverse gear; `target_gear` (255 = DRIVE) otherwise.
+				v.commandState.throttle = (PxReal)throttle;
+				v.engineTransmissionCommand.clutch = 0.0f;
+				v.engineTransmissionCommand.targetGear = reverse ? 0u : (PxU32)target_gear;
+			} else {
+				// Direct drive: the throttle is a 0..1 magnitude; the
+				// transmission command's gear selects the direction. The
+				// composition's right-handed frame (lngAxis = eNegZ,
+				// latAxis = eNegX) rolls the vehicle nose-first (-Z) on
+				// positive command throttle (measured on 5.11) -- no flip.
+				v.commandState.throttle = (PxReal)throttle;
+				v.transmissionCommandState.gear = reverse ? PxVehicleDirectDriveTransmissionCommandState::eREVERSE : PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
+			}
 			v.step((PxReal)get_physics_process_delta_time(), impl->simulationContext);
 
 			// v.rigidBodyState.pose is CoM-relative, not the actor's real
@@ -353,6 +387,87 @@ real_t PhysXVehicle3D::get_wheel_separation(int p_wheel) const {
 	return 0.0;
 }
 
+float PhysXVehicle3D::get_engine_rpm() const {
+	if (!impl->built || !impl->vehicle.engineDrive) {
+		return 0.0;
+	}
+	return (real_t)impl->vehicle.engineState.rotationSpeed * (60.0f / 6.28318530717958647692f);
+}
+
+int PhysXVehicle3D::get_engine_gear() const {
+	if (!impl->built || !impl->vehicle.engineDrive) {
+		return -1;
+	}
+	return (int)impl->vehicle.gearboxState.currentGear;
+}
+
+float PhysXVehicle3D::get_clutch() const {
+	if (!impl->built || !impl->vehicle.engineDrive) {
+		return 0.0;
+	}
+	return (real_t)impl->vehicle.clutchResponseState.commandResponse;
+}
+
+float PhysXVehicle3D::get_wheel_rpm(int p_wheel) const {
+	if (!impl->built) {
+		return 0.0;
+	}
+	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
+			return (real_t)impl->vehicle.wheelRigidBody1dStates[i].rotationSpeed * (60.0f / 6.28318530717958647692f);
+		}
+	}
+	return 0.0;
+}
+
+float PhysXVehicle3D::get_wheel_skid(int p_wheel) const {
+	if (!impl->built) {
+		return 0.0;
+	}
+	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
+			return (real_t)impl->vehicle.tireSlipStates[i].slips[physx::PxVehicleTireDirectionModes::eLONGITUDINAL];
+		}
+	}
+	return 0.0;
+}
+
+Dictionary PhysXVehicle3D::get_wheel_contact(int p_wheel) const {
+	Dictionary out;
+	out["contact"] = false;
+	out["normal"] = Vector3(0, 1, 0);
+	if (!impl->built) {
+		return out;
+	}
+	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), out);
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
+			const PxVehicleRoadGeometryState &rg = impl->vehicle.roadGeomStates[i];
+			out["contact"] = rg.hitState ? true : false;
+			if (rg.hitState) {
+				out["normal"] = Vector3((real_t)rg.plane.n.x, (real_t)rg.plane.n.y, (real_t)rg.plane.n.z);
+			}
+			return out;
+		}
+	}
+	return out;
+}
+
+float PhysXVehicle3D::get_wheel_steer_angle(int p_wheel) const {
+	if (!impl->built) {
+		return 0.0;
+	}
+	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
+			return (real_t)impl->vehicle.steerCommandResponseStates[i];
+		}
+	}
+	return 0.0;
+}
+
 Vector3 PhysXVehicle3D::get_actor_position() const {
 	if (!impl->built) {
 		return Vector3();
@@ -445,6 +560,80 @@ bool PhysXVehicle3D::is_sleeping() const {
 }
 PHYSX_VEHICLE_SETTER(max_engine_torque, max_engine_torque)
 PHYSX_VEHICLE_SETTER(max_brake_torque, max_brake_torque)
+
+void PhysXVehicle3D::set_use_gearbox(bool p_enabled) {
+	use_gearbox = p_enabled;
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_engine_peak_torque(real_t p_v) {
+	engine_peak_torque = MAX(p_v, 1.0f);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_engine_idle_omega(real_t p_v) {
+	engine_idle_omega = MAX(p_v, 1.0f);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_engine_max_omega(real_t p_v) {
+	engine_max_omega = MAX(engine_idle_omega + 1.0f, p_v);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_clutch_strength(real_t p_v) {
+	clutch_strength = MAX(p_v, 0.1f);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_gear_ratios(const PackedFloat32Array &p_ratios) {
+	// Gear 0 = reverse, gear 1 = neutral (0.0), gears 2.. = forward. Sign
+	// convention: FORWARD ratios are NEGATIVE (rolls the car nose-first --
+	// see Vehicle4WConfig's ratio-sign note), the reverse ratio positive.
+	gear_ratios = p_ratios;
+	_rebuild_if_live();
+}
+
+PackedFloat32Array PhysXVehicle3D::get_gear_ratios() const {
+	if (gear_ratios.size() > 0) {
+		return gear_ratios;
+	}
+	// The composition's defaults (authored there; mirrored here so the
+	// inspector shows what a rebuild will actually use).
+	PackedFloat32Array defaults;
+	defaults.push_back(-4.0f);
+	defaults.push_back(0.0f);
+	defaults.push_back(4.0f);
+	defaults.push_back(2.0f);
+	defaults.push_back(1.5f);
+	defaults.push_back(1.1f);
+	defaults.push_back(0.9f);
+	return defaults;
+}
+
+void PhysXVehicle3D::set_gear_final_ratio(real_t p_v) {
+	gear_final_ratio = MAX(abs((float)p_v), 0.1f);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_gear_switch_time(real_t p_v) {
+	gear_switch_time = MAX(p_v, 0.05f);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_autobox_latency(real_t p_v) {
+	autobox_latency = MAX(p_v, 0.0f);
+	_rebuild_if_live();
+}
+
+void PhysXVehicle3D::set_target_gear(int p_gear) {
+	target_gear = CLAMP(p_gear, 0, 255);
+}
+
+void PhysXVehicle3D::set_use_autobox(bool p_enabled) {
+	use_autobox = p_enabled;
+	_rebuild_if_live();
+}
 PHYSX_VEHICLE_SETTER(handbrake_torque, handbrake_torque)
 PHYSX_VEHICLE_SETTER(max_steer_angle, max_steer_angle)
 PHYSX_VEHICLE_SETTER(ackermann_strength, ackermann_strength)
@@ -499,6 +688,31 @@ void PhysXVehicle3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_handbrake_torque"), &PhysXVehicle3D::get_handbrake_torque);
 	ClassDB::bind_method(D_METHOD("set_max_steer_angle", "value"), &PhysXVehicle3D::set_max_steer_angle);
 	ClassDB::bind_method(D_METHOD("get_max_steer_angle"), &PhysXVehicle3D::get_max_steer_angle);
+	ClassDB::bind_method(D_METHOD("set_use_gearbox", "enabled"), &PhysXVehicle3D::set_use_gearbox);
+	ClassDB::bind_method(D_METHOD("get_use_gearbox"), &PhysXVehicle3D::get_use_gearbox);
+	ClassDB::bind_method(D_METHOD("set_engine_peak_torque", "value"), &PhysXVehicle3D::set_engine_peak_torque);
+	ClassDB::bind_method(D_METHOD("get_engine_peak_torque"), &PhysXVehicle3D::get_engine_peak_torque);
+	ClassDB::bind_method(D_METHOD("set_engine_idle_omega", "value"), &PhysXVehicle3D::set_engine_idle_omega);
+	ClassDB::bind_method(D_METHOD("get_engine_idle_omega"), &PhysXVehicle3D::get_engine_idle_omega);
+	ClassDB::bind_method(D_METHOD("set_engine_max_omega", "value"), &PhysXVehicle3D::set_engine_max_omega);
+	ClassDB::bind_method(D_METHOD("get_engine_max_omega"), &PhysXVehicle3D::get_engine_max_omega);
+	ClassDB::bind_method(D_METHOD("set_clutch_strength", "value"), &PhysXVehicle3D::set_clutch_strength);
+	ClassDB::bind_method(D_METHOD("get_clutch_strength"), &PhysXVehicle3D::get_clutch_strength);
+	ClassDB::bind_method(D_METHOD("set_gear_ratios", "ratios"), &PhysXVehicle3D::set_gear_ratios);
+	ClassDB::bind_method(D_METHOD("get_gear_ratios"), &PhysXVehicle3D::get_gear_ratios);
+	ClassDB::bind_method(D_METHOD("set_gear_final_ratio", "value"), &PhysXVehicle3D::set_gear_final_ratio);
+	ClassDB::bind_method(D_METHOD("get_gear_final_ratio"), &PhysXVehicle3D::get_gear_final_ratio);
+	ClassDB::bind_method(D_METHOD("set_gear_switch_time", "value"), &PhysXVehicle3D::set_gear_switch_time);
+	ClassDB::bind_method(D_METHOD("get_gear_switch_time"), &PhysXVehicle3D::get_gear_switch_time);
+	ClassDB::bind_method(D_METHOD("set_autobox_latency", "value"), &PhysXVehicle3D::set_autobox_latency);
+	ClassDB::bind_method(D_METHOD("get_autobox_latency"), &PhysXVehicle3D::get_autobox_latency);
+	ClassDB::bind_method(D_METHOD("set_target_gear", "gear"), &PhysXVehicle3D::set_target_gear);
+	ClassDB::bind_method(D_METHOD("get_target_gear"), &PhysXVehicle3D::get_target_gear);
+	ClassDB::bind_method(D_METHOD("set_use_autobox", "enabled"), &PhysXVehicle3D::set_use_autobox);
+	ClassDB::bind_method(D_METHOD("get_use_autobox"), &PhysXVehicle3D::get_use_autobox);
+	ClassDB::bind_integer_constant(get_class_static(), "", "GEAR_REVERSE", 0);
+	ClassDB::bind_integer_constant(get_class_static(), "", "GEAR_NEUTRAL", 1);
+	ClassDB::bind_integer_constant(get_class_static(), "", "GEAR_AUTOMATIC", 255);
 	ClassDB::bind_method(D_METHOD("set_ackermann_strength", "value"), &PhysXVehicle3D::set_ackermann_strength);
 	ClassDB::bind_method(D_METHOD("get_ackermann_strength"), &PhysXVehicle3D::get_ackermann_strength);
 	ClassDB::bind_method(D_METHOD("set_front_anti_roll_stiffness", "value"), &PhysXVehicle3D::set_front_anti_roll_stiffness);
@@ -511,6 +725,17 @@ void PhysXVehicle3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "handbrake_torque", PROPERTY_HINT_RANGE, "0,20000,10,or_greater"), "set_handbrake_torque", "get_handbrake_torque");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "handbrake", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_handbrake", "get_handbrake");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "max_steer_angle", PROPERTY_HINT_RANGE, "0,1.5708,0.01"), "set_max_steer_angle", "get_max_steer_angle");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_gearbox"), "set_use_gearbox", "get_use_gearbox");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "engine_peak_torque", PROPERTY_HINT_RANGE, "1,5000,1,or_greater"), "set_engine_peak_torque", "get_engine_peak_torque");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "engine_idle_omega", PROPERTY_HINT_RANGE, "1,500,1"), "set_engine_idle_omega", "get_engine_idle_omega");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "engine_max_omega", PROPERTY_HINT_RANGE, "2,2000,1"), "set_engine_max_omega", "get_engine_max_omega");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "clutch_strength", PROPERTY_HINT_RANGE, "0.1,500,0.1,or_greater"), "set_clutch_strength", "get_clutch_strength");
+	ADD_PROPERTY(PropertyInfo(Variant::PACKED_FLOAT32_ARRAY, "gear_ratios"), "set_gear_ratios", "get_gear_ratios");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gear_final_ratio", PROPERTY_HINT_RANGE, "0.1,20,0.1,or_greater"), "set_gear_final_ratio", "get_gear_final_ratio");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gear_switch_time", PROPERTY_HINT_RANGE, "0.05,3,0.05,or_greater"), "set_gear_switch_time", "get_gear_switch_time");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "autobox_latency", PROPERTY_HINT_RANGE, "0,5,0.05,or_greater"), "set_autobox_latency", "get_autobox_latency");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "target_gear", PROPERTY_HINT_RANGE, "0,255,1"), "set_target_gear", "get_target_gear");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_autobox"), "set_use_autobox", "get_use_autobox");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ackermann_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ackermann_strength", "get_ackermann_strength");
 	ADD_GROUP("Anti-Roll", "");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "front_anti_roll_stiffness", PROPERTY_HINT_RANGE, "-50000,50000,100,or_less,or_greater"), "set_front_anti_roll_stiffness", "get_front_anti_roll_stiffness");
@@ -542,4 +767,11 @@ void PhysXVehicle3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_wheel_jounce", "wheel"), &PhysXVehicle3D::get_wheel_jounce);
 	ClassDB::bind_method(D_METHOD("get_wheel_separation", "wheel"), &PhysXVehicle3D::get_wheel_separation);
 	ClassDB::bind_method(D_METHOD("get_actor_position"), &PhysXVehicle3D::get_actor_position);
+	ClassDB::bind_method(D_METHOD("get_engine_rpm"), &PhysXVehicle3D::get_engine_rpm);
+	ClassDB::bind_method(D_METHOD("get_engine_gear"), &PhysXVehicle3D::get_engine_gear);
+	ClassDB::bind_method(D_METHOD("get_clutch"), &PhysXVehicle3D::get_clutch);
+	ClassDB::bind_method(D_METHOD("get_wheel_rpm", "wheel"), &PhysXVehicle3D::get_wheel_rpm);
+	ClassDB::bind_method(D_METHOD("get_wheel_skid", "wheel"), &PhysXVehicle3D::get_wheel_skid);
+	ClassDB::bind_method(D_METHOD("get_wheel_contact", "wheel"), &PhysXVehicle3D::get_wheel_contact);
+	ClassDB::bind_method(D_METHOD("get_wheel_steer_angle", "wheel"), &PhysXVehicle3D::get_wheel_steer_angle);
 }

@@ -96,6 +96,28 @@ public:
 	real_t get_max_brake_torque() const { return max_brake_torque; }
 	void set_max_steer_angle(real_t p_v);
 	real_t get_max_steer_angle() const { return max_steer_angle; }
+	void set_use_gearbox(bool p_enabled);
+	bool get_use_gearbox() const { return use_gearbox; }
+	void set_engine_peak_torque(real_t p_v);
+	real_t get_engine_peak_torque() const { return engine_peak_torque; }
+	void set_engine_idle_omega(real_t p_v);
+	real_t get_engine_idle_omega() const { return engine_idle_omega; }
+	void set_engine_max_omega(real_t p_v);
+	real_t get_engine_max_omega() const { return engine_max_omega; }
+	void set_clutch_strength(real_t p_v);
+	real_t get_clutch_strength() const { return clutch_strength; }
+	void set_gear_ratios(const PackedFloat32Array &p_ratios);
+	PackedFloat32Array get_gear_ratios() const;
+	void set_gear_final_ratio(real_t p_v);
+	real_t get_gear_final_ratio() const { return gear_final_ratio; }
+	void set_gear_switch_time(real_t p_v);
+	real_t get_gear_switch_time() const { return gear_switch_time; }
+	void set_autobox_latency(real_t p_v);
+	real_t get_autobox_latency() const { return autobox_latency; }
+	void set_target_gear(int p_gear);
+	int get_target_gear() const { return target_gear; }
+	void set_use_autobox(bool p_enabled);
+	bool get_use_autobox() const { return use_autobox; }
 	void set_ackermann_strength(real_t p_v);
 	real_t get_ackermann_strength() const { return ackermann_strength; }
 	void set_front_anti_roll_stiffness(real_t p_v);
@@ -144,6 +166,15 @@ public:
 	real_t get_wheel_separation(int p_wheel) const;
 	Vector3 get_actor_position() const;
 
+	// --- Gearbox-mode telemetry (meaningful only when use_gearbox is on) ----
+	float get_engine_rpm() const; // engine omega as revolutions/minute
+	int get_engine_gear() const; // current gear: 0 = R, 1 = N, 2.. = 1st+
+	float get_clutch() const; // clutch response [0,1]
+	float get_wheel_rpm(int p_wheel) const; // wheel spin as revolutions/minute
+	float get_wheel_skid(int p_wheel) const; // longitudinal slip ratio
+	Dictionary get_wheel_contact(int p_wheel) const; // { contact: bool, normal: Vector3 }
+	float get_wheel_steer_angle(int p_wheel) const; // Ackermann-resolved angle (rad)
+
 	// Transform contract (RigidBody3D-style, two-way): the node's transform is
 	// driven FROM the chassis every physics tick, but a script-side write to
 	// global_transform while the vehicle is live is pushed INTO the chassis --
@@ -165,6 +196,32 @@ private:
 	bool can_sleep = true;
 	real_t max_engine_torque = 700.0f;
 	real_t max_brake_torque = 6000.0f;
+	// --- Engine drive (use_gearbox = true) ----------------------------------
+	// The EngineDrive drivetrain: throttle drives an engine (torque curve,
+	// idle/max omega) through a clutch and gearbox (reverse + neutral +
+	// forward ratios, autobox shifting). DirectDrive (default) applies wheel
+	// torque directly. Gear ratio signs follow the SDK's own requirement
+	// (reverse < 0, neutral == 0, forward > 0 -- PxVehicleGearboxParams
+	// ::isValid rejects anything else); with the composition's right-handed
+	// frame (see configure_vehicle4w's axis note) positive forward ratios
+	// drive the vehicle nose-first (-Z) and the negative reverse ratio
+	// drives it backward (+Z).
+	bool use_gearbox = false;
+	bool use_autobox = false; // gearbox mode only: automatic shifting (DRIVE) vs manual target_gear
+	float engine_peak_torque = 500.0f;
+	float engine_idle_omega = 80.0f;
+	float engine_max_omega = 600.0f;
+	float clutch_strength = 40.0f;
+	PackedFloat32Array gear_ratios = PackedFloat32Array(); // empty = composition default
+	float gear_final_ratio = 3.5f;
+	float gear_switch_time = 0.5f;
+	float autobox_latency = 0.5f;
+	float autobox_up_ratio = 0.65f;
+	float autobox_down_ratio = 0.40f;
+	// Target gear for gearbox mode: 255 = automatic (DRIVE), 0 = reverse,
+	// 1 = neutral, 2.. = forward gears (see the GEAR_* constants).
+	int target_gear = 255;
+
 	real_t max_steer_angle = 0.6f;
 	real_t ackermann_strength = 1.0f;
 	real_t front_anti_roll_stiffness = 0.0f;

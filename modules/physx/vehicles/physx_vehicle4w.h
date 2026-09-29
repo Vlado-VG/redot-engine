@@ -61,7 +61,11 @@ class Vehicle4W : public PxVehicleRigidBodyComponent,
 				   public PxVehiclePhysXRoadGeometrySceneQueryComponent,
 				   public PxVehicleDirectDriveCommandResponseComponent,
 				   public PxVehicleDirectDriveActuationStateComponent,
-				   public PxVehicleDirectDrivetrainComponent {
+				   public PxVehicleDirectDrivetrainComponent,
+				   public PxVehicleEngineDriveCommandResponseComponent,
+				   public PxVehicleFourWheelDriveDifferentialStateComponent,
+				   public PxVehicleEngineDriveActuationStateComponent,
+				   public PxVehicleEngineDrivetrainComponent {
 public:
 	static constexpr PxU32 WHEEL_FL = 0;
 	static constexpr PxU32 WHEEL_FR = 1;
@@ -116,6 +120,40 @@ public:
 	PxVehicleCommandState commandState;
 	PxVehicleDirectDriveTransmissionCommandState transmissionCommandState;
 
+	// --- Engine drive (EngineDrivetrainParams/State) -----------------------
+	// Populated and wired only when `engineDrive` is set (see
+	// initComponentSequence); the assembly mirrors the server-RID path's
+	// build_engine_drive() one-to-one (engine curve, clutch, gearbox with
+	// 1 reverse + neutral + forward gears, autobox, open 4-wheel differential).
+	//
+	// Root-caused (cdb first-chance AV): the first step crashed inside the
+	// SDK's gear-switch code because getDataForEngineDriveCommandResponseComponent
+	// never assigned outGearboxParams/outClutchResponseParams -- the SDK
+	// component reads them from uninitialized locals, so the gearbox params
+	// pointer arrived as stack garbage (null in this build). The crash looked
+	// tied to "valid ratios" only because PxVehicleGearCommandResponseUpdate
+	// short-circuits on an invalid PxVehicleGearboxParams before dereferencing
+	// the pointer; with valid ratios the first gear engage read
+	// gearboxParams->nbRatios (offset 0x88) off null. All other engine
+	// overrides assign every one of their outputs.
+	bool engineDrive = false;
+	PxVehicleEngineParams engineParams;
+	PxVehicleClutchParams clutchParams;
+	PxVehicleClutchCommandResponseParams clutchResponseParams;
+	PxVehicleGearboxParams gearboxParams;
+	PxVehicleAutoboxParams autoboxParams;
+	PxVehicleFourWheelDriveDifferentialParams differentialParams;
+	PxVehicleEngineState engineState;
+	PxVehicleGearboxState gearboxState;
+	PxVehicleClutchCommandResponseState clutchResponseState;
+	PxVehicleClutchSlipState clutchSlipState;
+	PxVehicleDifferentialState differentialState;
+	PxVehicleWheelConstraintGroupState constraintGroupState;
+	PxVehicleAutoboxState autoboxState;
+	PxVehicleEngineDriveThrottleCommandResponseState engineThrottleResponseState;
+	PxVehicleEngineDriveTransmissionCommandState engineTransmissionCommand;
+	bool useAutobox = false;
+
 	// --- PhysX integration (PhysXIntegrationParams/State) ------------------
 	PxVehiclePhysXRoadGeometryQueryParams physxRoadGeometryQueryParams;
 	PxVehiclePhysXMaterialFrictionParams physxMaterialFrictionParams[4];
@@ -152,6 +190,20 @@ public:
 		antiRollTorque.setToDefault();
 		commandState.setToDefault();
 		transmissionCommandState.gear = PxVehicleDirectDriveTransmissionCommandState::eNEUTRAL;
+		// NOTE: PxVehicleEngineParams/ClutchParams/ClutchCommandResponseParams/
+		// GearboxParams/AutoboxParams define no setToDefault in this SDK --
+		// every field is assigned explicitly in configure_vehicle4w().
+		differentialParams.setToDefault();
+		engineState.setToDefault();
+		gearboxState.setToDefault();
+		clutchResponseState.setToDefault();
+		clutchSlipState.setToDefault();
+		differentialState.setToDefault();
+		constraintGroupState.setToDefault();
+		autoboxState.setToDefault();
+		engineThrottleResponseState.setToDefault();
+		engineTransmissionCommand.setToDefault();
+		engineTransmissionCommand.targetGear = PxVehicleEngineDriveTransmissionCommandState::eAUTOMATIC_GEAR;
 		physxActor.setToDefault();
 		physxSteerState.setToDefault();
 		physxConstraints.setToDefault();
@@ -425,17 +477,145 @@ public:
 		outWheelRigidBody1dStates.setData(wheelRigidBody1dStates);
 	}
 
-	void initComponentSequence() {
+	// getDataForEngineDriveCommandResponseComponent (PxVehicleEngineDriveCommandResponseComponent)
+	virtual void getDataForEngineDriveCommandResponseComponent(
+			const PxVehicleAxleDescription *&outAxleDescription,
+			PxVehicleSizedArrayData<const PxVehicleBrakeCommandResponseParams> &outBrakeResponseParams,
+			const PxVehicleSteerCommandResponseParams *&outSteerResponseParams,
+			PxVehicleSizedArrayData<const PxVehicleAckermannParams> &outAckermannParams,
+			const PxVehicleGearboxParams *&outGearboxParams,
+			const PxVehicleClutchCommandResponseParams *&outClutchResponseParams,
+			const PxVehicleEngineParams *&outEngineParams,
+			const PxVehicleRigidBodyState *&outRigidBodyState,
+			const PxVehicleEngineState *&outEngineState,
+			const PxVehicleAutoboxParams *&outAutoboxParams,
+			const PxVehicleCommandState *&outCommands,
+			const PxVehicleEngineDriveTransmissionCommandState *&outTransmissionCommands,
+			PxVehicleArrayData<PxReal> &outBrakeResponseStates,
+			PxVehicleEngineDriveThrottleCommandResponseState *&outThrottleResponseState,
+			PxVehicleArrayData<PxReal> &outSteerResponseStates,
+			PxVehicleGearboxState *&outGearboxResponseState,
+			PxVehicleClutchCommandResponseState *&outClutchResponseState,
+			PxVehicleAutoboxState *&outAutoboxState) override {
+		outAxleDescription = &axleDescription;
+		outBrakeResponseParams.setDataAndCount(brakeResponseParams, 2);
+		outSteerResponseParams = &steerResponseParams;
+		outAckermannParams.setDataAndCount(ackermannParams, 1);
+		outGearboxParams = &gearboxParams;
+		outClutchResponseParams = &clutchResponseParams;
+		// engineParams/engineState stay PROVIDED (the engine integration needs
+		// them with or without the autobox); ONLY the autobox params/state go
+		// null for manual gears -- the SDK then honors the commanded
+		// targetGear verbatim instead of letting the autobox overwrite it.
+		outEngineParams = &engineParams;
+		outRigidBodyState = &rigidBodyState;
+		outEngineState = &engineState;
+		outAutoboxParams = useAutobox ? &autoboxParams : nullptr;
+		outCommands = &commandState;
+		outTransmissionCommands = &engineTransmissionCommand;
+		outBrakeResponseStates.setData(brakeCommandResponseStates);
+		outThrottleResponseState = &engineThrottleResponseState;
+		outSteerResponseStates.setData(steerCommandResponseStates);
+		outGearboxResponseState = &gearboxState;
+		outClutchResponseState = &clutchResponseState;
+		outAutoboxState = useAutobox ? &autoboxState : nullptr;
+	}
+
+	// getDataForFourWheelDriveDifferentialStateComponent (PxVehicleFourWheelDriveDifferentialStateComponent)
+	virtual void getDataForFourWheelDriveDifferentialStateComponent(
+			const PxVehicleAxleDescription *&outAxleDescription,
+			const PxVehicleFourWheelDriveDifferentialParams *&outDifferentialParams,
+			PxVehicleArrayData<const PxVehicleWheelRigidBody1dState> &outWheelRigidBody1dStates,
+			PxVehicleDifferentialState *&outDifferentialState,
+			PxVehicleWheelConstraintGroupState *&outWheelConstraintGroupState) override {
+		outAxleDescription = &axleDescription;
+		outDifferentialParams = &differentialParams;
+		outWheelRigidBody1dStates.setData(wheelRigidBody1dStates);
+		outDifferentialState = &differentialState;
+		outWheelConstraintGroupState = &constraintGroupState;
+	}
+
+	// getDataForEngineDriveActuationStateComponent (PxVehicleEngineDriveActuationStateComponent)
+	virtual void getDataForEngineDriveActuationStateComponent(
+			const PxVehicleAxleDescription *&outAxleDescription,
+			const PxVehicleGearboxParams *&outGearboxParams,
+			PxVehicleArrayData<const PxReal> &outBrakeResponseStates,
+			const PxVehicleEngineDriveThrottleCommandResponseState *&outThrottleResponseState,
+			const PxVehicleGearboxState *&outGearboxState,
+			const PxVehicleDifferentialState *&outDifferentialState,
+			const PxVehicleClutchCommandResponseState *&outClutchResponseState,
+			PxVehicleArrayData<PxVehicleWheelActuationState> &outActuationStates) override {
+		outAxleDescription = &axleDescription;
+		outGearboxParams = &gearboxParams;
+		outBrakeResponseStates.setData(brakeCommandResponseStates);
+		outThrottleResponseState = &engineThrottleResponseState;
+		outGearboxState = &gearboxState;
+		outDifferentialState = &differentialState;
+		outClutchResponseState = &clutchResponseState;
+		outActuationStates.setData(actuationStates);
+	}
+
+	// getDataForEngineDrivetrainComponent (PxVehicleEngineDrivetrainComponent)
+	virtual void getDataForEngineDrivetrainComponent(
+			const PxVehicleAxleDescription *&outAxleDescription,
+			PxVehicleArrayData<const PxVehicleWheelParams> &outWheelParams,
+			const PxVehicleEngineParams *&outEngineParams,
+			const PxVehicleClutchParams *&outClutchParams,
+			const PxVehicleGearboxParams *&outGearboxParams,
+			PxVehicleArrayData<const PxReal> &outBrakeResponseStates,
+			PxVehicleArrayData<const PxVehicleWheelActuationState> &outActuationStates,
+			PxVehicleArrayData<const PxVehicleTireForce> &outTireForces,
+			const PxVehicleEngineDriveThrottleCommandResponseState *&outThrottleResponseState,
+			const PxVehicleClutchCommandResponseState *&outClutchResponseState,
+			const PxVehicleDifferentialState *&outDifferentialState,
+			const PxVehicleWheelConstraintGroupState *&outWheelConstraintGroupState,
+			PxVehicleArrayData<PxVehicleWheelRigidBody1dState> &outWheelRigidBody1dStates,
+			PxVehicleEngineState *&outEngineState,
+			PxVehicleGearboxState *&outGearboxState,
+			PxVehicleClutchSlipState *&outClutchState) override {
+		outAxleDescription = &axleDescription;
+		outWheelParams.setData(wheelParams);
+		outEngineParams = &engineParams;
+		outClutchParams = &clutchParams;
+		outGearboxParams = &gearboxParams;
+		outBrakeResponseStates.setData(brakeCommandResponseStates);
+		outActuationStates.setData(actuationStates);
+		outTireForces.setData(tireForces);
+		outThrottleResponseState = &engineThrottleResponseState;
+		outClutchResponseState = &clutchResponseState;
+		outDifferentialState = &differentialState;
+		outWheelConstraintGroupState = &constraintGroupState;
+		outWheelRigidBody1dStates.setData(wheelRigidBody1dStates);
+		outEngineState = &engineState;
+		outGearboxState = &gearboxState;
+		outClutchState = &clutchSlipState;
+	}
+
+	void initComponentSequence(bool p_engine_drive) {
 		componentSequence.add(static_cast<PxVehiclePhysXActorBeginComponent *>(this));
-		componentSequence.add(static_cast<PxVehicleDirectDriveCommandResponseComponent *>(this));
-		componentSequence.add(static_cast<PxVehicleDirectDriveActuationStateComponent *>(this));
+		if (p_engine_drive) {
+			// Engine drive: same component order as the direct drive, but with
+			// the ENGINE command response, 4WD differential state and ENGINE
+			// actuation components (the direct-drive actuation component feeds
+			// zero throttle response in engine mode -- measured no-drive).
+			componentSequence.add(static_cast<PxVehicleEngineDriveCommandResponseComponent *>(this));
+			componentSequence.add(static_cast<PxVehicleFourWheelDriveDifferentialStateComponent *>(this));
+			componentSequence.add(static_cast<PxVehicleEngineDriveActuationStateComponent *>(this));
+		} else {
+			componentSequence.add(static_cast<PxVehicleDirectDriveCommandResponseComponent *>(this));
+			componentSequence.add(static_cast<PxVehicleDirectDriveActuationStateComponent *>(this));
+		}
 		componentSequence.add(static_cast<PxVehiclePhysXRoadGeometrySceneQueryComponent *>(this));
 
 		componentSequenceSubstepGroupHandle = componentSequence.beginSubstepGroup(3);
 		componentSequence.add(static_cast<PxVehicleSuspensionComponent *>(this));
 		componentSequence.add(static_cast<PxVehicleTireComponent *>(this));
 		componentSequence.add(static_cast<PxVehiclePhysXConstraintComponent *>(this));
-		componentSequence.add(static_cast<PxVehicleDirectDrivetrainComponent *>(this));
+		if (p_engine_drive) {
+			componentSequence.add(static_cast<PxVehicleEngineDrivetrainComponent *>(this));
+		} else {
+			componentSequence.add(static_cast<PxVehicleDirectDrivetrainComponent *>(this));
+		}
 		componentSequence.add(static_cast<PxVehicleRigidBodyComponent *>(this));
 		componentSequence.endSubstepGroup();
 
@@ -550,7 +730,34 @@ struct Vehicle4WConfig {
 	// applies to the chassis box shape only (see configure_vehicle4w()'s own
 	// note on why the wheel shapes stay non-simulating).
 	uint32_t collision_layer = 1;
-	uint32_t collision_mask = 1;
+	uint32_t collision_mask = 0xffffffff;
+
+	// --- Engine drive (used when `engineDrive` is true) ---------------------
+	// Defaults mirror the server-RID path's build_engine_drive(): a 3-point
+	// torque curve, 40-strength clutch, 1 reverse + neutral + 5 forward gears,
+	// and an autobox that upshifts at 65% / downshifts at 40% of the band.
+	//
+	// NOTE on gear ratio signs: the SDK REQUIRES reverse < 0, neutral == 0,
+	// forward > 0 (PxVehicleGearboxParams::isValid rejects anything else, and
+	// a failing isValid silently no-ops the whole engine drivetrain update --
+	// measured: an idle-locked engine, zero wheel torque). Unlike the direct
+	// drive (whose command throttle the node negates to roll -Z), the engine
+	// drivetrain natively rolls the vehicle -Z with these positive ratios --
+	// matching the server-RID path's engine drive (the old demo's 241 km/h
+	// loop run used exactly this sign setup).
+	bool engineDrive = false;
+	float engine_peak_torque = 500.0f;
+	float engine_idle_omega = 80.0f;
+	float engine_max_omega = 600.0f;
+	float clutch_strength = 40.0f;
+	float gear_final_ratio = 3.5f;
+	float gear_switch_time = 0.5f;
+	bool use_autobox = false; // false = manual gears (target_gear honored verbatim)
+	float autobox_latency = 0.5f;
+	float autobox_up_ratio = 0.65f;
+	float autobox_down_ratio = 0.40f;
+	LocalVector<float> gear_ratios = { -4.0f, 0.0f, 4.0f, 2.0f, 1.5f, 1.1f, 0.9f };
+	int gear_neutral = 1;
 };
 
 // Fills every param struct on v from cfg, builds the real PxRigidDynamic
@@ -571,12 +778,22 @@ struct Vehicle4WConfig {
 // objects corresponds to v.wheelLocalPoses[WHEEL_FL] etc. each tick.
 inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhysics &physics, PxScene &scene, PxVehiclePhysXSimulationContext &out_context, PxU32 out_wheel_order[4]) {
 	v.setToDefault();
+	v.engineDrive = cfg.engineDrive; // the node's command/telemetry paths read THIS flag
 
 	// Godot convention: forward = -Z, right = +X, up = +Y (matches
 	// godot_physx_conversions.h's 1:1 PhysX<->Godot component mapping, so no
 	// axis remap is needed when reading the chassis pose back out).
+	// The SDK frame triple must be RIGHT-handed (lng x lat = vrt): with
+	// lngAxis = eNegZ and vrtAxis = ePosY that means latAxis = eNegX --
+	// exactly the server-RID assembly's frame (physx_vehicle_server.cpp).
+	// latAxis = ePosX made a left-handed triple: the wheel spin axis is the
+	// frame's lateral axis, so every drive direction came out mirrored --
+	// direct drive rolled +Z on positive command throttle and the engine
+	// drivetrain drove +Z on positive forward gear ratios (both measured).
+	// With the right-handed frame both natively roll -Z / drive nose-first,
+	// so nothing needs a sign flip at the command layer.
 	v.frame.lngAxis = PxVehicleAxes::eNegZ;
-	v.frame.latAxis = PxVehicleAxes::ePosX;
+	v.frame.latAxis = PxVehicleAxes::eNegX;
 	v.frame.vrtAxis = PxVehicleAxes::ePosY;
 	v.scale.scale = 1.0f;
 
@@ -752,6 +969,69 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 	v.physxActorBoxShapeHalfExtents = physx_to_px(cfg.chassis_half_extents);
 	v.physxActorBoxShapeLocalPose = PxTransform(physx_to_px(cfg.chassis_box_center_local));
 
+	// --- Engine drive seeding (mirrors build_engine_drive in the server) ----
+	if (cfg.engineDrive) {
+		// PxVehicleEngineParams has no setToDefault in this SDK -- every used
+		// field is assigned here and in the composition's reset path.
+		v.engineParams.moi = 1.0f;
+		v.engineParams.peakTorque = (PxReal)cfg.engine_peak_torque;
+		v.engineParams.idleOmega = (PxReal)cfg.engine_idle_omega;
+		v.engineParams.maxOmega = (PxReal)cfg.engine_max_omega;
+		v.engineParams.dampingRateFullThrottle = 0.15f;
+		v.engineParams.dampingRateZeroThrottleClutchEngaged = 2.0f;
+		v.engineParams.dampingRateZeroThrottleClutchDisengaged = 0.35f;
+		v.engineParams.torqueCurve.clear();
+		v.engineParams.torqueCurve.addPair(0.0f, 0.8f);
+		v.engineParams.torqueCurve.addPair(0.33f, 1.0f);
+		v.engineParams.torqueCurve.addPair(1.0f, 0.8f);
+
+		v.clutchParams.accuracyMode = PxVehicleClutchAccuracyMode::eBEST_POSSIBLE;
+		v.clutchParams.estimateIterations = 4;
+		v.clutchResponseParams.maxResponse = (PxReal)cfg.clutch_strength;
+
+		v.gearboxParams.neutralGear = cfg.gear_neutral;
+		v.gearboxParams.finalRatio = (PxReal)cfg.gear_final_ratio;
+		v.gearboxParams.switchTime = (PxReal)cfg.gear_switch_time;
+		const int nb = MIN((int)cfg.gear_ratios.size(), (int)PxVehicleGearboxParams::eMAX_NB_GEARS);
+		for (int g = 0; g < nb; g++) {
+			v.gearboxParams.ratios[g] = (PxReal)cfg.gear_ratios[g];
+		}
+		v.gearboxParams.nbRatios = nb;
+
+		// ALWAYS seed real autobox params: the command response component runs
+		// PxVehicleAutoBoxUpdate whenever autoboxParams is provided, and with
+		// zeroed params the up/down thresholds are all 0 -> shift-storm at
+		// idle -> pathological autobox state (measured segfault). The
+		// params/state pointers are ALWAYS provided to the SDK -- never null.
+		v.useAutobox = cfg.use_autobox;
+		for (PxU32 i = 0; i < PxVehicleGearboxParams::eMAX_NB_GEARS; i++) {
+			v.autoboxParams.upRatios[i] = (PxReal)cfg.autobox_up_ratio;
+			v.autoboxParams.downRatios[i] = (PxReal)cfg.autobox_down_ratio;
+		}
+		v.autoboxParams.latency = (PxReal)cfg.autobox_latency;
+
+		v.differentialParams.setToDefault();
+		const PxU32 nw = v.axleDescription.nbWheels;
+		if (nw > 0) {
+			const PxReal split = 1.0f / (PxReal)nw;
+			for (PxU32 i = 0; i < nw; i++) {
+				v.differentialParams.torqueRatios[i] = split;
+				v.differentialParams.aveWheelSpeedRatios[i] = split;
+			}
+		}
+
+		v.engineState.setToDefault();
+		v.gearboxState.setToDefault();
+		v.clutchResponseState.setToDefault();
+		v.clutchSlipState.setToDefault();
+		v.differentialState.setToDefault();
+		v.constraintGroupState.setToDefault();
+		v.autoboxState.setToDefault();
+		v.engineThrottleResponseState.setToDefault();
+		v.engineTransmissionCommand.setToDefault();
+		v.engineTransmissionCommand.targetGear = PxVehicleEngineDriveTransmissionCommandState::eAUTOMATIC_GEAR;
+	}
+
 	// Wheel shapes stay non-simulating (flags(0) below), so this material's
 	// friction/restitution never actually gets consumed by them -- it only
 	// exists because PxVehiclePhysXWheelShapeParams requires one.
@@ -823,7 +1103,7 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 
 	PxVehicleConstraintsCreate(v.axleDescription, physics, *v.physxActor.rigidBody, v.physxConstraints);
 
-	v.initComponentSequence();
+	v.initComponentSequence(cfg.engineDrive);
 	v.transmissionCommandState.gear = PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
 
 	out_context.setToDefault();

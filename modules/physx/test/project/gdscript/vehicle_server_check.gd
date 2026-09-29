@@ -40,7 +40,7 @@ func _initialize() -> void:
 	PhysicsServer3D.body_set_state(chassis, PhysicsServer3D.BODY_STATE_TRANSFORM,
 			Transform3D(Basis(), Vector3(0, 1.0, 0)))
 
-	vrid = server.vehicle_create(0) # direct drive
+	vrid = server.vehicle_create(1) # ENGINE drive
 	server.vehicle_set_chassis_body(vrid, chassis)
 	server.vehicle_set_wheel_count(vrid, 4)
 	for i in 4:
