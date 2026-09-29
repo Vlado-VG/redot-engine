@@ -401,6 +401,37 @@ int PhysXVehicle3D::get_engine_gear() const {
 	return (int)impl->vehicle.gearboxState.currentGear;
 }
 
+void PhysXVehicle3D::_update_live_wheel_tire_friction(PhysXVehicleWheel3D *p_wheel) {
+	if (!impl->built) {
+		// Not live -- the authored value is picked up at the next build.
+		return;
+	}
+	int cfg_index = -1;
+	for (uint32_t i = 0; i < wheels.size(); i++) {
+		if (wheels[i] == p_wheel) {
+			cfg_index = (int)i;
+			break;
+		}
+	}
+	if (cfg_index < 0) {
+		return; // still registering
+	}
+	for (uint32_t i = 0; i < 4; i++) {
+		if (impl->wheel_order[i] == (uint32_t)cfg_index) {
+			Vehicle4W &v = impl->vehicle;
+			const PxReal friction = (PxReal)p_wheel->get_tire_friction();
+			// Same curve shape configure_vehicle4w() authors, rescaled to the
+			// new friction: peak grip at ~10% slip, rest/slide shoulders
+			// scaled by their authored grip factors.
+			v.physxMaterialFrictionParams[i].defaultFriction = friction;
+			v.tireForceParams[i].frictionVsSlip[0][1] = (PxReal)p_wheel->get_tire_rest_grip() * friction;
+			v.tireForceParams[i].frictionVsSlip[1][1] = friction;
+			v.tireForceParams[i].frictionVsSlip[2][1] = (PxReal)p_wheel->get_tire_slide_grip() * friction;
+			return;
+		}
+	}
+}
+
 float PhysXVehicle3D::get_clutch() const {
 	if (!impl->built || !impl->vehicle.engineDrive) {
 		return 0.0;
@@ -706,6 +737,10 @@ void PhysXVehicle3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_gear_switch_time"), &PhysXVehicle3D::get_gear_switch_time);
 	ClassDB::bind_method(D_METHOD("set_autobox_latency", "value"), &PhysXVehicle3D::set_autobox_latency);
 	ClassDB::bind_method(D_METHOD("get_autobox_latency"), &PhysXVehicle3D::get_autobox_latency);
+	ClassDB::bind_method(D_METHOD("set_autobox_up_ratio", "value"), &PhysXVehicle3D::set_autobox_up_ratio);
+	ClassDB::bind_method(D_METHOD("get_autobox_up_ratio"), &PhysXVehicle3D::get_autobox_up_ratio);
+	ClassDB::bind_method(D_METHOD("set_autobox_down_ratio", "value"), &PhysXVehicle3D::set_autobox_down_ratio);
+	ClassDB::bind_method(D_METHOD("get_autobox_down_ratio"), &PhysXVehicle3D::get_autobox_down_ratio);
 	ClassDB::bind_method(D_METHOD("set_target_gear", "gear"), &PhysXVehicle3D::set_target_gear);
 	ClassDB::bind_method(D_METHOD("get_target_gear"), &PhysXVehicle3D::get_target_gear);
 	ClassDB::bind_method(D_METHOD("set_use_autobox", "enabled"), &PhysXVehicle3D::set_use_autobox);
@@ -734,6 +769,8 @@ void PhysXVehicle3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gear_final_ratio", PROPERTY_HINT_RANGE, "0.1,20,0.1,or_greater"), "set_gear_final_ratio", "get_gear_final_ratio");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "gear_switch_time", PROPERTY_HINT_RANGE, "0.05,3,0.05,or_greater"), "set_gear_switch_time", "get_gear_switch_time");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "autobox_latency", PROPERTY_HINT_RANGE, "0,5,0.05,or_greater"), "set_autobox_latency", "get_autobox_latency");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "autobox_up_ratio", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_autobox_up_ratio", "get_autobox_up_ratio");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "autobox_down_ratio", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_autobox_down_ratio", "get_autobox_down_ratio");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "target_gear", PROPERTY_HINT_RANGE, "0,255,1"), "set_target_gear", "get_target_gear");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_autobox"), "set_use_autobox", "get_use_autobox");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "ackermann_strength", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_ackermann_strength", "get_ackermann_strength");

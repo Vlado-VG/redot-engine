@@ -98,19 +98,37 @@
 			Same as [member front_anti_roll_stiffness], connecting the rear-left and rear-right wheels instead. Tuning front and rear independently changes handling balance: a stiffer (more positive) front bar relative to the rear tends toward understeer, and vice versa for oversteer -- same real-world relationship a physical anti-roll bar has.
 		</member>
 		<member name="reverse" type="bool" setter="set_reverse" getter="is_reverse" default="false">
-			Switches the drivetrain's gear between forward and reverse -- a real gear change (PxVehicle2 has no neutral-coast/instant-reverse shortcut), so [member throttle] in reverse gear still needs to first bring the car to a stop if it was moving forward, same as a real car. Check [method get_forward_speed] before engaging this from a driving script.
+			Switches the drivetrain's gear between forward and reverse -- a real gear change (PxVehicle2 has no neutral-coast/instant-reverse shortcut), so [member throttle] in reverse gear still needs to first bring the car to a stop if it was moving forward, same as a real car. Check [method get_forward_speed] before engaging this from a driving script. In engine-drive mode ([member use_gearbox]) this instead commands the reverse gear ([constant GEAR_REVERSE]).
+		</member>
+		<member name="target_gear" type="int" setter="set_target_gear" getter="get_target_gear" default="255">
+			The commanded gearbox gear in engine-drive mode ([member use_gearbox]): [constant GEAR_AUTOMATIC] ([code]255[/code], DRIVE -- the autobox picks the forward gears), [constant GEAR_REVERSE] ([code]0[/code]), [constant GEAR_NEUTRAL] ([code]1[/code] -- no drive torque reaches the wheels, the car coasts), or [code]2[/code] and up for a specific forward gear (2 = 1st, 3 = 2nd, ...). Ignored by the direct drivetrain.
+		</member>
+		<member name="use_autobox" type="bool" setter="set_use_autobox" getter="get_use_autobox" default="false">
+			Engine-drive only: with [member target_gear] left at [constant GEAR_AUTOMATIC], the autobox shifts up/down by engine speed -- above [member autobox_up_ratio] (as a fraction of engine omega over max omega) it shifts up, below [member autobox_down_ratio] it shifts down, waiting at least [member autobox_latency] seconds between shifts. With it off, [member target_gear] is honored verbatim (manual shifting).
+		</member>
+		<member name="use_gearbox" type="bool" setter="set_use_gearbox" getter="get_use_gearbox" default="false">
+			Switches the vehicle from the direct drivetrain (wheel torque applied straight from [member throttle]) to the PhysX engine drivetrain: an engine (torque curve, [member engine_peak_torque], idle/max omega) driving through a clutch and a gearbox (reverse + neutral + forward ratios, [member gear_final_ratio], [member gear_switch_time], autobox). Forward gears drive the vehicle nose-first (-Z), the reverse gear drives it backward, and neutral coasts. Switching rebuilds the vehicle; the pose is kept.
 		</member>
 		<member name="steer" type="float" setter="set_steer" getter="get_steer" default="0.0">
 			Steering input, [code]-1[/code] to [code]1[/code]. Scales up to [member max_steer_angle] on the front (steering) axle, modified by [member ackermann_strength]. Set every physics tick from script.
 		</member>
 		<member name="throttle" type="float" setter="set_throttle" getter="get_throttle" default="0.0">
-			Throttle input, [code]0[/code] to [code]1[/code]. Scales up to [member max_engine_torque] of drive torque at each traction wheel, in whichever direction [member reverse] currently selects. Set every physics tick from script.
+			Throttle input, [code]0[/code] to [code]1[/code]. In direct drive this scales up to [member max_engine_torque] of drive torque at each traction wheel, in whichever direction [member reverse] currently selects; in engine drive it is the engine's accelerator (a magnitude -- the gear picks the direction). Set every physics tick from script.
 		</member>
 	</members>
 	<constants>
 		<constant name="CENTER_OF_MASS_MODE_AUTO" value="0" enum="CenterOfMassMode">
 		</constant>
 		<constant name="CENTER_OF_MASS_MODE_CUSTOM" value="1" enum="CenterOfMassMode">
+		</constant>
+		<constant name="GEAR_REVERSE" value="0">
+			Engine-drive gear index for reverse ([method get_engine_gear] reports it while reversing).
+		</constant>
+		<constant name="GEAR_NEUTRAL" value="1">
+			Engine-drive gear index for neutral: no drive torque reaches the wheels, so the car coasts on its inertia regardless of [member throttle].
+		</constant>
+		<constant name="GEAR_AUTOMATIC" value="255">
+			Special [member target_gear] value for DRIVE: hand the forward gears to the autobox (requires [member use_autobox] for shifting; without it the gearbox just holds its current gear).
 		</constant>
 	</constants>
 </class>

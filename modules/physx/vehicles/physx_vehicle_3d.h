@@ -118,6 +118,12 @@ public:
 	int get_target_gear() const { return target_gear; }
 	void set_use_autobox(bool p_enabled);
 	bool get_use_autobox() const { return use_autobox; }
+	// Autobox shift thresholds, as fractions of (engine omega / max omega):
+	// above up_ratio the autobox shifts up, below down_ratio it shifts down.
+	void set_autobox_up_ratio(real_t p_v) { autobox_up_ratio = CLAMP(p_v, 0.0f, 1.0f); }
+	real_t get_autobox_up_ratio() const { return autobox_up_ratio; }
+	void set_autobox_down_ratio(real_t p_v) { autobox_down_ratio = CLAMP(p_v, 0.0f, 1.0f); }
+	real_t get_autobox_down_ratio() const { return autobox_down_ratio; }
 	void set_ackermann_strength(real_t p_v);
 	real_t get_ackermann_strength() const { return ackermann_strength; }
 	void set_front_anti_roll_stiffness(real_t p_v);
@@ -174,6 +180,15 @@ public:
 	float get_wheel_skid(int p_wheel) const; // longitudinal slip ratio
 	Dictionary get_wheel_contact(int p_wheel) const; // { contact: bool, normal: Vector3 }
 	float get_wheel_steer_angle(int p_wheel) const; // Ackermann-resolved angle (rad)
+
+	// Live tire-friction update from a wheel child (called by
+	// PhysXVehicleWheel3D::set_tire_friction): rewrites that wheel's
+	// road-friction default and its tire force curve's grip scale IN the
+	// built composition -- no rebuild, so surface changes (wet/ice/gravel
+	// zones) can be applied mid-drive. Safe from _physics_process: same
+	// window as the command writes. If the vehicle is not built yet the
+	// authored value is simply picked up at the next build.
+	void _update_live_wheel_tire_friction(PhysXVehicleWheel3D *p_wheel);
 
 	// Transform contract (RigidBody3D-style, two-way): the node's transform is
 	// driven FROM the chassis every physics tick, but a script-side write to

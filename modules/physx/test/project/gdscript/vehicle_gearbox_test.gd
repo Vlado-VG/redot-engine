@@ -15,6 +15,10 @@ var frame := 0
 var max_rpm := 0.0
 var gears_seen := {}
 var fwd_at_3s := 0.0
+var fwd_at_rev_end := 0.0
+var rev_pos := Vector3.ZERO
+var rev_contact := {}
+var neutral_pos := Vector3.ZERO
 
 func _initialize() -> void:
 	var ground: Node = ClassDB.instantiate("StaticBody3D")
@@ -85,26 +89,53 @@ func _tick() -> void:
 		car.set("target_gear", car.GEAR_REVERSE)
 		car.set("throttle", 1.0)
 	if frame == 420:
-		var contact: Dictionary = car.get_wheel_contact(0)
-		var ok := true
+		# Collect the reverse-phase evidence, then brake to a stop for the
+		# neutral phase.
+		fwd_at_rev_end = car.get_forward_speed()
+		rev_pos = car.global_position
+		rev_contact = car.get_wheel_contact(0)
+		car.set("brake", 1.0)
+		car.set("throttle", 0.0)
+	if frame == 540:
+		# Neutral phase: full throttle in N must NOT accelerate the car --
+		# the SDK applies no drive torque while the gearbox is in neutral.
+		# The 2s brake hold from the reverse roll must have brought the car
+		# to a standstill by now (locked wheels slide at tire_slide_grip, so
+		# ~1.3s to stop from the reverse phase's ~9 m/s); the reference
+		# position is taken HERE so the neutral check measures only
+		# neutral-phase travel.
+		neutral_pos = car.global_position
+		car.set("brake", 0.0)
+		car.set("target_gear", car.GEAR_NEUTRAL)
+		car.set("throttle", 1.0)
+	if frame == 660:
 		var failures: Array = []
 		var fwd: float = car.get_forward_speed()
 		var pos: Vector3 = car.global_position
+		var gear_n: int = car.get_engine_gear()
 		if fwd_at_3s < 5.0:
 			failures.append("no sustained forward accel (fwd=%.1f)" % fwd_at_3s)
-		if pos.z > -5.0:
-			failures.append("did not drive nose-first (-Z) (z=%.1f)" % pos.z)
+		if rev_pos.z > -5.0:
+			failures.append("did not drive nose-first (-Z) (z=%.1f)" % rev_pos.z)
 		if max_rpm < 60.0:
 			failures.append("engine never revved (max_rpm=%.0f)" % max_rpm)
 		if gears_seen.size() < 2:
 			failures.append("autobox never shifted (gears=%s)" % str(gears_seen.keys()))
-		if fwd >= 0.0:
-			failures.append("reverse gear did not drive backward (fwd=%.1f)" % fwd)
-		if not bool(contact.get("contact", false)):
+		if fwd_at_rev_end >= 0.0:
+			failures.append("reverse gear did not drive backward (fwd=%.1f)" % fwd_at_rev_end)
+		if not bool(rev_contact.get("contact", false)):
 			failures.append("wheel 0 reports no contact")
+		if gear_n != car.GEAR_NEUTRAL:
+			failures.append("gearbox did not reach neutral (gear=%d)" % gear_n)
+		if absf(fwd) > 0.5:
+			failures.append("neutral did not hold against full throttle (fwd=%.2f)" % fwd)
+		var neutral_travel := (pos - neutral_pos).length()
+		if neutral_travel > 1.5:
+			failures.append("car moved %.1f m while in neutral" % neutral_travel)
 		for f in failures:
 			push_error("[gearbox] FAIL: " + f)
 		print("[gearbox] RESULT: ", "PASS" if failures.is_empty() else "FAIL",
-				" fwd=%.1f pos.z=%.1f max_rpm=%.0f gears=%s contact=%s" % [
-				fwd, pos.z, max_rpm, gears_seen.keys(), contact.get("contact")])
+				" fwd3s=%.1f revFwd=%.1f endFwd=%.2f pos.z=%.1f max_rpm=%.0f gears=%s contact=%s" % [
+				fwd_at_3s, fwd_at_rev_end, fwd, rev_pos.z, max_rpm, gears_seen.keys(),
+				rev_contact.get("contact")])
 		quit(0 if failures.is_empty() else 1)

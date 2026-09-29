@@ -133,8 +133,16 @@ void PhysXVehicleWheel3D::set_tire_camber_stiffness(real_t p_v) {
 	_rebuild_parent_if_live();
 }
 void PhysXVehicleWheel3D::set_tire_friction(real_t p_v) {
-	tire_friction = p_v;
-	_rebuild_parent_if_live();
+	tire_friction = MAX(p_v, 0.0f);
+	// LIVE, not a rebuild: tire friction is gameplay-tunable (wet/ice/gravel
+	// surface changes mid-drive). The 4W vehicle can rewrite the built
+	// composition's per-wheel road-friction default + tire force curve in
+	// place; the motorcycle/tank compositions just rebuild.
+	if (vehicle) {
+		vehicle->_update_live_wheel_tire_friction(this);
+	} else {
+		_rebuild_parent_if_live();
+	}
 }
 void PhysXVehicleWheel3D::set_tire_rest_grip(real_t p_v) {
 	tire_rest_grip = p_v;
