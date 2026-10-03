@@ -103,9 +103,9 @@ public:
 	// tracks able to spin in opposite directions at once, which a single
 	// throttle+steer pair -- PhysXVehicle3D/PhysXMotorcycle3D's own
 	// convention -- can't express).
-	void set_left_ratio(real_t p_v) { left_ratio = p_v; }
+	void set_left_ratio(real_t p_v) { left_ratio = CLAMP(p_v, -1.0, 1.0); }
 	real_t get_left_ratio() const { return left_ratio; }
-	void set_right_ratio(real_t p_v) { right_ratio = p_v; }
+	void set_right_ratio(real_t p_v) { right_ratio = CLAMP(p_v, -1.0, 1.0); }
 	real_t get_right_ratio() const { return right_ratio; }
 	void set_brake(real_t p_v) { brake = p_v; }
 	real_t get_brake() const { return brake; }

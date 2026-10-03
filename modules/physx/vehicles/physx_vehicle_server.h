@@ -150,6 +150,14 @@ private:
 	// ============================================================
 	// (1) PRIVATE VARIABLES — plain Godot/POD state
 	// ============================================================
+	// VEH-1: tuned per-channel baselines snapshotted in
+	// _update_response_params; per-wheel command modes may raise the live
+	// maxResponse above these, and the scalar restore needs the original.
+	float scoped_drive_max_response = 1000.0f;
+	float scoped_brake_max_response = 2000.0f;
+	// VEH-2: anti-roll configuration cache — survives wheel-count rebuilds
+	// like every other tuning dictionary.
+	Dictionary cached_anti_roll_params;
 	Archetype archetype = ARCHETYPE_DIRECT_DRIVE;
 	bool configured = false;
 	bool inputs_dirty = true;
@@ -280,6 +288,9 @@ private:
 	// intent). Called after build, after a wheel-count change, and after
 	// apply_wheel_params (flags may have changed).
 	void _update_response_params();
+	void _reseed_tire_rest_load();
+	void _regroup_axles_from_poses();
+	void _apply_cached_anti_roll();
 	// Tear down v2 and re-run build with the current archetype/chassis/wheel
 	// count. Used when the wheel count changes after adopt (the component
 	// sequence binds to array addresses, so it must be re-assembled).
@@ -310,6 +321,8 @@ private:
 	void set_response_params(const Dictionary &p_params);
 	// --- Anti-roll bars (wheel-id pairs + per-bar stiffness; empty = disabled).
 	void set_anti_roll_params(const Dictionary &p_params);
+	Dictionary get_anti_roll_params() const; // LIVE v2 state (test/diagnostic)
+	Dictionary get_response_params() const; // LIVE v2 state (test/diagnostic)
 	// Ackermann steering geometry ("enabled", "percent", "wheelbase", "track").
 	void set_ackermann_params(const Dictionary &p_params);
 	// Per-wheel road-wheel steer angles the current command resolves to (rad).

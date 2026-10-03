@@ -25,6 +25,8 @@
 
 #include "physx_vehicle_server.h"
 
+#include "physx_vehicle_shared.h" // shared frame/gravity/clamp conventions
+
 #include "physx_server.h"
 #include "spaces/physx_space_3d.h"
 #include "objects/physx_body_3d.h"
@@ -81,6 +83,10 @@ static void _set_wheel_param_defaults(physx::PxVehicleWheelParams &p_wp,
 	p_tp.frictionVsSlip[0][0] = 0.0f; p_tp.frictionVsSlip[0][1] = 1.0f;
 	p_tp.frictionVsSlip[1][0] = 0.1f; p_tp.frictionVsSlip[1][1] = 1.0f;
 	p_tp.frictionVsSlip[2][0] = 1.0f; p_tp.frictionVsSlip[2][1] = 1.0f;
+	// Seed from the SCENE gravity when available (VEH-5): the hardcoded 9.81
+	// mis-tuned the load-dependent tire stiffness on any scene with custom
+	// gravity. The caller (build_direct_drive/build_engine_drive) patches this
+	// up with the actual scene value right after the defaults run.
 	p_tp.restLoad = p_sfp.sprungMass * 9.81f;
 	p_tp.loadFilter[0][0] = 0.0f; p_tp.loadFilter[0][1] = 0.0f;
 	p_tp.loadFilter[1][0] = 3.0f; p_tp.loadFilter[1][1] = 3.0f;
@@ -900,6 +906,25 @@ bool PhysXVehicleServer::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_
 
 	v2 = state;
 
+	// Re-apply cached tuning onto the fresh state (wheel params, engine-drive
+	// dicts, anti-roll, gravity-scaled tire seeds) — mirror of _rebuild's
+	// re-apply list, so pre-adopt configuration survives the adopt.
+	for (int i = 0; i < wheel_count && i < (int)cached_wheel_params.size(); i++) {
+		if (!cached_wheel_params[i].is_empty()) {
+			apply_wheel_params(i, cached_wheel_params[i]);
+		}
+	}
+	if (archetype == ARCHETYPE_ENGINE_DRIVE) {
+		if (!cached_engine_params.is_empty()) set_engine_params(cached_engine_params);
+		if (!cached_clutch_params.is_empty()) set_clutch_params(cached_clutch_params);
+		if (!cached_gearbox_params.is_empty()) set_gearbox_params(cached_gearbox_params);
+		if (!cached_autobox_params.is_empty()) set_autobox_params(cached_autobox_params);
+		if (!cached_differential_params.is_empty()) set_differential_params(cached_differential_params);
+	}
+	_apply_cached_anti_roll();
+	_regroup_axles_from_poses();
+	_reseed_tire_rest_load();
+
 	// vehicle2 applies gravity through the simulation context, so the chassis
 	// must be gravity-disabled. Mark the body as a vehicle chassis so its
 	// on_pre_step() skips manual gravity (avoids double-gravity — plan R3).
@@ -1109,6 +1134,90 @@ PhysXVehicleServer::Vehicle2State *PhysXVehicleServer::build_engine_drive(
 // Response-param seeding + re-build
 // ============================================================================
 
+void PhysXVehicleServer::_regroup_axles_from_poses() {
+	// VEH-4: the build puts ALL wheels on one axle (the old first-pass), which
+	// couples wheels that should be independent in the suspension-limit
+	// constraint and the axle-relative differential logic. Infer axles from
+	// the wheel attachment poses: cluster by the attachment's local
+	// longitudinal (frame lng) coordinate — wheels sharing a Z within 5 cm
+	// share an axle, clusters ordered front -> back. Identity poses (no
+	// local_pose authored) all share one cluster, preserving the old
+	// single-axle behavior.
+	if (!v2 || wheel_count <= 0) {
+		return;
+	}
+	float z[physx::PxVehicleLimits::eMAX_NB_WHEELS];
+	bool any_pose = false;
+	const physx::PxVec3 fwd = physx_vehicle_frame().getLngAxis();
+	for (int i = 0; i < wheel_count; i++) {
+		z[i] = v2->wheel_shape_local_poses[i].p.dot(fwd);
+		if (v2->wheel_shape_local_poses[i] != physx::PxTransform(physx::PxIdentity)) {
+			any_pose = true;
+		}
+	}
+	if (!any_pose) {
+		return;
+	}
+	float zs[physx::PxVehicleLimits::eMAX_NB_WHEELS];
+	int nb_z = 0;
+	for (int i = 0; i < wheel_count; i++) {
+		bool found = false;
+		for (int j = 0; j < nb_z; j++) {
+			if (Math::abs(zs[j] - z[i]) < 0.05f) {
+				found = true;
+				break;
+			}
+		}
+		if (!found && nb_z < (int)physx::PxVehicleLimits::eMAX_NB_AXLES) {
+			zs[nb_z++] = z[i];
+		}
+	}
+	if (nb_z <= 1) {
+		return;
+	}
+	for (int i = 0; i < nb_z; i++) {
+		for (int j = i + 1; j < nb_z; j++) {
+			if (zs[j] < zs[i]) {
+				const float t = zs[i];
+				zs[i] = zs[j];
+				zs[j] = t;
+			}
+		}
+	}
+	physx::PxU32 ids[physx::PxVehicleLimits::eMAX_NB_WHEELS];
+	physx::PxVehicleAxleDescription fresh;
+	fresh.setToDefault();
+	for (int a = 0; a < nb_z; a++) {
+		int n = 0;
+		for (int i = 0; i < wheel_count; i++) {
+			if (Math::abs(zs[a] - z[i]) < 0.05f) {
+				ids[n++] = (physx::PxU32)i;
+			}
+		}
+		fresh.addAxle((physx::PxU32)n, ids);
+	}
+	v2->axle_description = fresh;
+}
+
+void PhysXVehicleServer::_reseed_tire_rest_load() {
+	// VEH-5: the wheel-param defaults hardcode 9.81 for the load-dependent
+	// tire stiffness seed (restLoad); a scene with custom gravity got the
+	// wrong seed. Patch it from the chassis's actual scene after every build.
+	if (!v2 || wheel_count <= 0) {
+		return;
+	}
+	float g = 9.81f;
+	if (space && space->get_px_scene()) {
+		const float sg = space->get_px_scene()->getGravity().magnitude();
+		if (sg > 0.0f) {
+			g = sg;
+		}
+	}
+	for (int i = 0; i < wheel_count; i++) {
+		v2->tire_params[i].restLoad = v2->suspension_force_params[i].sprungMass * g;
+	}
+}
+
 void PhysXVehicleServer::_update_response_params() {
 	if (!v2 || wheel_count <= 0) {
 		return;
@@ -1135,6 +1244,12 @@ void PhysXVehicleServer::_update_response_params() {
 	v2->steer_response_params.maxResponse = (tune_max_steer_angle >= 0.0f) ? tune_max_steer_angle : 0.6f; // max steer angle (rad)
 	v2->brake_response_params[0].maxResponse = (tune_brake_torque >= 0.0f) ? tune_brake_torque : 2000.0f; // brake torque
 	v2->brake_response_params[1].maxResponse = (tune_handbrake_torque >= 0.0f) ? tune_handbrake_torque : 3000.0f; // handbrake torque
+	// Baseline snapshot (VEH-1): per-wheel commands may RAISE maxResponse to
+	// the largest demanded torque (the response contract caps multipliers at
+	// 1). Without the snapshot the raised value stuck after the channel
+	// returned to scalar mode, silently over-driving the tuned scalar torque.
+	scoped_drive_max_response = v2->throttle_response_params.maxResponse;
+	scoped_brake_max_response = v2->brake_response_params[0].maxResponse;
 
 	for (int i = 0; i < wheel_count; i++) {
 		const WheelFlags &wf = wheel_flags[i];
@@ -1204,11 +1319,14 @@ void PhysXVehicleServer::_rebuild() {
 		if (!cached_autobox_params.is_empty()) set_autobox_params(cached_autobox_params);
 		if (!cached_differential_params.is_empty()) set_differential_params(cached_differential_params);
 	}
+	_apply_cached_anti_roll();
 
 	physx::PxVehicleConstraintsCreate(v2->axle_description, *px_physics, *chassis_actor,
 			v2->physx_constraints);
 
 	_update_response_params();
+	_regroup_axles_from_poses();
+	_reseed_tire_rest_load();
 
 	if (was_registered && space) {
 		space->register_vehicle(this);
@@ -1266,6 +1384,9 @@ void PhysXVehicleServer::_update_balance(float p_step) {
 		const float fade = CLAMP(1.0f - speed / 3.0f, 0.0f, 1.0f);
 		if (fade > 0.0f) {
 			const float corr = -(balance_kp * balance_lean_angle + balance_kd * balance_roll_rate);
+			// addTorque does not wake a sleeping actor (VEH-6): a bike that
+			// fell asleep leaning gets no righting torque without this.
+			chassis_actor->wakeUp();
 			chassis_actor->addTorque(fwd * (corr * fade * balance_low_speed_torque));
 		}
 	}
@@ -1354,6 +1475,10 @@ void PhysXVehicleServer::write_commands() {
 				v2->throttle_response_params.wheelResponseMultipliers[i] = t * gear_sign * inv;
 			}
 		} else {
+			// Scalar mode: restore the TUNED baseline (see the snapshot in
+			// _update_response_params) so a past per-wheel demand cannot keep
+			// the channel over-driven.
+			v2->throttle_response_params.maxResponse = scoped_drive_max_response;
 			for (int i = 0; i < wheel_count; i++) {
 				v2->throttle_response_params.wheelResponseMultipliers[i] = wheel_flags[i].traction ? 1.0f : 0.0f;
 			}
@@ -1385,6 +1510,8 @@ void PhysXVehicleServer::write_commands() {
 				v2->brake_response_params[0].wheelResponseMultipliers[i] = demand * inv;
 			}
 		} else {
+			// Scalar mode: restore the tuned baseline (VEH-1, mirror of drive).
+			v2->brake_response_params[0].maxResponse = scoped_brake_max_response;
 			for (int i = 0; i < wheel_count; i++) {
 				v2->brake_response_params[0].wheelResponseMultipliers[i] = wheel_flags[i].brake ? 1.0f : 0.0f;
 			}
@@ -1791,7 +1918,21 @@ void PhysXVehicleServer::set_response_params(const Dictionary &p_params) {
 // "stiffness" disables anti-roll. Like the other vehicle2 params, the
 // configuration lives in the vehicle2 state and resets on rebuild.
 void PhysXVehicleServer::set_anti_roll_params(const Dictionary &p_params) {
-	if (!v2 || !p_params.has("stiffness")) {
+	if (!p_params.has("stiffness")) {
+		return;
+	}
+	// Cache FIRST (VEH-2): the configuration must survive wheel-count rebuilds
+	// like every other tuning dictionary, and buffering here also makes
+	// pre-adopt calls (v2 == nullptr) take effect at adopt time instead of
+	// being silently dropped.
+	{
+		// Deep-copy the arrays: the caller's Dictionary may mutate after return.
+		Dictionary copy;
+		copy["wheel_ids"] = p_params.get("wheel_ids", PackedInt32Array());
+		copy["stiffness"] = p_params["stiffness"];
+		cached_anti_roll_params = copy;
+	}
+	if (!v2) {
 		return;
 	}
 	PackedFloat32Array stiffness = p_params["stiffness"];
@@ -1810,6 +1951,65 @@ void PhysXVehicleServer::set_anti_roll_params(const Dictionary &p_params) {
 		v2->anti_roll_params[i].stiffness = stiffness[i];
 	}
 	v2->nb_anti_roll_bars = nb_bars;
+}
+
+void PhysXVehicleServer::_apply_cached_anti_roll() {
+	// Re-apply the cached anti-roll configuration to the (fresh) v2 state.
+	// Called from _rebuild/adopt; a no-op without a cache or state.
+	if (!v2 || cached_anti_roll_params.is_empty() || !cached_anti_roll_params.has("stiffness")) {
+		return;
+	}
+	PackedFloat32Array stiffness = cached_anti_roll_params["stiffness"];
+	PackedInt32Array wheel_ids = cached_anti_roll_params.get("wheel_ids", PackedInt32Array());
+	int nb_bars = wheel_ids.size() / 2 < stiffness.size() ? wheel_ids.size() / 2 : stiffness.size();
+	if (nb_bars > wheel_count) {
+		nb_bars = wheel_count;
+	}
+	for (int i = 0; i < nb_bars; i++) {
+		const int w0 = wheel_ids[i * 2];
+		const int w1 = wheel_ids[i * 2 + 1];
+		if (w0 < 0 || w0 >= wheel_count || w1 < 0 || w1 >= wheel_count) {
+			continue;
+		}
+		v2->anti_roll_params[i].wheel0 = (physx::PxU32)w0;
+		v2->anti_roll_params[i].wheel1 = (physx::PxU32)w1;
+		v2->anti_roll_params[i].stiffness = stiffness[i];
+	}
+	v2->nb_anti_roll_bars = nb_bars;
+}
+
+// Live-state getters (mirror set_anti_roll_params / set_response_params):
+// return what the vehicle2 state is ACTUALLY using right now, so tests can
+// assert that configuration survived a rebuild rather than trusting caches.
+Dictionary PhysXVehicleServer::get_anti_roll_params() const {
+	Dictionary out;
+	if (!v2) {
+		out["nb_bars"] = 0;
+		return out;
+	}
+	PackedInt32Array wheel_ids;
+	PackedFloat32Array stiffness;
+	for (int i = 0; i < v2->nb_anti_roll_bars; i++) {
+		wheel_ids.push_back((int)v2->anti_roll_params[i].wheel0);
+		wheel_ids.push_back((int)v2->anti_roll_params[i].wheel1);
+		stiffness.push_back(v2->anti_roll_params[i].stiffness);
+	}
+	out["nb_bars"] = v2->nb_anti_roll_bars;
+	out["wheel_ids"] = wheel_ids;
+	out["stiffness"] = stiffness;
+	return out;
+}
+
+Dictionary PhysXVehicleServer::get_response_params() const {
+	Dictionary out;
+	if (!v2) {
+		return out;
+	}
+	out["drive_max_response"] = (double)v2->throttle_response_params.maxResponse;
+	out["steer_max_response"] = (double)v2->steer_response_params.maxResponse;
+	out["brake_max_response"] = (double)v2->brake_response_params[0].maxResponse;
+	out["handbrake_max_response"] = (double)v2->brake_response_params[1].maxResponse;
+	return out;
 }
 
 // Ackermann steering geometry. "percent" blends between parallel steer (0) and

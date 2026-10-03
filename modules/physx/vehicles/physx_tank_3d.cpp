@@ -26,6 +26,8 @@
 
 #include "physx_tank_3d.h"
 
+#include "physx_vehicle_shared.h"
+
 #include "../physx_conversions.h"
 #include "../physx_project_settings.h"
 #include "../physx_server.h"
@@ -211,7 +213,10 @@ void PhysXTank3D::_notification(int p_what) {
 				break;
 			}
 			VehicleTrack &v = impl->vehicle;
-			v.setDriverInput((PxReal)left_ratio, (PxReal)right_ratio, (PxReal)brake);
+			// Ratios clamp to [-1, 1] (per-track signed drive command), brake
+			// to [0, 1] -- out-of-range script values otherwise scale torque
+			// linearly beyond the tuned budget (VEHN-7).
+			v.setDriverInput(physx_vehicle_clamp_sym(left_ratio), physx_vehicle_clamp_sym(right_ratio), physx_vehicle_clamp01(brake));
 			v.step((PxReal)get_physics_process_delta_time(), impl->simulationContext);
 			// Same CoM-vs-actor-origin frame notes as PhysXVehicle3D/
 			// PhysXMotorcycle3D's own identical code -- see PhysXVehicle3D's

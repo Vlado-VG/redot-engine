@@ -141,4 +141,7 @@ public static class VehicleApi {
     public static float[] GetWheelSteerAngles(Rid v) => Call("vehicle_get_wheel_steer_angles", v).AsFloat32Array();
     public static void SetBalanceParams(Rid v, Godot.Collections.Dictionary p) => Call("vehicle_set_balance_params", v, p);
     public static Godot.Collections.Dictionary GetBalanceState(Rid v) => Call("vehicle_get_balance_state", v).AsGodotDictionary();
+    public static void SetAntiRollParams(Rid v, Godot.Collections.Dictionary p) => Call("vehicle_set_anti_roll_params", v, p);
+    public static Godot.Collections.Dictionary GetAntiRollParams(Rid v) => Call("vehicle_get_anti_roll_params", v).AsGodotDictionary();
+    public static Godot.Collections.Dictionary GetResponseParams(Rid v) => Call("vehicle_get_response_params", v).AsGodotDictionary();
 }

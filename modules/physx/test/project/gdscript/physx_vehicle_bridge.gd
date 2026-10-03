@@ -44,6 +44,12 @@ func vehicle_set_response_params(vehicle: RID, params: Dictionary) -> void:
 func vehicle_set_anti_roll_params(vehicle: RID, params: Dictionary) -> void:
 	PhysXServer3D.get_singleton().vehicle_set_anti_roll_params(vehicle, params)
 
+func vehicle_get_anti_roll_params(vehicle: RID) -> Dictionary:
+	return PhysXServer3D.get_singleton().vehicle_get_anti_roll_params(vehicle)
+
+func vehicle_get_response_params(vehicle: RID) -> Dictionary:
+	return PhysXServer3D.get_singleton().vehicle_get_response_params(vehicle)
+
 func vehicle_get_wheel_states(vehicle: RID) -> Array:
 	return PhysXServer3D.get_singleton().vehicle_get_wheel_states(vehicle)
 

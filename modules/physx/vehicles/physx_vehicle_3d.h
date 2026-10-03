@@ -136,11 +136,11 @@ public:
 	// as VehicleBody3D.engine_force/brake/steering -- different units (PxVehicle2's
 	// own normalized commands, not a raw force/raw angle), since that's what the
 	// underlying SDK actually takes.
-	void set_throttle(real_t p_v) { throttle = p_v; }
+	void set_throttle(real_t p_v) { throttle = CLAMP(p_v, 0.0, 1.0); }
 	real_t get_throttle() const { return throttle; }
-	void set_brake(real_t p_v) { brake = p_v; }
+	void set_brake(real_t p_v) { brake = CLAMP(p_v, 0.0, 1.0); }
 	real_t get_brake() const { return brake; }
-	void set_steer(real_t p_v) { steer = p_v; }
+	void set_steer(real_t p_v) { steer = CLAMP(p_v, -1.0, 1.0); }
 	real_t get_steer() const { return steer; }
 	// Handbrake input [0,1] -- PhysX brake channel 1 (rear wheels only).
 	void set_handbrake(real_t p_v) { handbrake = CLAMP(p_v, 0.0, 1.0); }

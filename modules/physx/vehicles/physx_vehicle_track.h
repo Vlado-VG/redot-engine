@@ -39,6 +39,8 @@
 #include <PxPhysicsAPI.h>
 #include <vehicle/PxVehicleAPI.h>
 
+#include "physx_vehicle_shared.h" // frame/gravity/clamp conventions shared with the server stack
+
 using namespace physx;
 
 // A direct-drive N-wheel tracked (tank-style) vehicle: no steering wheels at
@@ -479,11 +481,11 @@ public:
 		// numRightWheels's own doc comment for why: maxEngineTorque is a
 		// per-TRACK budget shared across every wheel on it, not applied in
 		// full at each wheel independently.
-		// Negated: with lngAxis = eNegZ the direct drive rolls +Z_local; the
-		// declared vehicle forward is -Z (Godot convention, steered/leading
-		// side authored at -Z), so the per-track ratios flip sign here.
-		const PxReal leftPerWheel = numLeftWheels > 0 ? -left_ratio / (PxReal)numLeftWheels : 0.0f;
-		const PxReal rightPerWheel = numRightWheels > 0 ? -right_ratio / (PxReal)numRightWheels : 0.0f;
+		// Positive ratios drive -Z (nose-first): with the right-handed frame
+		// the direct drive rolls -Z natively, so no sign flip here (the old
+		// negation compensated the left-handed frame; it is gone).
+		const PxReal leftPerWheel = numLeftWheels > 0 ? physx_vehicle_clamp_sym(left_ratio) / (PxReal)numLeftWheels : 0.0f;
+		const PxReal rightPerWheel = numRightWheels > 0 ? physx_vehicle_clamp_sym(right_ratio) / (PxReal)numRightWheels : 0.0f;
 		for (PxU32 i = 0; i < numWheels; i++) {
 			directDriveThrottleResponseParams.wheelResponseMultipliers[i] = wheelIsLeftTrack[i] ? leftPerWheel : rightPerWheel;
 		}
@@ -587,9 +589,10 @@ inline bool configure_vehicle_track(VehicleTrack &v, const VehicleTrackConfig &c
 	v.numWheels = wheel_count;
 	v.setToDefault();
 
-	v.frame.lngAxis = PxVehicleAxes::eNegZ;
-	v.frame.latAxis = PxVehicleAxes::ePosX;
-	v.frame.vrtAxis = PxVehicleAxes::ePosY;
+	// Right-handed triple -- same fix as configure_vehicle2w(): the old
+	// left-handed (eNegZ, ePosX, ePosY) was an illegal frame whose drive came
+	// out mirrored, compensated by negating the per-track multipliers below.
+	v.frame = physx_vehicle_frame();
 	v.scale.scale = 1.0f;
 
 	v.axleDescription.setToDefault();
@@ -721,6 +724,8 @@ inline bool configure_vehicle_track(VehicleTrack &v, const VehicleTrackConfig &c
 	// the ground.
 	PxMaterial *chassis_material = physics.createMaterial(0.0f, 0.0f, 0.1f);
 	if (!wheel_material || !chassis_material) {
+		if (wheel_material) wheel_material->release();
+		if (chassis_material) chassis_material->release();
 		ERR_PRINT("PhysX tank: failed to create material.");
 		return false;
 	}
@@ -754,6 +759,9 @@ inline bool configure_vehicle_track(VehicleTrack &v, const VehicleTrackConfig &c
 		return false;
 	}
 
+	// See configure_vehicle4w(): explicit chassis gravity-off.
+	physx_vehicle_chassis_gravity_off(*v.physxActor.rigidBody);
+
 	PxVehicleConstraintsCreate(v.axleDescription, physics, *v.physxActor.rigidBody, v.physxConstraints);
 
 	v.initComponentSequence();
@@ -762,7 +770,7 @@ inline bool configure_vehicle_track(VehicleTrack &v, const VehicleTrackConfig &c
 	out_context.setToDefault();
 	out_context.frame = v.frame;
 	out_context.scale = v.scale;
-	out_context.gravity = v.frame.getVrtAxis() * -9.81f;
+	out_context.gravity = physx_vehicle_scene_gravity(scene, v.frame);
 	out_context.physxScene = &scene;
 	out_context.physxUnitCylinderSweepMesh = nullptr;
 

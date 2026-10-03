@@ -39,6 +39,8 @@
 #include <PxPhysicsAPI.h>
 #include <vehicle/PxVehicleAPI.h>
 
+#include "physx_vehicle_shared.h" // frame/gravity/clamp conventions shared with the server stack
+
 using namespace physx;
 
 // A single direct-drive 4-wheel vehicle, composed exactly the way PhysX's own
@@ -346,11 +348,20 @@ public:
 		outPhysxConstraints = &physxConstraints;
 		outRigidBodyState = &rigidBodyState;
 		outWheelRigidBody1dStates.setData(wheelRigidBody1dStates);
-		outTransmissionCommands = nullptr;
-		outGearParams = nullptr;
-		outGearState = nullptr;
-		outEngineParams = nullptr;
-		outEngineState = nullptr;
+		// Wake/sleep wiring (PxVehiclePhysxActorWakeup / SleepCheck consume
+		// these): when engineDrive is configured, hand the component the REAL
+		// transmission/gear/engine state so gear changes and throttle can wake
+		// the sleeping actor and the sleep check sees the engine speed. The
+		// unconditional nulls below used to tell the SDK "no gearbox/engine",
+		// degrading sleep/wake exactly where engine-drive needs them. (The
+		// direct-drive fields -- commandState/transmissionCommandState -- are
+		// always valid above; engineDrive's are zero-initialized members of
+		// this same object, assigned by configure_vehicle4w.)
+		outTransmissionCommands = engineDrive ? &engineTransmissionCommand : nullptr;
+		outGearParams = engineDrive ? &gearboxParams : nullptr;
+		outGearState = engineDrive ? &gearboxState : nullptr;
+		outEngineParams = engineDrive ? &engineParams : nullptr;
+		outEngineState = engineDrive ? &engineState : nullptr;
 	}
 
 	// getDataForPhysXActorEndComponent (PxVehiclePhysXActorEndComponent)
@@ -371,7 +382,13 @@ public:
 		outWheelRigidBody1dStates.setData(wheelRigidBody1dStates);
 		outWheelLocalPoses.setData(wheelLocalPoses);
 		outPhysxActor = &physxActor;
-		outGearState = nullptr;
+		// The end component writes the gear state back after the drivetrain
+		// step; nulling it (the old unconditional null) would discard the
+		// updated gear/rpm the telemetry and the next wake check read.
+		// Throttle stays on commandState: PhysXVehicle3D writes throttle there
+		// in BOTH drivetrains (the engine-drive path only adds the
+		// transmission command's clutch/targetGear alongside).
+		outGearState = engineDrive ? &gearboxState : nullptr;
 		outThrottle = &commandState.throttle;
 	}
 
@@ -792,9 +809,7 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 	// drivetrain drove +Z on positive forward gear ratios (both measured).
 	// With the right-handed frame both natively roll -Z / drive nose-first,
 	// so nothing needs a sign flip at the command layer.
-	v.frame.lngAxis = PxVehicleAxes::eNegZ;
-	v.frame.latAxis = PxVehicleAxes::eNegX;
-	v.frame.vrtAxis = PxVehicleAxes::ePosY;
+	v.frame = physx_vehicle_frame(); // right-handed (eNegZ, eNegX, ePosY); see the helper
 	v.scale.scale = 1.0f;
 
 	// Classify cfg.wheels[0..3] (arbitrary caller order) into canonical
@@ -1048,6 +1063,9 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 	// ever resist the car's own motion.
 	PxMaterial *chassis_material = physics.createMaterial(0.0f, 0.0f, 0.1f);
 	if (!wheel_material || !chassis_material) {
+		// Release whichever side DID create -- a plain return leaked it.
+		if (wheel_material) wheel_material->release();
+		if (chassis_material) chassis_material->release();
 		ERR_PRINT("PhysX vehicle: failed to create material.");
 		return false;
 	}
@@ -1101,6 +1119,12 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 		return false;
 	}
 
+	// Vehicle2 applies gravity through the simulation context, so the chassis
+	// must have scene gravity disabled. PxVehiclePhysXActorCreate does this
+	// internally today; set it explicitly so an SDK change cannot silently
+	// double-apply gravity (same hand-off as the server-RID stack).
+	physx_vehicle_chassis_gravity_off(*v.physxActor.rigidBody);
+
 	PxVehicleConstraintsCreate(v.axleDescription, physics, *v.physxActor.rigidBody, v.physxConstraints);
 
 	v.initComponentSequence(cfg.engineDrive);
@@ -1109,7 +1133,7 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 	out_context.setToDefault();
 	out_context.frame = v.frame;
 	out_context.scale = v.scale;
-	out_context.gravity = v.frame.getVrtAxis() * -9.81f;
+	out_context.gravity = physx_vehicle_scene_gravity(scene, v.frame);
 	out_context.physxScene = &scene;
 	out_context.physxUnitCylinderSweepMesh = nullptr;
 

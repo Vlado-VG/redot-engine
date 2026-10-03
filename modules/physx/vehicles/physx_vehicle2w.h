@@ -39,6 +39,8 @@
 #include <PxPhysicsAPI.h>
 #include <vehicle/PxVehicleAPI.h>
 
+#include "physx_vehicle_shared.h" // frame/gravity/clamp conventions shared with the server stack
+
 using namespace physx;
 
 // A single direct-drive 2-wheel vehicle (motorcycle-style: one front steering
@@ -522,9 +524,13 @@ struct Vehicle2WConfig {
 inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhysics &physics, PxScene &scene, PxVehiclePhysXSimulationContext &out_context) {
 	v.setToDefault();
 
-	v.frame.lngAxis = PxVehicleAxes::eNegZ;
-	v.frame.latAxis = PxVehicleAxes::ePosX;
-	v.frame.vrtAxis = PxVehicleAxes::ePosY;
+	// Right-handed triple (lng x lat = vrt), shared with the 4W/server stacks.
+	// The old (eNegZ, ePosX, ePosY) was LEFT-handed: PxVehicleFrame::isValid()
+	// builds a quaternion from the basis, which a mirrored basis cannot satisfy
+	// -- the frame was illegal and the direct drive rolled the wrong way,
+	// papered over by negating every throttle command. With the legal frame the
+	// drive rolls -Z natively and the negations are gone.
+	v.frame = physx_vehicle_frame();
 	v.scale.scale = 1.0f;
 
 	const PxU32 frontWheel[1] = { Vehicle2W::WHEEL_FRONT };
@@ -641,6 +647,8 @@ inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhys
 	// lets it graze the ground.
 	PxMaterial *chassis_material = physics.createMaterial(0.0f, 0.0f, 0.1f);
 	if (!wheel_material || !chassis_material) {
+		if (wheel_material) wheel_material->release();
+		if (chassis_material) chassis_material->release();
 		ERR_PRINT("PhysX motorcycle: failed to create material.");
 		return false;
 	}
@@ -673,6 +681,10 @@ inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhys
 		return false;
 	}
 
+	// See configure_vehicle4w(): explicit chassis gravity-off, so Vehicle2's
+	// context-applied gravity is the only gravity.
+	physx_vehicle_chassis_gravity_off(*v.physxActor.rigidBody);
+
 	PxVehicleConstraintsCreate(v.axleDescription, physics, *v.physxActor.rigidBody, v.physxConstraints);
 
 	v.initComponentSequence();
@@ -681,7 +693,7 @@ inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhys
 	out_context.setToDefault();
 	out_context.frame = v.frame;
 	out_context.scale = v.scale;
-	out_context.gravity = v.frame.getVrtAxis() * -9.81f;
+	out_context.gravity = physx_vehicle_scene_gravity(scene, v.frame);
 	out_context.physxScene = &scene;
 	out_context.physxUnitCylinderSweepMesh = nullptr;
 

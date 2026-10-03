@@ -33,6 +33,8 @@ internal static class VehicleTests {
         s.Add("PHYSX-VEHI-020", "surface_frictions grip table survives freeing the ground body", SurfaceFrictionsGroundFree);
         s.Add("PHYSX-VEHI-021", "counter-rotating wheel torques yaw the chassis (skid steer)", SkidSteerYaws);
         s.Add("PHYSX-VEHI-022", "vehicle follows the chassis into a new space", ChassisSpaceFollow);
+        s.Add("PHYSX-VEHI-023", "per-wheel torque raise does not stick in scalar mode (maxResponse restore)", PerWheelResponseRestore);
+        s.Add("PHYSX-VEHI-024", "anti-roll configuration survives a wheel-count rebuild", AntiRollSurvivesRebuild);
     }
 
     static (Rid chassis, Rid vehicle) MakeVehicle(PhysxWorld w, int archetype = 0, float mass = 800f) {
@@ -465,6 +467,64 @@ internal static class VehicleTests {
         for (int i = 0; i < 4; i++) {
             VehicleApi.SetWheelDriveTorque(v, i, 0f);
         }
+    }
+
+    // VEH-1: a per-wheel drive torque above the tuned maxResponse raises the
+    // live maxResponse (response contract caps multipliers at 1). When the
+    // channel returns to scalar mode the TUNED baseline must be restored --
+    // the old code left the raised value stuck, over-driving scalar throttle.
+    static IEnumerator PerWheelResponseRestore() {
+        using var w = new PhysxWorld();
+        var (chassis, v) = MakeVehicle(w);
+        yield return Wait.Frames(25);
+
+        float baseDrive = VehicleApi.GetResponseParams(v)["drive_max_response"].AsSingle();
+        Assert.ExpectNear(baseDrive, 1000f, 1e-3f, "untuned drive baseline is 1000");
+
+        // Raise via per-wheel demand (5x the baseline); write_commands runs on
+        // the next physics step, so give it a frame before reading. Then
+        // return to scalar and give that a frame too.
+        for (int i = 0; i < 4; i++) {
+            VehicleApi.SetWheelDriveTorque(v, i, 5000f);
+        }
+        yield return Wait.Frames(2);
+        float raised = VehicleApi.GetResponseParams(v)["drive_max_response"].AsSingle();
+        Assert.Expect(raised > 4000f, $"per-wheel demand raised maxResponse (got {raised:F0})");
+        for (int i = 0; i < 4; i++) {
+            VehicleApi.SetWheelDriveTorque(v, i, 0f);
+        }
+        yield return Wait.Frames(2);
+        float restored = VehicleApi.GetResponseParams(v)["drive_max_response"].AsSingle();
+        Assert.ExpectNear(restored, baseDrive, 1e-3f,
+            $"scalar mode restored the tuned baseline (got {restored:F0})");
+    }
+
+    // VEH-2: anti-roll configuration must survive a wheel-count rebuild
+    // (the rebuild assembles a fresh vehicle2 state; the old code only
+    // re-applied wheel/engine params and silently dropped the bars).
+    static IEnumerator AntiRollSurvivesRebuild() {
+        using var w = new PhysxWorld();
+        var (chassis, v) = MakeVehicle(w);
+        yield return Wait.Frames(5);
+
+        var cfg = new Godot.Collections.Dictionary {
+            ["wheel_ids"] = new int[] { 0, 1, 2, 3 }, // left-right pairs per axle
+            ["stiffness"] = new float[] { 5000f, 5000f },
+        };
+        VehicleApi.SetAntiRollParams(v, cfg);
+        var live0 = VehicleApi.GetAntiRollParams(v);
+        Assert.Expect(live0["nb_bars"].AsInt32() == 2, "2 bars configured pre-rebuild");
+
+        // Rebuild: adding a wheel re-assembles the whole vehicle2 state.
+        VehicleApi.AddWheel(v);
+        yield return Wait.Frames(5);
+
+        var live1 = VehicleApi.GetAntiRollParams(v);
+        Assert.Expect(live1["nb_bars"].AsInt32() == 2,
+            $"anti-roll bars survive the rebuild (got {live1["nb_bars"].AsInt32()})");
+        var stiffness = live1["stiffness"].AsFloat32Array();
+        Assert.Expect(stiffness.Length == 2 && Mathf.Abs(stiffness[0] - 5000f) < 1e-3f,
+            "stiffness values survive the rebuild");
     }
 
     // The vehicle must follow its chassis into a new space: after

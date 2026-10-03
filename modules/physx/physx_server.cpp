@@ -116,6 +116,8 @@ void PhysXServer3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("vehicle_set_gear_command", "vehicle", "gear"), &PhysXServer3D::vehicle_set_gear_command);
 	ClassDB::bind_method(D_METHOD("vehicle_set_response_params", "vehicle", "params"), &PhysXServer3D::vehicle_set_response_params);
 	ClassDB::bind_method(D_METHOD("vehicle_set_anti_roll_params", "vehicle", "params"), &PhysXServer3D::vehicle_set_anti_roll_params);
+	ClassDB::bind_method(D_METHOD("vehicle_get_anti_roll_params", "vehicle"), &PhysXServer3D::vehicle_get_anti_roll_params);
+	ClassDB::bind_method(D_METHOD("vehicle_get_response_params", "vehicle"), &PhysXServer3D::vehicle_get_response_params);
 	ClassDB::bind_method(D_METHOD("vehicle_set_engine_params", "vehicle", "params"), &PhysXServer3D::vehicle_set_engine_params);
 	ClassDB::bind_method(D_METHOD("vehicle_set_clutch_params", "vehicle", "params"), &PhysXServer3D::vehicle_set_clutch_params);
 	ClassDB::bind_method(D_METHOD("vehicle_set_gearbox_params", "vehicle", "params"), &PhysXServer3D::vehicle_set_gearbox_params);
@@ -1319,6 +1321,20 @@ Dictionary PhysXServer3D::vehicle_get_balance_state(RID p_vehicle) const {
 // ---------------------------------------------------------------------------
 // ARTICULATION SKELETON (see objects/physx_articulation_3d.h)
 // ---------------------------------------------------------------------------
+
+Dictionary PhysXServer3D::vehicle_get_anti_roll_params(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
+	PhysXVehicleServer *v = vehicle_owner.get_or_null(p_vehicle);
+	ERR_FAIL_NULL_V(v, Dictionary());
+	return v->get_anti_roll_params();
+}
+
+Dictionary PhysXServer3D::vehicle_get_response_params(RID p_vehicle) const {
+	MutexLock lock(api_mutex);
+	PhysXVehicleServer *v = vehicle_owner.get_or_null(p_vehicle);
+	ERR_FAIL_NULL_V(v, Dictionary());
+	return v->get_response_params();
+}
 
 RID PhysXServer3D::articulation_create() {
 	MutexLock lock(api_mutex);

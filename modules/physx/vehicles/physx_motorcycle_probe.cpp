@@ -26,6 +26,8 @@
 
 #include "physx_motorcycle_probe.h"
 
+#include "physx_vehicle_shared.h"
+
 #include "../physx_conversions.h"
 #include "../physx_server.h"
 #include "../spaces/physx_space_3d.h"
@@ -92,8 +94,9 @@ bool PhysXMotorcycleProbe::initialize(RID p_space, const Vector3 &p_position) {
 void PhysXMotorcycleProbe::step(real_t p_dt, real_t p_throttle, real_t p_brake, real_t p_steer) {
 	ERR_FAIL_COND(!impl->initialized);
 	Vehicle2W &v = impl->vehicle;
-	// Negated: roll toward -Z (see PhysXVehicle3D's command write).
-	v.commandState.throttle = -(PxReal)p_throttle;
+	// Positive throttle rolls -Z natively (right-handed frame; the negation
+	// compensated the old left-handed frame).
+	v.commandState.throttle = physx_vehicle_clamp01(p_throttle);
 	v.commandState.brakes[0] = (PxReal)p_brake;
 	v.commandState.nbBrakes = 1;
 	v.commandState.steer = (PxReal)p_steer;

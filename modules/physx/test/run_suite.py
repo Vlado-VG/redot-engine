@@ -40,6 +40,7 @@ VEHICLE_SCRIPTS = [
     "res://gdscript/vehicle_server_check.gd",
     "res://gdscript/vehicle_node_test.gd",
     "res://gdscript/vehicle_gearbox_test.gd",
+    "res://gdscript/vehicle_direction_test.gd",
 ]
 ASYNC_SCRIPT = "res://gdscript/async_stress_test.gd"
 FLOW_SCRIPT = "res://gdscript/flow_smoke_test.gd"

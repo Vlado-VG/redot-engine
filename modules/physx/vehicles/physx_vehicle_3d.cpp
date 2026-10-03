@@ -436,7 +436,10 @@ float PhysXVehicle3D::get_clutch() const {
 	if (!impl->built || !impl->vehicle.engineDrive) {
 		return 0.0;
 	}
-	return (real_t)impl->vehicle.clutchResponseState.commandResponse;
+	// normalisedCommandResponse is the [0,1] engagement the property doc
+	// promises; commandResponse is strength-scaled (up to ~40 at the default
+	// clutch strength).
+	return (real_t)impl->vehicle.clutchResponseState.normalisedCommandResponse;
 }
 
 float PhysXVehicle3D::get_wheel_rpm(int p_wheel) const {
@@ -530,6 +533,27 @@ PackedStringArray PhysXVehicle3D::get_configuration_warnings() const {
 	} else if (nb_steering != 2) {
 		warnings.push_back(vformat(RTR("PhysXVehicle3D needs exactly 2 wheels with use_as_steering enabled (has %d)."), nb_steering));
 	}
+	// Custom gear table validation (VEHN-8): an invalid table fails
+	// PxVehicleGearboxParams::isValid, which silently disables the whole
+	// engine drivetrain -- surface it here instead.
+	if (use_gearbox && gear_ratios.size() >= 3) {
+		if (gear_ratios[1] != 0.0f) {
+			warnings.push_back(RTR("Gear table index 1 (neutral) must be exactly 0.0, or the gearbox cannot engage neutral."));
+		}
+		if (gear_ratios[0] >= 0.0f) {
+			warnings.push_back(RTR("Gear table index 0 (reverse) must be negative."));
+		}
+		bool fwd_ok = true;
+		for (int i = 2; i < gear_ratios.size(); i++) {
+			if (gear_ratios[i] <= 0.0f) {
+				fwd_ok = false;
+				break;
+			}
+		}
+		if (!fwd_ok) {
+			warnings.push_back(RTR("Forward gear ratios (indices 2+) must all be positive."));
+		}
+	}
 	return warnings;
 }
 
@@ -619,8 +643,10 @@ void PhysXVehicle3D::set_clutch_strength(real_t p_v) {
 
 void PhysXVehicle3D::set_gear_ratios(const PackedFloat32Array &p_ratios) {
 	// Gear 0 = reverse, gear 1 = neutral (0.0), gears 2.. = forward. Sign
-	// convention: FORWARD ratios are NEGATIVE (rolls the car nose-first --
-	// see Vehicle4WConfig's ratio-sign note), the reverse ratio positive.
+	// convention (PxVehicleDrivetrainParams + Vehicle4WConfig's own note):
+	// REVERSE ratios are NEGATIVE, forward ratios POSITIVE -- an inverted
+	// table fails PxVehicleGearboxParams::isValid, which silently disables
+	// the whole engine drivetrain.
 	gear_ratios = p_ratios;
 	_rebuild_if_live();
 }

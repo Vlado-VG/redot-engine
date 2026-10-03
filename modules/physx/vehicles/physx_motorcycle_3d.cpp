@@ -26,6 +26,8 @@
 
 #include "physx_motorcycle_3d.h"
 
+#include "physx_vehicle_shared.h"
+
 #include "../physx_conversions.h"
 #include "../physx_project_settings.h"
 #include "../physx_server.h"
@@ -216,12 +218,13 @@ void PhysXMotorcycle3D::_notification(int p_what) {
 				break;
 			}
 			Vehicle2W &v = impl->vehicle;
-			// Negated: see PhysXVehicle3D's command write -- flips the direct
-			// drive's roll to the declared forward = -Z convention.
-			v.commandState.throttle = -(PxReal)throttle;
-			v.commandState.brakes[0] = (PxReal)brake;
+			// Positive throttle drives -Z natively (right-handed frame; the
+			// old negation compensated the left-handed frame and is gone).
+			// Inputs are clamped to their Godot ranges (VEHN-7).
+			v.commandState.throttle = physx_vehicle_clamp01(throttle);
+			v.commandState.brakes[0] = physx_vehicle_clamp01(brake);
 			v.commandState.nbBrakes = 1;
-			v.commandState.steer = (PxReal)steer;
+			v.commandState.steer = physx_vehicle_clamp_sym(steer);
 			v.transmissionCommandState.gear = reverse ? PxVehicleDirectDriveTransmissionCommandState::eREVERSE : PxVehicleDirectDriveTransmissionCommandState::eFORWARD;
 			v.step((PxReal)get_physics_process_delta_time(), impl->simulationContext);
 			// Same CoM-vs-actor-origin frame notes as PhysXVehicle3D's own

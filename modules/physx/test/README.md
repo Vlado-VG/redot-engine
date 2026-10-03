@@ -65,7 +65,7 @@ modules/physx/test/
 | `gdscript`| `gdscript_binding_tests.gd` | Same backend through the GDScript binding layer | yes |
 | `smoke`   | `physics_smoke_test.gd` | Node-level drop/settle end-to-end sanity | yes |
 | `blast`   | `blast_smoke_test.gd` | Blast authoring + destructible lifecycle (skips itself on `blast=no` builds) | yes |
-| `vehicle` | `vehicle_server_check.gd`, `vehicle_node_test.gd`, `vehicle_gearbox_test.gd` | Server-RID + node vehicle stacks, engine drive/gearbox | yes |
+| `vehicle` | `vehicle_server_check.gd`, `vehicle_node_test.gd`, `vehicle_gearbox_test.gd`, `vehicle_direction_test.gd` | Server-RID + node vehicle stacks, engine drive/gearbox, 2W/track direction matrix | yes |
 | `async`   | `async_stress_test.gd` | Mid-flight mutation churn under `async_step` (fetch-guard coverage) | yes |
 | `flow`    | `flow_smoke_test.gd` | NVIDIA Flow end-to-end (needs a Vulkan runtime) | opt-in |
 | `gpu`     | `gpu_smoke_test.gd` | CUDA/GPU object family (needs a CUDA runtime) | opt-in |

@@ -389,6 +389,8 @@ public:
 	// 2-wheeler roll-balance assist (lean stabilization) + its telemetry.
 	void vehicle_set_balance_params(RID p_vehicle, const Dictionary &p_params);
 	Dictionary vehicle_get_balance_state(RID p_vehicle) const;
+	Dictionary vehicle_get_anti_roll_params(RID p_vehicle) const;
+	Dictionary vehicle_get_response_params(RID p_vehicle) const;
 
 	// ------------------------------------------------------------------
 	// ARTICULATION API — SKELETON for PhysX reduced-coordinate articulations.
