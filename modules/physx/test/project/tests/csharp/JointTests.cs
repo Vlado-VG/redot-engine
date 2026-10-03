@@ -42,7 +42,13 @@ internal static class JointTests {
         s.Add("PHYSX-JOINT-028", "6dof: linear spring drives to the equilibrium point", SixDofSpringEquilibrium);
         s.Add("PHYSX-JOINT-029", "freeing a body keeps the joint RID and getters valid", JointSurvivesBodyFree);
         s.Add("PHYSX-JOINT-030", "static->dynamic mode change resurrects a dormant hinge about Z", DormantHingeResurrects);
-        s.Add("PHYSX-JOINT-031", "params set before first make round-trip after make", ParamsBeforeMakeRoundtrip);
+        s.Add("PHYSX-JOINT-031", "params set while dormant survive body activation", ParamsBeforeMakeRoundtrip);
+        s.Add("PHYSX-JOINT-032", "6dof linear motor reaches target velocity against gravity", SixDofLinearMotor);
+        s.Add("PHYSX-JOINT-033", "6dof motor force limit caps the drive against load", SixDofMotorForceCap);
+        s.Add("PHYSX-JOINT-034", "6dof angular motor spins to target velocity", SixDofAngularMotor);
+        s.Add("PHYSX-JOINT-035", "reversed 6dof linear limit range leaves the axis unconstrained", SixDofReversedLimitFree);
+        s.Add("PHYSX-JOINT-036", "re-making a joint resets its parameters", RemakeResetsParams);
+        s.Add("PHYSX-JOINT-037", "equal 0..0 linear limit ranges lock the axis", SixDofEqualLimitLocks);
     }
 
     static (Rid a, Rid b, Rid j) MakePinnedPair(PhysxWorld w, Vector3 pos) {
@@ -546,21 +552,213 @@ internal static class JointTests {
         var b = w.MakeStatic(w.Box(0.25f, 1.0f, 0.25f), new Vector3(0.75f, 5f, 0));
         var j = PhysicsServer3D.JointCreate();
         w.TrackJoint(j);
+        // Parameters set AFTER make but while the joint is dormant (both bodies
+        // still static) must survive until a body turns dynamic and the
+        // PxJoint is rebuilt from cache. Params set BEFORE make are dropped —
+        // godot_physics replaces the joint object on joint_make_* too.
+        PhysicsServer3D.JointMakeHinge(j, a, Transform3D.Identity, b, Transform3D.Identity);
         PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.LimitUpper, 0.4f);
         PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity, 6f);
         PhysicsServer3D.HingeJointSetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor, true);
-        PhysicsServer3D.JointMakeHinge(j, a, Transform3D.Identity, b, Transform3D.Identity);
         PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Rigid);
         yield return Wait.Frame();
         Assert.ExpectNear(PhysicsServer3D.HingeJointGetParam(j, PhysicsServer3D.HingeJointParam.LimitUpper), 0.4f, 1e-4f,
-            "limit upper set before make survives");
+            "limit upper set while dormant survives");
         Assert.ExpectNear(PhysicsServer3D.HingeJointGetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity), 6f, 1e-4f,
-            "motor target set before make survives");
+            "motor target set while dormant survives");
         Assert.Expect(PhysicsServer3D.HingeJointGetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor),
-            "motor flag set before make survives");
+            "motor flag set while dormant survives");
         PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorMaxImpulse, 30f);
         yield return Wait.Frames(60);
         Assert.Expect(Mathf.Abs(w.AngVel(b).Z) > 0.5f,
             $"pre-configured motor drives the hinge about Z (wz={w.AngVel(b).Z:F2})");
+    }
+
+    // G6DOF linear motor (velocity servo with force limit): a 1 kg body hangs
+    // from a static anchor; the Y motor targets +1 m/s with 50 N (>> the
+    // 9.81 N gravity load). The servo must regulate the rise to the target
+    // velocity (godot_physics terminal behavior).
+    static IEnumerator SixDofLinearMotor() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.1f), new Vector3(0, 5, 0));
+        var b = w.MakeBody(w.Box(0.1f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Mass, 1f);
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeGeneric6Dof(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.JointDisableCollisionsBetweenBodies(j, true);
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearLimit, false);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisParam.LinearMotorTargetVelocity, 1f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisParam.LinearMotorForceLimit, 50f);
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearMotor, true);
+        yield return Wait.Frames(90);
+        float vy = w.Vel(b).Y;
+        float dy = w.Pos(b).Origin.Y - 5f;
+        Assert.Expect(vy > 0.85f && vy < 1.1f, $"motor regulates to target velocity (vy={vy:F3})");
+        Assert.Expect(dy > 0.5f, $"body rose with the motor (dy={dy:F2})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite under motor drive");
+    }
+
+    // The force limit is honored: 5 N cannot lift the 1 kg body against the
+    // 9.81 N gravity load, so the body accelerates downward despite the motor.
+    static IEnumerator SixDofMotorForceCap() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.1f), new Vector3(0, 5, 0));
+        var b = w.MakeBody(w.Box(0.1f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Mass, 1f);
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeGeneric6Dof(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.JointDisableCollisionsBetweenBodies(j, true);
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearLimit, false);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisParam.LinearMotorTargetVelocity, 1f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisParam.LinearMotorForceLimit, 5f);
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.Y, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearMotor, true);
+        yield return Wait.Frames(60);
+        float vy = w.Vel(b).Y;
+        float dy = w.Pos(b).Origin.Y - 5f;
+        Assert.Expect(vy < -0.5f, $"under-powered motor loses to gravity (vy={vy:F3})");
+        Assert.Expect(dy < -0.2f, $"body sank (dy={dy:F2})");
+    }
+
+    // Angular motor (twist axis): the servo spins the body toward the target
+    // angular velocity; linear axes are locked with equal 0..0 ranges (a valid
+    // "locked" pair on every backend). can_sleep=false: a small body spinning
+    // at 2 rad/s sits BELOW the sleep-energy threshold, and a PhysX drive does
+    // not keep a sleeping body awake.
+    static IEnumerator SixDofAngularMotor() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.1f), new Vector3(0, 5, 0));
+        var b = w.MakeBody(w.Box(0.1f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Mass, 1f);
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.CanSleep, false);
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeGeneric6Dof(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.JointDisableCollisionsBetweenBodies(j, true);
+        for (int i = 0; i < 3; i++) {
+            var axis = (Vector3.Axis)i;
+            PhysicsServer3D.Generic6DofJointSetFlag(j, axis, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearLimit, true);
+            PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearLowerLimit, 0f);
+            PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearUpperLimit, 0f);
+        }
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisFlag.EnableAngularLimit, false);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.AngularMotorTargetVelocity, 2f);
+        PhysicsServer3D.Generic6DofJointSetParam(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisParam.AngularMotorForceLimit, 10f);
+        PhysicsServer3D.Generic6DofJointSetFlag(j, Vector3.Axis.X, PhysicsServer3D.G6DofJointAxisFlag.EnableMotor, true);
+        yield return Wait.Frames(90);
+        Vector3 av = w.AngVel(b);
+        Assert.Expect(Mathf.Abs(av.X) > 1.4f, $"angular motor reaches target velocity (wx={av.X:F3})");
+        Assert.Expect(Mathf.Abs(av.X) > Mathf.Abs(av.Y) * 2f && Mathf.Abs(av.X) > Mathf.Abs(av.Z) * 2f,
+            $"spin is about the twist axis (av={av})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite");
+    }
+
+    // godot_physics semantics (godot_generic_6dof_joint_3d solve isLimited):
+    // a limit constraint only applies while upper >= lower — a REVERSED range
+    // leaves the axis unconstrained. With X/Z held by valid ranges, a reversed
+    // Y range must let the body fall; a valid Y range must hold it near the
+    // anchor.
+    static IEnumerator SixDofReversedLimitFree() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.1f), new Vector3(0, 5, 0));
+        var b = w.MakeBody(w.Box(0.1f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Mass, 1f);
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeGeneric6Dof(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.JointDisableCollisionsBetweenBodies(j, true);
+        foreach (var axis in new[] { Vector3.Axis.X, Vector3.Axis.Y, Vector3.Axis.Z }) {
+            PhysicsServer3D.Generic6DofJointSetFlag(j, axis, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearLimit, true);
+            if (axis == Vector3.Axis.Y) {
+                // Reversed: the reference treats this as unconstrained.
+                PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearLowerLimit, 0.2f);
+                PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearUpperLimit, -0.2f);
+            } else {
+                PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearLowerLimit, -0.4f);
+                PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearUpperLimit, 0.4f);
+            }
+        }
+        yield return Wait.Frames(60);
+        Vector3 drop = w.Pos(b).Origin - new Vector3(0, 5, 0);
+        Assert.Expect(drop.Y < -0.5f, $"reversed Y range is unconstrained (dy={drop.Y:F2})");
+        Assert.Expect(Mathf.Abs(drop.X) < 0.6f && Mathf.Abs(drop.Z) < 0.6f,
+            $"X/Z valid ranges hold (dx={drop.X:F2} dz={drop.Z:F2})");
+
+        // Contrast: a valid Y range holds the body near the anchor.
+        var a2 = w.MakeStatic(w.Box(0.1f), new Vector3(10, 5, 0));
+        var b2 = w.MakeBody(w.Box(0.1f), new Vector3(10, 5, 0));
+        PhysicsServer3D.BodySetParam(b2, PhysicsServer3D.BodyParameter.Mass, 1f);
+        var j2 = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j2);
+        PhysicsServer3D.JointMakeGeneric6Dof(j2, a2, Transform3D.Identity, b2, Transform3D.Identity);
+        PhysicsServer3D.JointDisableCollisionsBetweenBodies(j2, true);
+        foreach (var axis in new[] { Vector3.Axis.X, Vector3.Axis.Y, Vector3.Axis.Z }) {
+            PhysicsServer3D.Generic6DofJointSetFlag(j2, axis, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearLimit, true);
+            PhysicsServer3D.Generic6DofJointSetParam(j2, axis, PhysicsServer3D.G6DofJointAxisParam.LinearLowerLimit, -0.3f);
+            PhysicsServer3D.Generic6DofJointSetParam(j2, axis, PhysicsServer3D.G6DofJointAxisParam.LinearUpperLimit, 0.3f);
+        }
+        yield return Wait.Frames(60);
+        Vector3 held = w.Pos(b2).Origin - new Vector3(10, 5, 0);
+        Assert.Expect(held.Y > -0.6f, $"valid Y range constrains (dy={held.Y:F2})");
+    }
+
+    // godot_physics replaces the joint object on joint_make_*: re-making a RID
+    // must NOT resurrect the previous configuration's params/flags.
+    static IEnumerator RemakeResetsParams() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.3f), new Vector3(0, 5, 0));
+        var b = w.MakeStatic(w.Box(0.25f, 1.0f, 0.25f), new Vector3(0.75f, 5f, 0));
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeHinge(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.LimitUpper, 0.4f);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity, 6f);
+        PhysicsServer3D.HingeJointSetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor, true);
+        PhysicsServer3D.HingeJointSetFlag(j, PhysicsServer3D.HingeJointFlag.UseLimit, true);
+
+        PhysicsServer3D.JointMakeHinge(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        Assert.Expect(PhysicsServer3D.JointGetType(j) == PhysicsServer3D.JointType.Hinge, "joint still a hinge after re-make");
+        // godot_physics replaces the joint object on re-make too (its fresh
+        // hinge defaults differ — e.g. limit upper -PI — so only assert that
+        // the OLD value is gone, not which default replaced it).
+        Assert.Expect(Mathf.Abs(PhysicsServer3D.HingeJointGetParam(j, PhysicsServer3D.HingeJointParam.LimitUpper) - 0.4f) > 0.01f,
+            "limit upper not resurrected by re-make");
+        Assert.ExpectNear(PhysicsServer3D.HingeJointGetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity), 0f, 1e-5f,
+            "motor target reset by re-make");
+        Assert.Expect(!PhysicsServer3D.HingeJointGetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor), "motor flag reset by re-make");
+        Assert.Expect(!PhysicsServer3D.HingeJointGetFlag(j, PhysicsServer3D.HingeJointFlag.UseLimit), "limit flag reset by re-make");
+
+        // The fresh configuration still works: set the motor after re-make.
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Rigid);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorTargetVelocity, 4f);
+        PhysicsServer3D.HingeJointSetParam(j, PhysicsServer3D.HingeJointParam.MotorMaxImpulse, 50f);
+        PhysicsServer3D.HingeJointSetFlag(j, PhysicsServer3D.HingeJointFlag.EnableMotor, true);
+        yield return Wait.Frames(60);
+        Assert.Expect(Mathf.Abs(w.AngVel(b).Z) > 0.5f,
+            $"re-made hinge motor drives (wz={w.AngVel(b).Z:F2})");
+    }
+
+    // godot_physics isLimited boundary: upper >= lower is a valid limit — an
+    // equal 0..0 range (the node-level default) LOCKS the axis, unlike the
+    // reversed range of PHYSX-JOINT-035 which is unconstrained.
+    static IEnumerator SixDofEqualLimitLocks() {
+        using var w = new PhysxWorld(false);
+        var a = w.MakeStatic(w.Box(0.1f), new Vector3(0, 5, 0));
+        var b = w.MakeBody(w.Box(0.1f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Mass, 1f);
+        var j = PhysicsServer3D.JointCreate();
+        w.TrackJoint(j);
+        PhysicsServer3D.JointMakeGeneric6Dof(j, a, Transform3D.Identity, b, Transform3D.Identity);
+        PhysicsServer3D.JointDisableCollisionsBetweenBodies(j, true);
+        foreach (var axis in new[] { Vector3.Axis.X, Vector3.Axis.Y, Vector3.Axis.Z }) {
+            PhysicsServer3D.Generic6DofJointSetFlag(j, axis, PhysicsServer3D.G6DofJointAxisFlag.EnableLinearLimit, true);
+            PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearLowerLimit, 0f);
+            PhysicsServer3D.Generic6DofJointSetParam(j, axis, PhysicsServer3D.G6DofJointAxisParam.LinearUpperLimit, 0f);
+        }
+        yield return Wait.Frames(60);
+        Vector3 drift = w.Pos(b).Origin - new Vector3(0, 5, 0);
+        Assert.Expect(drift.Length() < 0.15f, $"equal ranges lock the body at the anchor (drift={drift})");
+        Assert.Expect(PhysxWorld.Finite(w.Pos(b)), "state finite");
     }
 }

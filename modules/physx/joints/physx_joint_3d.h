@@ -248,6 +248,12 @@ private:
 	/// Rebuilds and applies the hinge angular limit from hinge_params.
 	/// No-op if use_limit is false.
 	void _apply_hinge_limit();
+	/// Applies the per-axis G6DOF linear limit: pushes the cached range to
+	/// setLinearLimit and marks the axis LIMITED, but only while the range is
+	/// valid (lower < upper) — godot_physics gates its whole limit constraint
+	/// on minLimit < maxLimit (solveLinearAxis), so a reversed or equal range
+	/// leaves the axis unconstrained and the invalid pair never reaches PhysX.
+	void _apply_g6dof_linear_limit(physx::PxD6Joint *p_d6, Vector3::Axis p_axis);
 	/// Builds the D6 drive target from the cached per-axis spring equilibrium
 	/// points and applies it via PxD6Joint::setDrivePosition: linear equilibria
 	/// map to the drive translation, angular equilibria (radians about the
@@ -266,6 +272,12 @@ private:
 	/// Pushes the full cached configuration into the live PxJoint (no-op
 	/// without one). Called after creation/rebuild.
 	void _apply_params();
+	/// Zeroes every per-kind parameter cache (params, flags, drive states,
+	/// cached drive velocities). Called by make(): a fresh configuration must
+	/// not resurrect parameters from the joint that previously occupied this
+	/// RID — matching godot_physics, where joint_make_* replaces the joint
+	/// object with fresh defaults.
+	void _reset_param_caches();
 	/// Releases the live PxJoint (fetch-safe via the bodies' spaces, waking the
 	/// connected dynamics first). Cache and body links are untouched.
 	void _destroy_px_joint();
@@ -290,9 +302,12 @@ public:
 
 	// --- Configuration entry (server: joint_make_*) ---
 	/// (Re)configures this RID for a type/body pair and tries to create the
-	/// PxJoint. Cached parameters survive the call and are re-applied onto the
-	/// fresh PxJoint; a configuration without a dynamic actor stays dormant
-	/// until a body notifies (rebuild) or the next make() call.
+	/// PxJoint. Every per-kind parameter cache is RESET first (a fresh
+	/// configuration must not inherit state from the joint that previously
+	/// held this RID — matching godot_physics's joint_make_* replacement
+	/// semantics); configure via the set_* setters after make(). A
+	/// configuration without a dynamic actor stays dormant until a body
+	/// notifies (rebuild) or the next make() call.
 	void make(PhysicsServer3D::JointType p_type, JointKind p_kind,
 			PhysXBody3D *p_body_a, const physx::PxTransform &p_local_a,
 			PhysXBody3D *p_body_b, const physx::PxTransform &p_local_b);

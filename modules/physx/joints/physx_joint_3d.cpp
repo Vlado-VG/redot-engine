@@ -22,6 +22,16 @@
 #include "extensions/PxD6Joint.h"
 #include "extensions/PxJointLimit.h"
 
+// Godot's G6DOF motor is a pure velocity servo: accelerate toward the target
+// velocity with up to the force limit and no position term. A PxD6JointDrive
+// is a force-limited damped spring — force = stiffness * (targetPos - pos) +
+// damping * (targetVel - vel) — so the servo is emulated with zero stiffness
+// and a large finite damping: the drive force is damping * velocity-error,
+// saturated at the force limit, i.e. the Godot motor. Any value large enough
+// to keep the drive saturated for realistic force limits works (same
+// technique as the reference PhysX backend's 1.0e6 motor drives).
+static constexpr float G6DOF_MOTOR_DAMPING = 1.0e6f;
+
 // ---------------------------------------------------------------------------
 // Static helpers — convert between Godot and PhysX types
 // (delegating to the module-wide conversions header, which clamps degenerate
@@ -47,6 +57,13 @@ Vector3 PhysXJoint3D::to_godot_vec3(const physx::PxVec3 &p_vec) {
  * The Y and Z axes are orthogonalized via Gram-Schmidt.
  */
 physx::PxTransform PhysXJoint3D::compute_joint_frame(const physx::PxVec3 &p_pivot, const physx::PxVec3 &p_axis) {
+	// A zero-length axis (caller bug, reachable from scripts) would normalize
+	// to NaN and poison the joint quaternion; fall back to an axis-less frame
+	// at the pivot so the joint stays well-defined.
+	if (p_axis.magnitudeSquared() < 1.0e-12f) {
+		return physx::PxTransform(p_pivot, physx::PxQuat(physx::PxIdentity));
+	}
+
 	// X = axis direction
 	physx::PxVec3 x = p_axis;
 	x.normalize();
@@ -114,11 +131,36 @@ void PhysXJoint3D::body_removed(PhysXBody3D *p_body) {
 	}
 }
 
+void PhysXJoint3D::_reset_param_caches() {
+	pin_params = PinJointParams();
+	hinge_params = HingeJointParams();
+	slider_params = SliderJointParams();
+	slider_limit_enabled = false;
+	cone_twist_params = ConeTwistJointParams();
+	cone_limits_set = false;
+	for (int a = 0; a < 6; a++) {
+		g6dof_params[a] = G6DOFJointAxisParams();
+		g6dof_flags[a] = G6DOFJointAxisFlags();
+		g6dof_lin_drives[a] = G6DOFDriveState();
+		g6dof_ang_drives[a] = G6DOFDriveState();
+	}
+	cached_g6dof_lin_drive_vel = physx::PxVec3(0.0f);
+	cached_g6dof_ang_drive_vel = physx::PxVec3(0.0f);
+}
+
 void PhysXJoint3D::make(PhysicsServer3D::JointType p_type, JointKind p_kind,
 		PhysXBody3D *p_body_a, const physx::PxTransform &p_local_a,
 		PhysXBody3D *p_body_b, const physx::PxTransform &p_local_b) {
-	// Reconfiguring an existing RID: drop the old PxJoint (cache survives) and
-	// re-link to the given bodies.
+	// A fresh configuration must not inherit state from the joint that
+	// previously occupied this RID (godot_physics's joint_make_* replaces the
+	// joint object with fresh defaults; re-making the same kind would
+	// otherwise resurrect stale limits/motors onto the new PxJoint). Setters
+	// must run AFTER make(); params set before make are dropped, like on the
+	// reference backend.
+	_reset_param_caches();
+
+	// Reconfiguring an existing RID: drop the old PxJoint and re-link to the
+	// given bodies.
 	_destroy_px_joint();
 	if (body_a) {
 		body_a->remove_joint(this);
@@ -402,28 +444,28 @@ void PhysXJoint3D::_apply_params() {
 
 		case JOINT_KIND_6DOF: {
 			physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(px_joint);
+			// Godot's G6DOF motor force limits are FORCES (newton/torque); a
+			// PhysX drive forceLimit is an impulse per step unless this flag
+			// says otherwise. Without it a "5 N" motor applies ~5 N*s per step
+			// — ~300 N at 60 Hz. The hinge's separate constraint keeps the
+			// default impulse interpretation (Godot's hinge motor param is an
+			// impulse).
+			px_joint->setConstraintFlag(physx::PxConstraintFlag::eDRIVE_LIMITS_ARE_FORCES, true);
 			// Godot semantics: a fresh 6DOF joint has every axis FREE — limits
 			// apply only where the enable flags say so (PxD6Joint's own default
 			// is all-LOCKED, which would silently weld the bodies together).
+			// _apply_g6dof_linear_limit marks the axis LIMITED only while the
+			// limit flag is on AND the cached range is valid.
 			bool any_drive = false;
 			for (int a = 0; a < 3; a++) {
 				const Vector3::Axis axis = (Vector3::Axis)a;
 				const physx::PxD6Axis::Enum lin_axis = _px_linear_axis(axis);
 				const physx::PxD6Axis::Enum ang_axis = _px_angular_axis(axis);
-				const G6DOFJointAxisParams &params = g6dof_params[a];
-				const G6DOFJointAxisFlags &flags = g6dof_flags[a];
 
-				d6->setMotion(lin_axis, flags.linear_limit ? physx::PxD6Motion::eLIMITED : physx::PxD6Motion::eFREE);
-				if (flags.linear_limit) {
-					physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
-					limit.stiffness = params.linear_limit_softness;
-					limit.damping = params.linear_damping;
-					limit.restitution = params.linear_restitution;
-					d6->setLinearLimit(lin_axis, limit);
-				}
+				_apply_g6dof_linear_limit(d6, axis);
 
-				d6->setMotion(ang_axis, flags.angular_limit ? physx::PxD6Motion::eLIMITED : physx::PxD6Motion::eFREE);
-				if (flags.angular_limit) {
+				d6->setMotion(ang_axis, g6dof_flags[a].angular_limit ? physx::PxD6Motion::eLIMITED : physx::PxD6Motion::eFREE);
+				if (g6dof_flags[a].angular_limit) {
 					_apply_g6dof_angular_limit(d6, axis);
 				}
 
@@ -1018,6 +1060,33 @@ real_t PhysXJoint3D::get_cone_twist_param(PhysicsServer3D::ConeTwistJointParam p
 // 6DOF joint — params and flags (per-axis)
 // ---------------------------------------------------------------------------
 
+// Applies the per-axis linear limit from the cached params. godot_physics
+// gates its limit constraint on isLimited (upper >= lower — an equal range is
+// a valid, effectively-locked pair) and solveLinearAxis handles the rest; a
+// STRICTLY REVERSED range (upper < lower) is unconstrained — the solve is
+// never called (godot_generic_6dof_joint_3d solveLinearAxis/solve
+// isLimited). Mirroring that keeps the pair PhysX-valid too:
+// PxJointLinearLimitPair requires upper >= lower.
+void PhysXJoint3D::_apply_g6dof_linear_limit(physx::PxD6Joint *p_d6, Vector3::Axis p_axis) {
+	if (!p_d6) {
+		return;
+	}
+	const G6DOFJointAxisParams &params = g6dof_params[p_axis];
+	const physx::PxD6Axis::Enum lin_axis = _px_linear_axis(p_axis);
+
+	if (!g6dof_flags[p_axis].linear_limit || params.linear_lower_limit > params.linear_upper_limit) {
+		p_d6->setMotion(lin_axis, physx::PxD6Motion::eFREE);
+		return;
+	}
+
+	physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
+	limit.stiffness = params.linear_limit_softness;
+	limit.damping = params.linear_damping;
+	limit.restitution = params.linear_restitution;
+	p_d6->setLinearLimit(lin_axis, limit);
+	p_d6->setMotion(lin_axis, physx::PxD6Motion::eLIMITED);
+}
+
 // Applies the per-axis angular limit to the correct PhysX slot:
 //   AXIS_X (twist)  -> setTwistLimit (PxJointAngularLimitPair, lower/upper)
 //   AXIS_Y (swing1) } setPyramidSwingLimit (per-axis spans preserved)
@@ -1086,9 +1155,8 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 	if (!d6) {
 		return;
 	}
-	physx::PxD6Axis::Enum lin_axis = _px_linear_axis(p_axis);
 	physx::PxD6Axis::Enum ang_axis = _px_angular_axis(p_axis);
-	physx::PxD6Drive::Enum lin_drive = static_cast<physx::PxD6Drive::Enum>(lin_axis);
+	physx::PxD6Drive::Enum lin_drive = static_cast<physx::PxD6Drive::Enum>(_px_linear_axis(p_axis));
 	physx::PxD6Drive::Enum ang_drive = static_cast<physx::PxD6Drive::Enum>(ang_axis);
 
 	switch (p_param) {
@@ -1096,53 +1164,31 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LOWER_LIMIT:
 		{
 			g6dof_flags[p_axis].linear_limit = true;
-			physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
-			limit.stiffness = params.linear_limit_softness;
-			limit.damping = params.linear_damping;
-			limit.restitution = params.linear_restitution;
-			d6->setLinearLimit(lin_axis, limit);
-			d6->setMotion(lin_axis, physx::PxD6Motion::eLIMITED);
+			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_UPPER_LIMIT:
 		{
 			g6dof_flags[p_axis].linear_limit = true;
-			physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
-			limit.stiffness = params.linear_limit_softness;
-			limit.damping = params.linear_damping;
-			limit.restitution = params.linear_restitution;
-			d6->setLinearLimit(lin_axis, limit);
-			d6->setMotion(lin_axis, physx::PxD6Motion::eLIMITED);
+			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear limit softness
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LIMIT_SOFTNESS:
 		{
-			physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
-			limit.stiffness = params.linear_limit_softness;
-			limit.damping = params.linear_damping;
-			limit.restitution = params.linear_restitution;
-			d6->setLinearLimit(lin_axis, limit);
+			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear restitution
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_RESTITUTION:
 		{
-			physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
-			limit.stiffness = params.linear_limit_softness;
-			limit.damping = params.linear_damping;
-			limit.restitution = params.linear_restitution;
-			d6->setLinearLimit(lin_axis, limit);
+			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear damping
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_DAMPING:
 		{
-			physx::PxJointLinearLimitPair limit(physx::PxTolerancesScale(), params.linear_lower_limit, params.linear_upper_limit);
-			limit.stiffness = params.linear_limit_softness;
-			limit.damping = params.linear_damping;
-			limit.restitution = params.linear_restitution;
-			d6->setLinearLimit(lin_axis, limit);
+			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear motor target velocity — accumulate into cached drive velocity
@@ -1150,10 +1196,12 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		{
 			cached_g6dof_lin_drive_vel[p_axis] = params.linear_motor_target_velocity;
 			d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
-			g6dof_lin_drives[p_axis] = { true, 0.0f, 0.0f, params.linear_motor_force_limit };
+			// Velocity servo: zero stiffness, large damping (see
+			// G6DOF_MOTOR_DAMPING) — the Godot motor, force-limited.
+			g6dof_lin_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.linear_motor_force_limit };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = 0.0f;
-			drive.damping = 0.0f;
+			drive.damping = G6DOF_MOTOR_DAMPING;
 			drive.forceLimit = params.linear_motor_force_limit;
 			d6->setDrive(lin_drive, drive);
 			break;
@@ -1161,10 +1209,10 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		// Linear motor force limit
 		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_FORCE_LIMIT:
 		{
-			g6dof_lin_drives[p_axis] = { true, 0.0f, 0.0f, params.linear_motor_force_limit };
+			g6dof_lin_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.linear_motor_force_limit };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = 0.0f;
-			drive.damping = 0.0f;
+			drive.damping = G6DOF_MOTOR_DAMPING;
 			drive.forceLimit = params.linear_motor_force_limit;
 			d6->setDrive(lin_drive, drive);
 			break;
@@ -1256,10 +1304,11 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		{
 			cached_g6dof_ang_drive_vel[p_axis] = params.angular_motor_target_velocity;
 			d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
-			g6dof_ang_drives[p_axis] = { true, 0.0f, 0.0f, params.angular_motor_force_limit };
+			// Velocity servo (see G6DOF_MOTOR_DAMPING).
+			g6dof_ang_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.angular_motor_force_limit };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = 0.0f;
-			drive.damping = 0.0f;
+			drive.damping = G6DOF_MOTOR_DAMPING;
 			drive.forceLimit = params.angular_motor_force_limit;
 			d6->setDrive(ang_drive, drive);
 			break;
@@ -1267,10 +1316,10 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		// Angular motor force limit
 		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_FORCE_LIMIT:
 		{
-			g6dof_ang_drives[p_axis] = { true, 0.0f, 0.0f, params.angular_motor_force_limit };
+			g6dof_ang_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.angular_motor_force_limit };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = 0.0f;
-			drive.damping = 0.0f;
+			drive.damping = G6DOF_MOTOR_DAMPING;
 			drive.forceLimit = params.angular_motor_force_limit;
 			d6->setDrive(ang_drive, drive);
 			break;
@@ -1376,9 +1425,10 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 		{
 			flags.linear_limit = p_enable;
 			// Godot semantics: the flag alone governs the axis — enabled means
-			// limited, disabled means FREE (not locked).
+			// limited (while the range is valid, see _apply_g6dof_linear_limit),
+			// disabled means FREE (not locked).
 			if (d6) {
-				d6->setMotion(lin_axis, p_enable ? physx::PxD6Motion::eLIMITED : physx::PxD6Motion::eFREE);
+				_apply_g6dof_linear_limit(d6, p_axis);
 			}
 			break;
 		}
@@ -1423,12 +1473,12 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 			flags.angular_motor = p_enable;
 			// Update cached angular drive velocity for this axis
 			cached_g6dof_ang_drive_vel[p_axis] = params.angular_motor_target_velocity;
-			g6dof_ang_drives[p_axis] = { p_enable, 0.0f, 0.0f, params.angular_motor_force_limit };
+			g6dof_ang_drives[p_axis] = { p_enable, 0.0f, G6DOF_MOTOR_DAMPING, params.angular_motor_force_limit };
 			if (d6) {
 				d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
 				physx::PxD6JointDrive drive;
 				drive.stiffness = 0.0f;
-				drive.damping = 0.0f;
+				drive.damping = G6DOF_MOTOR_DAMPING;
 				drive.forceLimit = params.angular_motor_force_limit;
 				d6->setDrive(ang_drive, drive);
 			}
@@ -1439,12 +1489,12 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 			flags.linear_motor = p_enable;
 			// Update cached linear drive velocity for this axis
 			cached_g6dof_lin_drive_vel[p_axis] = params.linear_motor_target_velocity;
-			g6dof_lin_drives[p_axis] = { p_enable, 0.0f, 0.0f, params.linear_motor_force_limit };
+			g6dof_lin_drives[p_axis] = { p_enable, 0.0f, G6DOF_MOTOR_DAMPING, params.linear_motor_force_limit };
 			if (d6) {
 				d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
 				physx::PxD6JointDrive drive;
 				drive.stiffness = 0.0f;
-				drive.damping = 0.0f;
+				drive.damping = G6DOF_MOTOR_DAMPING;
 				drive.forceLimit = params.linear_motor_force_limit;
 				d6->setDrive(lin_drive, drive);
 			}
