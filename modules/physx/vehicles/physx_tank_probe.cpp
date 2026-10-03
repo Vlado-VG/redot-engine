@@ -157,12 +157,12 @@ Vector3 PhysXTankProbe::get_actor_position() const {
 }
 
 void PhysXTankProbe::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("get_forward_speed"), &PhysXTankProbe::get_forward_speed);
 	ClassDB::bind_method(D_METHOD("initialize", "space", "position", "wheel_positions_local"), &PhysXTankProbe::initialize);
 	ClassDB::bind_method(D_METHOD("step", "dt", "left_ratio", "right_ratio", "brake"), &PhysXTankProbe::step);
 	ClassDB::bind_method(D_METHOD("get_position"), &PhysXTankProbe::get_position);
 	ClassDB::bind_method(D_METHOD("get_linear_velocity"), &PhysXTankProbe::get_linear_velocity);
 	ClassDB::bind_method(D_METHOD("get_angular_velocity"), &PhysXTankProbe::get_angular_velocity);
-	ClassDB::bind_method(D_METHOD("get_forward_speed"), &PhysXTankProbe::get_forward_speed);
 	ClassDB::bind_method(D_METHOD("get_up"), &PhysXTankProbe::get_up);
 	ClassDB::bind_method(D_METHOD("get_forward"), &PhysXTankProbe::get_forward);
 	ClassDB::bind_method(D_METHOD("get_wheel_jounce", "wheel"), &PhysXTankProbe::get_wheel_jounce);

@@ -79,11 +79,11 @@ public:
 	// damping term of a PD controller.
 	Vector3 get_up() const;
 	Vector3 get_forward() const;
+	real_t get_roll_angle() const;
 	Vector3 get_angular_velocity() const;
 	// Roll angle around the forward axis, radians, positive = leaning right.
 	// Convenience wrapper around get_up()/get_basis() for a simple PD lean
 	// controller that doesn't want to re-derive this from the basis by hand.
-	real_t get_roll_angle() const;
 
 	real_t get_wheel_jounce(int p_wheel) const;
 	real_t get_wheel_separation(int p_wheel) const;

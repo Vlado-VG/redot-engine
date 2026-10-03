@@ -244,8 +244,13 @@ LocalVector<float> MPMFluidSolver::_seed_block(int &r_count) const {
 	const int sy = MAX(1, (int)(region.y / spacing));
 	const int sz = MAX(1, (int)(region.z / spacing));
 
-	const Vector3 center = domain_xform.origin;
-	const Vector3 start = center - Vector3(sx, sy, sz) * (spacing * 0.5f);
+	// The grid is built in the node's LOCAL frame and placed by the full
+	// transform, so the seeded slab pitches and steers with the fluid node --
+	// a spawn region on a pitched channel stays on the channel. (The PBD
+	// path's spawn() transforms its seed grid the same way; without this the
+	// MPM seed is world-axis-aligned and half of it lands inside the terrain
+	// on any pitched node.)
+	const Vector3 start = -Vector3(sx, sy, sz) * (spacing * 0.5f);
 
 	LocalVector<float> data;
 	data.resize((int64_t)MIN((int64_t)sx * sy * sz, (int64_t)settings.particle_target) * FLOATS_PER_PARTICLE);
@@ -271,6 +276,7 @@ LocalVector<float> MPMFluidSolver::_seed_block(int &r_count) const {
 				} else {
 					p += Vector3(Math::randf(), Math::randf(), Math::randf()) * spacing * 0.3f;
 				}
+				p = domain_xform.xform(p);
 				float *o = &data[idx * FLOATS_PER_PARTICLE];
 				o[0] = p.x;
 				o[1] = p.y;

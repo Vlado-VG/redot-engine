@@ -311,6 +311,31 @@ for _glsl in _gas_glsl:
     env_physx.GLSL_HEADER(os.path.join("particles", "shaders", _glsl))
     env_physx.Depends(os.path.join("particles", "shaders", _glsl + ".gen.h"), _gas_glsl_dep)
 
+# Skinned-cloth compute solver (cloth on a character's skinned mesh).
+env_physx.GLSL_HEADER(os.path.join("cloth", "skinned_cloth.glsl"))
+
+# FFT water surface solver passes (self-contained RenderingDevice compute).
+# water_inc.glsl is the shared include, dependency-bound per target like the
+# MPM shaders above.
+_water_glsl = (
+    "water_fft.glsl",
+    "water_spectrum_init.glsl",
+    "water_spectrum_evolve.glsl",
+    "water_swash.glsl",
+    "water_foam.glsl",
+    "water_blit_ocean.glsl",
+    "water_blit_ripple.glsl",
+    "water_caustics_map.glsl",
+    "water_shore_foam.glsl",
+    "water_ripple.glsl",
+)
+_water_glsl_dep = [os.path.join("water", "water_inc.glsl"), "#glsl_builders.py"]
+for _glsl in _water_glsl:
+    env_physx.GLSL_HEADER(os.path.join("water", _glsl))
+    env_physx.Depends(os.path.join("water", _glsl + ".gen.h"), _water_glsl_dep)
+
+env_physx.add_source_files(env.modules_sources, "water/*.cpp")
+
 # 4. Godot/Redot Source Files
 # We only compile the "wrapper" code that bridges Godot to PhysX
 env_physx.add_source_files(env.modules_sources, "*.cpp")

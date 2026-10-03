@@ -186,17 +186,17 @@ real_t PhysXMotorcycleProbe::get_wheel_separation(int p_wheel) const {
 }
 
 void PhysXMotorcycleProbe::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("get_forward_speed"), &PhysXMotorcycleProbe::get_forward_speed);
+	ClassDB::bind_method(D_METHOD("get_roll_angle"), &PhysXMotorcycleProbe::get_roll_angle);
 	ClassDB::bind_method(D_METHOD("initialize", "space", "position"), &PhysXMotorcycleProbe::initialize);
 	ClassDB::bind_method(D_METHOD("step", "dt", "throttle", "brake", "steer"), &PhysXMotorcycleProbe::step);
 	ClassDB::bind_method(D_METHOD("apply_torque_impulse", "impulse"), &PhysXMotorcycleProbe::apply_torque_impulse);
 	ClassDB::bind_method(D_METHOD("set_angular_velocity", "angular_velocity"), &PhysXMotorcycleProbe::set_angular_velocity);
 	ClassDB::bind_method(D_METHOD("get_position"), &PhysXMotorcycleProbe::get_position);
 	ClassDB::bind_method(D_METHOD("get_linear_velocity"), &PhysXMotorcycleProbe::get_linear_velocity);
-	ClassDB::bind_method(D_METHOD("get_forward_speed"), &PhysXMotorcycleProbe::get_forward_speed);
 	ClassDB::bind_method(D_METHOD("get_up"), &PhysXMotorcycleProbe::get_up);
 	ClassDB::bind_method(D_METHOD("get_forward"), &PhysXMotorcycleProbe::get_forward);
 	ClassDB::bind_method(D_METHOD("get_angular_velocity"), &PhysXMotorcycleProbe::get_angular_velocity);
-	ClassDB::bind_method(D_METHOD("get_roll_angle"), &PhysXMotorcycleProbe::get_roll_angle);
 	ClassDB::bind_method(D_METHOD("get_wheel_jounce", "wheel"), &PhysXMotorcycleProbe::get_wheel_jounce);
 	ClassDB::bind_method(D_METHOD("get_wheel_separation", "wheel"), &PhysXMotorcycleProbe::get_wheel_separation);
 	ClassDB::bind_method(D_METHOD("get_actor_position"), &PhysXMotorcycleProbe::get_actor_position);
