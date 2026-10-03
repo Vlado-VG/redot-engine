@@ -148,7 +148,9 @@ bool PhysXSoftVolume3D::build(PhysXSpace3D *p_space, const Vector<Vector3> &p_wo
 	space->add_actor(volume);
 
 	volume->setDeformableBodyFlag(PxDeformableBodyFlag::eDISABLE_SELF_COLLISION, true);
-	volume->setSolverIterationCounts(MAX(p_params.solver_iterations, 15));
+	// Same floor as apply_params below — a precision below 15 used to be
+	// raised here and silently dropped back on the first apply_params call.
+	volume->setSolverIterationCounts(MAX(p_params.solver_iterations, 1));
 	volume->setMaxLinearVelocity(p_params.max_speed);
 	volume->setMaxDepenetrationVelocity(3.0f);
 
@@ -180,35 +182,46 @@ bool PhysXSoftVolume3D::build(PhysXSpace3D *p_space, const Vector<Vector3> &p_wo
 	const PxTetrahedronMesh *coll_mesh = volume_mesh->getCollisionMesh();
 	coll_vertex_count = coll_mesh->getNbVertices();
 	const PxVec3 *coll_v = coll_mesh->getVertices();
-	HashMap<uint64_t, uint32_t> lut;
+	// Hash collisions without verification used to bind a render vertex to the
+	// WRONG collision vertex (silently misplaced pins); store the quantized
+	// position in the value and verify on hit, nearest fallback on mismatch.
+	HashMap<uint64_t, Vector4i> lut; // xyz = quantized position, w = vertex
 	const float q = 1000.0f; // 1mm quantization for the position match
-	auto key_of = [q](const PxVec3 &p) -> uint64_t {
-		const uint64_t x = (uint64_t)(uint32_t)(int32_t)Math::round(p.x * q);
-		const uint64_t y = (uint64_t)(uint32_t)(int32_t)Math::round(p.y * q);
-		const uint64_t z = (uint64_t)(uint32_t)(int32_t)Math::round(p.z * q);
-		return (x * 73856093ULL) ^ (y * 19349663ULL) ^ (z * 83492791ULL);
+	auto key_of = [q](const PxVec3 &p, Vector3i &r_qpos) -> uint64_t {
+		const int64_t x = (int64_t)Math::round(p.x * q);
+		const int64_t y = (int64_t)Math::round(p.y * q);
+		const int64_t z = (int64_t)Math::round(p.z * q);
+		r_qpos = Vector3i((int32_t)x, (int32_t)y, (int32_t)z);
+		return ((uint64_t)(uint32_t)x) ^ (((uint64_t)(uint32_t)y) << 21) ^ (((uint64_t)(uint32_t)z) << 42);
 	};
 	for (uint32_t i = 0; i < coll_vertex_count; i++) {
-		lut[key_of(coll_v[i])] = i;
+		Vector3i qpos;
+		const uint64_t key = key_of(coll_v[i], qpos);
+		lut[key] = Vector4i(qpos.x, qpos.y, qpos.z, (int32_t)i);
 	}
+	auto nearest_of = [&coll_v, this](const PxVec3 &w) -> uint32_t {
+		uint32_t best = 0;
+		float best_d = 1.0e30f;
+		for (uint32_t c = 0; c < coll_vertex_count; c++) {
+			const float d = (coll_v[c] - w).magnitudeSquared();
+			if (d < best_d) {
+				best_d = d;
+				best = c;
+			}
+		}
+		return best;
+	};
 	welded_to_coll.resize(nv);
 	for (int i = 0; i < nv; i++) {
 		const PxVec3 &w = verts[i];
-		const HashMap<uint64_t, uint32_t>::ConstIterator it = lut.find(key_of(w));
-		if (it) {
-			welded_to_coll[i] = it->value;
+		Vector3i qpos;
+		const HashMap<uint64_t, Vector4i>::ConstIterator it = lut.find(key_of(w, qpos));
+		if (it && it->value.x == qpos.x && it->value.y == qpos.y && it->value.z == qpos.z) {
+			welded_to_coll[i] = (uint32_t)it->value.w;
 		} else {
-			// Nearest fallback (rare: cook nudged a vertex past the quant cell).
-			uint32_t best = 0;
-			float best_d = 1.0e30f;
-			for (uint32_t c = 0; c < coll_vertex_count; c++) {
-				const float d = (coll_v[c] - w).magnitudeSquared();
-				if (d < best_d) {
-					best_d = d;
-					best = c;
-				}
-			}
-			welded_to_coll[i] = best;
+			// Miss or hash collision: nearest vertex (cook nudged past the
+			// quant cell, or two vertices shared a cell).
+			welded_to_coll[i] = nearest_of(w);
 		}
 	}
 

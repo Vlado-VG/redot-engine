@@ -219,22 +219,10 @@ bool PhysXSoftBody3D::_try_build_gpu(const PackedVector3Array &p_welded, const P
 	if (!space || !space->get_px_cuda()) {
 		return false;
 	}
-	// Mode resolution: node metadata "physx_soft_mode" overrides the project
-	// setting; both can force CPU or GPU, otherwise it's Auto (try GPU). Read
-	// the setting live so a runtime change (e.g. a test or a demo toggle) takes
-	// effect on the next rebuild.
-	int mode = PhysXProjectSettings::soft_body_mode; // 0 Auto, 1 CPU, 2 GPU
-	if (instance_id.is_valid()) {
-		Object *obj = ObjectDB::get_instance(instance_id);
-		if (obj && obj->has_meta("physx_soft_mode")) {
-			const String m = String(obj->get_meta("physx_soft_mode")).to_lower();
-			if (m == "cpu") {
-				mode = 1;
-			} else if (m == "gpu") {
-				mode = 2;
-			}
-		}
-	}
+	// Mode resolution: the per-body override (soft_body_set_mode) wins, else
+	// the physics/physx_3d/soft_body/mode project setting. Read live so a
+	// runtime change takes effect on the next rebuild.
+	const int mode = mode_override >= 0 ? mode_override : PhysXProjectSettings::soft_body_mode; // 0 Auto, 1 CPU, 2 GPU
 	if (mode == 1) {
 		return false;
 	}
@@ -326,6 +314,15 @@ void PhysXSoftBody3D::set_linear_stiffness(real_t p_stiffness) {
 
 void PhysXSoftBody3D::set_shrinking_factor(real_t p_factor) {
 	shrinking_factor = p_factor;
+	if (using_gpu) {
+		// The GPU deformable volume has no rest-length knob; shrinking only
+		// takes effect on the CPU solver path. Say so instead of silently
+		// dropping the property.
+		if (shrinking_factor > CMP_EPSILON) {
+			WARN_PRINT_ONCE("PhysX: SoftBody3D shrinking_factor has no effect on the GPU (PxDeformableVolume) solver path; it applies on CPU soft bodies only.");
+		}
+		return;
+	}
 	if (mesh_ready) {
 		solver.set_rest_length_scale(1.0f - CLAMP((float)shrinking_factor, 0.0f, 0.99f));
 	}
@@ -400,9 +397,11 @@ void PhysXSoftBody3D::pin_point(int p_point_index, bool p_pin) {
 }
 
 bool PhysXSoftBody3D::is_point_pinned(int p_point_index) const {
-	if (mesh_ready && p_point_index >= 0 && p_point_index < (int)visual_vertex_count) {
-		return solver.is_pinned((int)map_visual_to_physics[p_point_index]);
-	}
+	// pinned_render_points is the authoritative set on BOTH paths: pin_point/
+	// move_point/unpin_all maintain it and every (re)build re-applies from it.
+	// The CPU solver's own pin state mirrors it; querying the solver here used
+	// to always answer false on the GPU path (the CPU solver is not built
+	// there), making pins look lost.
 	return pinned_render_points.has(p_point_index);
 }
 

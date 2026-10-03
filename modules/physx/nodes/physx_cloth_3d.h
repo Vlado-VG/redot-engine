@@ -86,7 +86,9 @@ private:
 	NodePath anchor_path; // if set, pinned vertices follow this node's motion
 
 	bool collision_enabled = true;
+	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
+	Array collision_exceptions; // RIDs excluded from cloth collision
 	float friction = 0.4; // 0..1, tangential velocity bled off on contact
 
 	bool simulating = true;
@@ -173,6 +175,11 @@ public:
 	bool is_collision_enabled() const { return collision_enabled; }
 	void set_collision_mask(uint32_t p_v);
 	uint32_t get_collision_mask() const { return collision_mask; }
+	void set_collision_layer(uint32_t p_v);
+	uint32_t get_collision_layer() const;
+	void add_collision_exception(const RID &p_body);
+	void remove_collision_exception(const RID &p_body);
+	Array get_collision_exceptions() const;
 	void set_friction(float p_v);
 	float get_friction() const { return friction; }
 

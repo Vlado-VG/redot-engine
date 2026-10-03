@@ -440,6 +440,11 @@ void PhysXCloth3D::_collide() {
 	params.collision_mask = collision_mask;
 	params.collide_with_bodies = true;
 	params.collide_with_areas = false;
+	// Collision exceptions (parity with soft bodies / the GPU path): excluded
+	// bodies are ignored by the per-vertex push-out query.
+	for (int i = 0; i < collision_exceptions.size(); i++) {
+		params.exclude.insert(collision_exceptions[i]);
+	}
 
 	LocalVector<Vector3> &pos = solver.positions_mut();
 	LocalVector<Vector3> &vel = solver.velocities_mut();
@@ -715,9 +720,17 @@ void PhysXCloth3D::set_lift(float p_v) {
 void PhysXCloth3D::set_pin_mode(PinMode p_v) {
 	pin_mode = p_v;
 	if (built) {
+		// _resolve_pins pushes the new pin set to the GPU cloth (cloth_set_pinned);
+		// re-seeding the CPU solver there would repaint the render mesh with the
+		// REST pose, replacing the live GPU-deformed surface for a frame and
+		// desyncing the pin gizmo positions until the next read-back.
 		_resolve_pins();
-		solver.reset(get_global_transform());
-		_update_mesh();
+		if (gpu_cloth.is_valid()) {
+			_update_gpu_mesh();
+		} else {
+			solver.reset(get_global_transform());
+			_update_mesh();
+		}
 	}
 	update_configuration_warnings();
 	update_gizmos();
@@ -727,8 +740,12 @@ void PhysXCloth3D::set_pinned_vertices(const PackedInt32Array &p_v) {
 	pinned_vertices = p_v;
 	if (built) {
 		_resolve_pins();
-		solver.reset(get_global_transform());
-		_update_mesh();
+		if (gpu_cloth.is_valid()) {
+			_update_gpu_mesh();
+		} else {
+			solver.reset(get_global_transform());
+			_update_mesh();
+		}
 	}
 	update_configuration_warnings();
 	update_gizmos();
@@ -748,6 +765,49 @@ void PhysXCloth3D::set_collision_enabled(bool p_v) {
 
 void PhysXCloth3D::set_collision_mask(uint32_t p_v) {
 	collision_mask = p_v;
+	if (gpu_cloth.is_valid()) {
+		if (PhysXServer3D *server = PhysXServer3D::get_singleton()) {
+			server->cloth_set_collision_layer_and_mask(gpu_cloth, collision_layer, collision_mask);
+		}
+	}
+}
+
+void PhysXCloth3D::set_collision_layer(uint32_t p_v) {
+	collision_layer = p_v;
+	if (gpu_cloth.is_valid()) {
+		if (PhysXServer3D *server = PhysXServer3D::get_singleton()) {
+			server->cloth_set_collision_layer_and_mask(gpu_cloth, collision_layer, collision_mask);
+		}
+	}
+}
+
+uint32_t PhysXCloth3D::get_collision_layer() const {
+	return collision_layer;
+}
+
+void PhysXCloth3D::add_collision_exception(const RID &p_body) {
+	if (!p_body.is_valid() || collision_exceptions.has(p_body)) {
+		return;
+	}
+	collision_exceptions.append(p_body);
+	if (gpu_cloth.is_valid()) {
+		if (PhysXServer3D *server = PhysXServer3D::get_singleton()) {
+			server->cloth_add_collision_exception(gpu_cloth, p_body);
+		}
+	}
+}
+
+void PhysXCloth3D::remove_collision_exception(const RID &p_body) {
+	collision_exceptions.erase(p_body);
+	if (gpu_cloth.is_valid()) {
+		if (PhysXServer3D *server = PhysXServer3D::get_singleton()) {
+			server->cloth_remove_collision_exception(gpu_cloth, p_body);
+		}
+	}
+}
+
+Array PhysXCloth3D::get_collision_exceptions() const {
+	return collision_exceptions.duplicate();
 }
 
 void PhysXCloth3D::set_friction(float p_v) {
@@ -812,6 +872,11 @@ void PhysXCloth3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_collision_enabled"), &PhysXCloth3D::is_collision_enabled);
 	ClassDB::bind_method(D_METHOD("set_collision_mask", "mask"), &PhysXCloth3D::set_collision_mask);
 	ClassDB::bind_method(D_METHOD("get_collision_mask"), &PhysXCloth3D::get_collision_mask);
+	ClassDB::bind_method(D_METHOD("set_collision_layer", "layer"), &PhysXCloth3D::set_collision_layer);
+	ClassDB::bind_method(D_METHOD("get_collision_layer"), &PhysXCloth3D::get_collision_layer);
+	ClassDB::bind_method(D_METHOD("add_collision_exception", "body"), &PhysXCloth3D::add_collision_exception);
+	ClassDB::bind_method(D_METHOD("remove_collision_exception", "body"), &PhysXCloth3D::remove_collision_exception);
+	ClassDB::bind_method(D_METHOD("get_collision_exceptions"), &PhysXCloth3D::get_collision_exceptions);
 	ClassDB::bind_method(D_METHOD("set_friction", "friction"), &PhysXCloth3D::set_friction);
 	ClassDB::bind_method(D_METHOD("get_friction"), &PhysXCloth3D::get_friction);
 
@@ -846,6 +911,7 @@ void PhysXCloth3D::_bind_methods() {
 	ADD_GROUP("Collision", "collision_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "collision_enabled"), "set_collision_enabled", "is_collision_enabled");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "collision_friction", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_friction", "get_friction");
 
 	BIND_ENUM_CONSTANT(PIN_NONE);

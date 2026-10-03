@@ -17,6 +17,91 @@ internal static class SoftBodyTests {
         s.Add("PHYSX-SOFT-005", "collides with rigid bodies", CollidesWithRigid);
         s.Add("PHYSX-SOFT-006", "pinned point stays fixed while body sags", PinnedPointHolds);
         s.Add("PHYSX-SOFT-007", "collision exception: soft body ignores the excepted body, rests on others", ExceptionBehavior);
+        s.Add("PHYSX-SOFT-008", "pin query reflects after the body builds (GPU path)", PinQueryAfterBuild);
+        s.Add("PHYSX-SOFT-009", "solver-mode override forces CPU / GPU and round-trips", SolverModeOverride);
+        s.Add("PHYSX-SOFT-010", "GPU cloth layer/mask matrix: matching layers catch the ball, mismatched pass through", ClothLayerMatrix);
+    }
+
+    // ------------------------------------------------- GPU cloth layer matrix
+    // Builds a 3x3 world-space cloth grid through the server RID API, pins its
+    // top row, and drops a rigid ball onto it. The module filter shader
+    // collides a pair iff (layer0 & mask1) | (layer1 & mask0):
+    //   match:    cloth L2/M1 + ball L1/M2 -> ball is caught
+    //   mismatch: cloth L2/M2 + ball L1/M1 -> ball falls through
+    static IEnumerator ClothLayerMatrix() {
+        // ---- matching layers ----
+        float caughtY;
+        {
+            using var w = new PhysxWorld(false);
+            var cloth = VehicleApi.Call("cloth_create").AsRid();
+            Assert.Require(cloth.IsValid, "GPU cloth created (CUDA build required)");
+            VehicleApi.Call("cloth_set_space", cloth, w.Space);
+            VehicleApi.Call("cloth_set_params", cloth, 0.02f, 0.5f, 0.9f, 0.1f, 0.03f, 1u);
+            VehicleApi.Call("cloth_set_collision_layer_and_mask", cloth, 2u, 1u);
+
+            // 3x3 grid, 2 m across, top row at y = 3 (world space).
+            var verts = new Vector3[9];
+            var idx = new System.Collections.Generic.List<int>();
+            for (int y = 0; y < 3; y++) {
+                for (int x = 0; x < 3; x++) {
+                    verts[y * 3 + x] = new Vector3(x - 1f, 3f - y, 0f);
+                }
+            }
+            for (int y = 0; y < 2; y++) {
+                for (int x = 0; x < 2; x++) {
+                    int v = y * 3 + x;
+                    idx.AddRange(new[] { v, v + 3, v + 1, v + 1, v + 3, v + 4 });
+                }
+            }
+            VehicleApi.Call("cloth_build", cloth, verts, idx.ToArray(), Transform3D.Identity);
+            // Pin the top row (input indices 0..2).
+            VehicleApi.Call("cloth_set_pinned", cloth, new int[] { 0, 1, 2 });
+
+            // Ball: layer 1, mask 2 -> matches the cloth pair.
+            var ballShape = w.Sphere(0.3f);
+            var ball = w.MakeBody(ballShape, new Vector3(0, 4.4f, 0), 1f, layer: 1, mask: 2u);
+            PhysicsServer3D.BodySetParam(ball, PhysicsServer3D.BodyParameter.Mass, 1f);
+
+            yield return Wait.Frames(120);
+            caughtY = w.Pos(ball).Origin.Y;
+            PhysicsServer3D.FreeRid(cloth);
+        }
+
+        // ---- mismatched layers ----
+        using (var w = new PhysxWorld(false)) {
+            var cloth = VehicleApi.Call("cloth_create").AsRid();
+            Assert.Require(cloth.IsValid, "GPU cloth created (second world)");
+            VehicleApi.Call("cloth_set_space", cloth, w.Space);
+            VehicleApi.Call("cloth_set_params", cloth, 0.02f, 0.5f, 0.9f, 0.1f, 0.03f, 1u);
+            // Mismatch: cloth L2/M2 + ball L1/M1 -> no pair.
+            VehicleApi.Call("cloth_set_collision_layer_and_mask", cloth, 2u, 2u);
+
+            var verts = new Vector3[9];
+            var idx = new System.Collections.Generic.List<int>();
+            for (int y = 0; y < 3; y++) {
+                for (int x = 0; x < 3; x++) {
+                    verts[y * 3 + x] = new Vector3(x - 1f, 3f - y, 0f);
+                }
+            }
+            for (int y = 0; y < 2; y++) {
+                for (int x = 0; x < 2; x++) {
+                    int v = y * 3 + x;
+                    idx.AddRange(new[] { v, v + 3, v + 1, v + 1, v + 3, v + 4 });
+                }
+            }
+            VehicleApi.Call("cloth_build", cloth, verts, idx.ToArray(), Transform3D.Identity);
+            VehicleApi.Call("cloth_set_pinned", cloth, new int[] { 0, 1, 2 });
+
+            var ballShape = w.Sphere(0.3f);
+            var ball = w.MakeBody(ballShape, new Vector3(0, 4.4f, 0), 1f, layer: 1, mask: 1u);
+            PhysicsServer3D.BodySetParam(ball, PhysicsServer3D.BodyParameter.Mass, 1f);
+
+            yield return Wait.Frames(120);
+            float fellY = w.Pos(ball).Origin.Y;
+            Assert.Expect(fellY < caughtY - 0.5f,
+                $"layer matrix: caught at y={caughtY:F2} vs fell through to y={fellY:F2}");
+            PhysicsServer3D.FreeRid(cloth);
+        }
     }
 
     /// <summary>Unit cube mesh (8 verts / 12 tris) centered on the origin —
@@ -124,6 +209,61 @@ internal static class SoftBodyTests {
             RenderingServer.FreeRid(mesh);
         }
     }
+    // SOFT-1 regression: pin_point before + after the body BUILDS must be
+    // reflected by is_point_pinned on BOTH paths — the old code queried the CPU
+    // solver, which is never built on the GPU (PxDeformableVolume) path, so
+    // pins looked lost there.
+    static IEnumerator PinQueryAfterBuild() {
+        using var w = new PhysxWorld(false);
+        var mesh = MakeCubeMesh();
+        var sb = PhysicsServer3D.SoftBodyCreate();
+        try {
+            PhysicsServer3D.SoftBodySetSpace(sb, w.Space);
+            PhysicsServer3D.SoftBodySetTransform(sb, new Transform3D(Basis.Identity, new Vector3(0, 3, 0)));
+            PhysicsServer3D.SoftBodySetMesh(sb, mesh);
+            PhysicsServer3D.SoftBodyPinPoint(sb, 0, true);
+            PhysicsServer3D.SoftBodyPinPoint(sb, 7, true);
+            yield return Wait.Frames(10); // build + a few steps
+            Assert.Expect(PhysicsServer3D.SoftBodyIsPointPinned(sb, 0), "point 0 pinned after build");
+            Assert.Expect(PhysicsServer3D.SoftBodyIsPointPinned(sb, 7), "point 7 pinned after build");
+            Assert.Expect(!PhysicsServer3D.SoftBodyIsPointPinned(sb, 3), "unpinned point reads unpinned");
+            PhysicsServer3D.SoftBodyPinPoint(sb, 0, false);
+            Assert.Expect(!PhysicsServer3D.SoftBodyIsPointPinned(sb, 0), "unpin after build clears the query");
+        } finally {
+            PhysicsServer3D.FreeRid(sb);
+            RenderingServer.FreeRid(mesh);
+        }
+    }
+
+    // soft_body_set_solver_mode: per-body override beats the project setting,
+    // round-trips, and re-resolves the path on a built body.
+    static IEnumerator SolverModeOverride() {
+        using var w = new PhysxWorld(false);
+        var mesh = MakeCubeMesh();
+        var sb = PhysicsServer3D.SoftBodyCreate();
+        try {
+            PhysicsServer3D.SoftBodySetSpace(sb, w.Space);
+            PhysicsServer3D.SoftBodySetTransform(sb, new Transform3D(Basis.Identity, new Vector3(0, 3, 0)));
+            PhysicsServer3D.SoftBodySetMesh(sb, mesh);
+            yield return Wait.Frames(5); // built on the default (Auto) path
+
+            VehicleApi.Call("soft_body_set_solver_mode", sb, 1); // force CPU
+            yield return Wait.Frames(3);
+            Assert.Expect(VehicleApi.Call("soft_body_get_solver_mode", sb).AsInt32() == 1, "CPU override round-trips");
+
+            VehicleApi.Call("soft_body_set_solver_mode", sb, 2); // force GPU
+            yield return Wait.Frames(3);
+            Assert.Expect(VehicleApi.Call("soft_body_get_solver_mode", sb).AsInt32() == 2, "GPU override round-trips");
+
+            VehicleApi.Call("soft_body_set_solver_mode", sb, -1); // back to Auto
+            yield return Wait.Frames(3);
+            Assert.Expect(VehicleApi.Call("soft_body_get_solver_mode", sb).AsInt32() == -1, "Auto override round-trips");
+        } finally {
+            PhysicsServer3D.FreeRid(sb);
+            RenderingServer.FreeRid(mesh);
+        }
+    }
+
     static IEnumerator CollidesWithRigid() {
         using var w = new PhysxWorld(true); // floor top at y=0
         var mesh = MakeCubeMesh();

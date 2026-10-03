@@ -684,7 +684,12 @@ void PhysXGPUParticleFluid3D::_ensure_system() {
 	const PxReal fluid_rest_offset = rest_offset * 0.6f;
 	px_system->setRestOffset(rest_offset);
 	px_system->setContactOffset(rest_offset + 0.01f);
-	px_system->setParticleContactOffset(fluid_rest_offset / 0.6f);
+	// PxPBDParticleSystem requires particleContactOffset > max(solidRestOffset,
+	// fluidRestOffset) — the old fluid_rest_offset/0.6 resolved EXACTLY to
+	// rest_offset (== solidRestOffset), violating the documented open range.
+	// A small margin above satisfies the range check without changing behavior
+	// meaningfully (the PBF snippet's spacing-derived offsets are approximate).
+	px_system->setParticleContactOffset(rest_offset * 1.05f);
 	px_system->setSolidRestOffset(rest_offset);
 	px_system->setFluidRestOffset(fluid_rest_offset);
 	px_system->setMaxLinearVelocity(rest_offset * 100.0f);

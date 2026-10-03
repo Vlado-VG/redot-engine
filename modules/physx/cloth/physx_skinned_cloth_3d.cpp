@@ -815,8 +815,20 @@ void PhysXSkinnedCloth3D::_try_build() {
 	render_instance->set_mesh(render_mesh);
 	render_instance->set_surface_override_material(0, render_material);
 	render_instance->set_cast_shadows_setting(source->get_cast_shadows_setting());
-	source->get_parent()->add_child(render_instance, false, INTERNAL_MODE_BACK);
-	render_instance->set_transform(source->get_transform());
+	Node *source_parent = source->get_parent();
+	if (source_parent) {
+		// Internal sibling of the source with the same local transform: it then
+		// moves exactly like the mesh it replaces, physics interpolation
+		// included (a top-level node in world space would lead the interpolated
+		// character by up to a tick).
+		source_parent->add_child(render_instance, false, INTERNAL_MODE_BACK);
+		render_instance->set_transform(source->get_transform());
+	} else {
+		// Root-level source (no parent to sibling into): parent the render twin
+		// here with a compensating transform, so a one-node test scene works.
+		add_child(render_instance, false, INTERNAL_MODE_BACK);
+		render_instance->set_transform(get_global_transform().affine_inverse() * source->get_global_transform());
+	}
 	float largest = 0.0f;
 	for (int i = 0; i < vertex_max.size(); i++) {
 		largest = MAX(largest, vertex_max[i]);

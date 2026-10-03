@@ -8,6 +8,7 @@
 
 #include "../physx_conversions.h"
 #include "../spaces/physx_space_3d.h"
+#include "../spaces/physx_filter_shader.h" // physx_alloc_soft_exception_slot
 
 #include "core/error/error_macros.h"
 #include "core/templates/hash_map.h"
@@ -173,7 +174,10 @@ bool PhysXGPUCloth3D::_cook_and_create(const Vector<Vector3> &p_positions, const
 	const PxShapeFlags shape_flags = PxShapeFlag::eSCENE_QUERY_SHAPE | PxShapeFlag::eSIMULATION_SHAPE;
 	shape = physics->createShape(PxTriangleMeshGeometry(tri_mesh), &material, 1, true, shape_flags);
 	ERR_FAIL_NULL_V_MSG(shape, false, "PhysX: cloth shape creation failed.");
-	PxFilterData fd(collision_mask, collision_mask, 0, 0);
+	// Module convention (spaces/physx_filter_shader.h): word0 = collision
+	// LAYER, word1 = collision MASK, word2 = exception slot. Forcing
+	// layer := mask made the cloth "belong to" every layer its mask covered.
+	PxFilterData fd(collision_layer, collision_mask, exception_slot, 0);
 	shape->setSimulationFilterData(fd);
 	shape->setQueryFilterData(fd);
 	shape->setContactOffset(2.0f * thickness);
@@ -214,21 +218,44 @@ bool PhysXGPUCloth3D::_cook_and_create(const Vector<Vector3> &p_positions, const
 	// position resolves every non-degenerate input vertex.
 	input_to_cooked.resize(nv);
 	{
-		HashMap<uint64_t, int32_t> cooked_by_pos;
+		// Bits overlap in the packed key (x<<0, y<<21, z<<42), so an unverified
+		// hit could bind an input vertex to the wrong cooked vertex (misplaced
+		// pins). Store the quantized position with the index and verify on hit;
+		// fall back to nearest cooked vertex on miss or mismatch.
+		HashMap<uint64_t, Vector4i> cooked_by_pos; // xyz = quantized pos, w = index
+		const float q = 1.0e5f;
+		auto key_of = [q](const physx::PxVec3 &p, Vector3i &r_qpos) -> uint64_t {
+			const int32_t x = (int32_t)Math::round(p.x * q);
+			const int32_t y = (int32_t)Math::round(p.y * q);
+			const int32_t z = (int32_t)Math::round(p.z * q);
+			r_qpos = Vector3i(x, y, z);
+			return ((uint64_t)(uint32_t)x) ^ (((uint64_t)(uint32_t)y) << 21) ^ (((uint64_t)(uint32_t)z) << 42);
+		};
 		for (PxU32 c = 0; c < cooked_nv; c++) {
-			const PxVec3 &cv = cooked_v[c];
-			const uint64_t key = (uint64_t)(uint32_t)(int32_t)(cv.x * 1.0e5f) ^
-					((uint64_t)(uint32_t)(int32_t)(cv.y * 1.0e5f) << 21) ^
-					((uint64_t)(uint32_t)(int32_t)(cv.z * 1.0e5f) << 42);
-			cooked_by_pos.insert(key, (int32_t)c);
+			Vector3i qpos;
+			const uint64_t key = key_of(cooked_v[c], qpos);
+			cooked_by_pos.insert(key, Vector4i(qpos.x, qpos.y, qpos.z, (int32_t)c));
 		}
 		for (int i = 0; i < nv; i++) {
 			const physx::PxVec3 &iv = verts[i];
-			const uint64_t key = (uint64_t)(uint32_t)(int32_t)(iv.x * 1.0e5f) ^
-					((uint64_t)(uint32_t)(int32_t)(iv.y * 1.0e5f) << 21) ^
-					((uint64_t)(uint32_t)(int32_t)(iv.z * 1.0e5f) << 42);
-			const int32_t *mapped = cooked_by_pos.getptr(key);
-			input_to_cooked[i] = mapped ? *mapped : -1;
+			Vector3i qpos;
+			const uint64_t key = key_of(iv, qpos);
+			const HashMap<uint64_t, Vector4i>::ConstIterator it = cooked_by_pos.find(key);
+			if (it && it->value.x == qpos.x && it->value.y == qpos.y && it->value.z == qpos.z) {
+				input_to_cooked[i] = it->value.w;
+				continue;
+			}
+			// Miss or hash collision: nearest cooked vertex.
+			int32_t best = -1;
+			float best_d = 1.0e30f;
+			for (PxU32 c = 0; c < cooked_nv; c++) {
+				const float d = (cooked_v[c] - iv).magnitudeSquared();
+				if (d < best_d) {
+					best_d = d;
+					best = (int32_t)c;
+				}
+			}
+			input_to_cooked[i] = best;
 		}
 	}
 
@@ -278,6 +305,59 @@ void PhysXGPUCloth3D::build(const Vector<Vector3> &p_positions, const Vector<int
 	}
 	if (!_cook_and_create(p_positions, p_indices)) {
 		_destroy_surface();
+	}
+}
+
+void PhysXGPUCloth3D::set_collision_layer(uint32_t p_layer) {
+	collision_layer = p_layer;
+	if (shape) {
+		// Filter writes mutate the scene pair state — fetch an in-flight solve
+		// first (same discipline as the deformable surfaces).
+		if (space && space->is_stepping()) {
+			space->ensure_synced();
+		}
+		const PxFilterData fd(collision_layer, collision_mask, exception_slot, 0);
+		shape->setSimulationFilterData(fd);
+		shape->setQueryFilterData(fd);
+	}
+}
+
+void PhysXGPUCloth3D::set_collision_mask(uint32_t p_mask) {
+	collision_mask = p_mask;
+	if (shape) {
+		if (space && space->is_stepping()) {
+			space->ensure_synced();
+		}
+		const PxFilterData fd(collision_layer, collision_mask, exception_slot, 0);
+		shape->setSimulationFilterData(fd);
+		shape->setQueryFilterData(fd);
+	}
+}
+
+uint32_t PhysXGPUCloth3D::get_or_alloc_exception_slot() {
+	if (exception_slot == 0) {
+		exception_slot = physx_alloc_soft_exception_slot();
+		if (shape) {
+			if (space && space->is_stepping()) {
+				space->ensure_synced();
+			}
+			const PxFilterData fd(collision_layer, collision_mask, exception_slot, 0);
+			shape->setSimulationFilterData(fd);
+			shape->setQueryFilterData(fd);
+		}
+	}
+	return exception_slot;
+}
+
+void PhysXGPUCloth3D::set_exception_slot(uint32_t p_slot) {
+	exception_slot = p_slot;
+	if (shape) {
+		if (space && space->is_stepping()) {
+			space->ensure_synced();
+		}
+		const PxFilterData fd(collision_layer, collision_mask, exception_slot, 0);
+		shape->setSimulationFilterData(fd);
+		shape->setQueryFilterData(fd);
 	}
 }
 
@@ -354,7 +434,7 @@ void PhysXGPUCloth3D::apply_wind(const Vector3 &p_wind, float p_drag, float p_li
 		}
 	}
 
-	if ((p_drag > 0.0f || p_lift > 0.0f) && p_wind.length_squared() >= 0.0f) {
+	if (p_drag > 0.0f || p_lift > 0.0f) {
 		const PxVec3 wind = physx_to_px(p_wind);
 		for (uint32_t t = 0; t + 2 < indices.size(); t += 3) {
 			const uint32_t a = indices[t];

@@ -345,6 +345,11 @@ public:
 	// Teardown is handled by free(RID) (release + memdelete) and finish()
 	// (frees vehicles before bodies — they borrow the chassis PxRigidDynamic).
 	// ------------------------------------------------------------------
+	// Module extension: per-body soft-body solver-path override
+	// (-1 follow project setting, 0 Auto, 1 CPU, 2 GPU).
+	void soft_body_set_solver_mode(RID p_body, int p_mode);
+	int soft_body_get_solver_mode(RID p_body) const;
+
 	RID vehicle_create(int p_archetype);
 	void vehicle_set_chassis_body(RID p_vehicle, RID p_body);
 	void vehicle_set_space(RID p_vehicle, RID p_space);
@@ -534,6 +539,9 @@ public:
 	RID cloth_create();
 	void cloth_set_space(RID p_cloth, RID p_space);
 	void cloth_set_params(RID p_cloth, real_t p_thickness, real_t p_density, real_t p_stretch, real_t p_bend, real_t p_damping, uint32_t p_collision_mask);
+	void cloth_set_collision_layer_and_mask(RID p_cloth, uint32_t p_layer, uint32_t p_mask);
+	void cloth_add_collision_exception(RID p_cloth, RID p_body);
+	void cloth_remove_collision_exception(RID p_cloth, RID p_body);
 	void cloth_build(RID p_cloth, const Vector<Vector3> &p_positions, const Vector<int32_t> &p_indices, const Transform3D &p_xform);
 	void cloth_set_pinned(RID p_cloth, const Vector<int32_t> &p_pinned);
 	void cloth_set_pin_targets(RID p_cloth, const Vector<Vector3> &p_world_targets);

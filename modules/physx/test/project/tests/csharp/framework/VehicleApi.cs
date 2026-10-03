@@ -13,6 +13,7 @@
 
 using System;
 using System.Reflection;
+using System.Linq;
 
 namespace PhysxTestProject.Tests;
 
@@ -59,7 +60,10 @@ public static class VehicleApi {
     public static Variant Call(string method, params Variant[] args) {
         Resolve();
         if (_inner != null) {
-            var mi = _innerType.GetMethod(ToPascal(method), BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static);
+            var mi = _innerType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
+                    .Where(m => m.Name == ToPascal(method))
+                    .OrderByDescending(m => m.GetParameters().Length) // span overloads lose to array overloads
+                    .FirstOrDefault();
             if (mi != null) {
                 var parameters = mi.GetParameters();
                 object[] cast = new object[parameters.Length];
@@ -90,10 +94,14 @@ public static class VehicleApi {
     static object ConvertArg(Variant v, Type target) {
         if (target == typeof(Rid)) return v.AsRid();
         if (target == typeof(int)) return v.AsInt32();
+        if (target == typeof(uint)) return v.AsUInt32();
+        if (target == typeof(long)) return v.AsInt64();
         if (target == typeof(float)) return v.AsSingle();
         if (target == typeof(bool)) return v.AsBool();
         if (target == typeof(Godot.Collections.Dictionary)) return v.AsGodotDictionary();
         if (target == typeof(Transform3D)) return v.AsTransform3D();
+        if (target == typeof(Vector3[])) return v.AsVector3Array();
+        if (target == typeof(int[])) return v.AsInt32Array();
         if (target == typeof(Variant)) return v;
         return v.AsGodotObject() ?? (object)v;
     }
@@ -109,6 +117,8 @@ public static class VehicleApi {
         Godot.Collections.Array a => Variant.From(a),
         Transform3D t => Variant.From(t),
         float[] arr => Variant.From(arr),
+        Vector3[] arr => Variant.From(arr),
+        int[] arr => Variant.From(arr),
         _ => Variant.From(o.ToString()),
     };
 

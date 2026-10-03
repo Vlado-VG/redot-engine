@@ -54,7 +54,9 @@ class PhysXGPUCloth3D {
 	float stretch_stiffness = 0.9f; // 0..1
 	float bend_stiffness = 0.1f; // 0..1
 	float damping = 0.03f;
+	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
+	uint32_t exception_slot = 0;
 
 	mutable Mutex mesh_mutex;
 	LocalVector<Vector3> read_positions; // world space, published to the node
@@ -77,6 +79,12 @@ public:
 	uint32_t get_vertex_count() const { return vertex_count; }
 
 	void set_params(float p_thickness, float p_density, float p_stretch, float p_bend, float p_damping, uint32_t p_collision_mask);
+	void set_collision_layer(uint32_t p_layer);
+	void set_collision_mask(uint32_t p_mask);
+	uint32_t get_collision_layer() const { return collision_layer; }
+	void set_exception_slot(uint32_t p_slot);
+	uint32_t get_or_alloc_exception_slot();
+	uint32_t get_exception_slot() const { return exception_slot; }
 	// Build (or rebuild) the surface from a world-space triangle mesh.
 	void build(const Vector<Vector3> &p_positions, const Vector<int32_t> &p_indices, const Transform3D &p_xform);
 	void set_pinned(const Vector<int32_t> &p_pinned_indices);

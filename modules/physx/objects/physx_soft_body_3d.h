@@ -116,6 +116,11 @@ public:
 
 	bool is_gpu() const { return using_gpu; }
 
+	/// Solver-path override for THIS body (persisted across rebuilds):
+	/// -1 follow project setting, 0 Auto, 1 force CPU, 2 force GPU.
+	void set_solver_mode(int p_mode) { mode_override = CLAMP(p_mode, -1, 2); }
+	int get_solver_mode() const { return mode_override; }
+
 	/// Stores the soft-body exception slot and pushes it into the GPU volume's
 	/// collision shape (filter word2 — see spaces/physx_filter_shader.h). The
 	/// CPU path enforces exceptions via the per-vertex query exclude list and
@@ -177,6 +182,12 @@ private:
 	void _rebuild_from_mesh(bool p_keep_state = false);
 	bool _try_build_gpu(const PackedVector3Array &p_welded, const PackedInt32Array &p_indices);
 	PhysXSoftVolume3D::Params _gpu_params() const;
+
+	// Per-body solver-path override (soft_body_set_mode): -1 = follow the
+	// physics/physx_3d/soft_body/mode project setting; 0 Auto, 1 CPU, 2 GPU.
+	// Replaces the unreachable "physx_soft_mode" metadata hook (soft bodies
+	// never received an instance id, so that lookup could never fire).
+	int mode_override = -1;
 	void _sync_gpu_pins(); // push pinned_render_points / pin_targets to the volume
 	void _refresh_contacts();
 	void _resolve_contacts();

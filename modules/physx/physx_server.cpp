@@ -86,6 +86,21 @@ void PhysXServer3D::_bind_methods() {
 	ClassDB::bind_static_method("PhysXServer3D", D_METHOD("get_singleton"), &PhysXServer3D::get_singleton);
 
 	// Lifecycle.
+	ClassDB::bind_method(D_METHOD("soft_body_set_solver_mode", "soft_body", "mode"), &PhysXServer3D::soft_body_set_solver_mode);
+	ClassDB::bind_method(D_METHOD("soft_body_get_solver_mode", "soft_body"), &PhysXServer3D::soft_body_get_solver_mode);
+	// The cloth RID API (like vehicle/particle_fluid) is exposed to scripts so
+	// tests and tools can drive it without the PhysXCloth3D node.
+	ClassDB::bind_method(D_METHOD("cloth_create"), &PhysXServer3D::cloth_create);
+	ClassDB::bind_method(D_METHOD("cloth_set_space", "cloth", "space"), &PhysXServer3D::cloth_set_space);
+	ClassDB::bind_method(D_METHOD("cloth_set_params", "cloth", "thickness", "density", "stretch", "bend", "damping", "collision_mask"), &PhysXServer3D::cloth_set_params);
+	ClassDB::bind_method(D_METHOD("cloth_set_collision_layer_and_mask", "cloth", "layer", "mask"), &PhysXServer3D::cloth_set_collision_layer_and_mask);
+	ClassDB::bind_method(D_METHOD("cloth_add_collision_exception", "cloth", "body"), &PhysXServer3D::cloth_add_collision_exception);
+	ClassDB::bind_method(D_METHOD("cloth_remove_collision_exception", "cloth", "body"), &PhysXServer3D::cloth_remove_collision_exception);
+	ClassDB::bind_method(D_METHOD("cloth_build", "cloth", "positions", "indices", "transform"), &PhysXServer3D::cloth_build);
+	ClassDB::bind_method(D_METHOD("cloth_set_pinned", "cloth", "pinned"), &PhysXServer3D::cloth_set_pinned);
+	ClassDB::bind_method(D_METHOD("cloth_set_pin_targets", "cloth", "targets"), &PhysXServer3D::cloth_set_pin_targets);
+	ClassDB::bind_method(D_METHOD("cloth_apply_wind", "cloth", "wind", "drag", "lift", "delta"), &PhysXServer3D::cloth_apply_wind);
+	ClassDB::bind_method(D_METHOD("cloth_is_ready", "cloth"), &PhysXServer3D::cloth_is_ready);
 	ClassDB::bind_method(D_METHOD("vehicle_create", "archetype"), &PhysXServer3D::vehicle_create);
 	ClassDB::bind_method(D_METHOD("vehicle_set_chassis_body", "vehicle", "body"), &PhysXServer3D::vehicle_set_chassis_body);
 	ClassDB::bind_method(D_METHOD("vehicle_set_space", "vehicle", "space"), &PhysXServer3D::vehicle_set_space);
@@ -1453,6 +1468,21 @@ RID PhysXServer3D::soft_body_create() {
 	return rid;
 }
 
+void PhysXServer3D::soft_body_set_solver_mode(RID p_body, int p_mode) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	soft_body->set_solver_mode(p_mode);
+	// Re-resolve the path now: a mode flip on a built body must not wait for
+	// an unrelated rebuild trigger (same contract as set_space/set_mesh).
+	soft_body->set_space(soft_body->get_space());
+}
+
+int PhysXServer3D::soft_body_get_solver_mode(RID p_body) const {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL_V(soft_body, -1);
+	return soft_body->get_solver_mode();
+}
+
 void PhysXServer3D::soft_body_update_rendering_server(RID p_body, PhysicsServer3DRenderingServerHandler *p_rendering_server_handler) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
@@ -1936,6 +1966,42 @@ void PhysXServer3D::cloth_set_params(RID p_cloth, real_t p_thickness, real_t p_d
 	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
 	ERR_FAIL_NULL(cloth);
 	cloth->set_params(p_thickness, p_density, p_stretch, p_bend, p_damping, p_collision_mask);
+}
+
+void PhysXServer3D::cloth_set_collision_layer_and_mask(RID p_cloth, uint32_t p_layer, uint32_t p_mask) {
+	MutexLock lock(api_mutex);
+	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
+	ERR_FAIL_NULL(cloth);
+	cloth->set_collision_layer(p_layer);
+	// Mask rides the same filter push; keep the stored value in sync for the
+	// next rebuild.
+	cloth->set_collision_mask(p_mask);
+}
+
+void PhysXServer3D::cloth_add_collision_exception(RID p_cloth, RID p_body) {
+	MutexLock lock(api_mutex);
+	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
+	ERR_FAIL_NULL(cloth);
+	PhysXBody3D *other = body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(other);
+	// Same slot-registry routing as rigid-body exceptions: word2 slots on both
+	// sides, enforced by the filter shader (the deformable surface's shape has
+	// no userData, so the CPU pair-filter path cannot see it).
+	const uint32_t slot_a = cloth->get_or_alloc_exception_slot();
+	const uint32_t slot_b = other->get_or_alloc_exception_slot();
+	other->refresh_collision_filters();
+	g_physx_soft_exceptions.add(slot_a, slot_b);
+}
+
+void PhysXServer3D::cloth_remove_collision_exception(RID p_cloth, RID p_body) {
+	MutexLock lock(api_mutex);
+	PhysXGPUCloth3D *cloth = cloth_owner.get_or_null(p_cloth);
+	ERR_FAIL_NULL(cloth);
+	PhysXBody3D *other = body_owner.get_or_null(p_body);
+	if (!other || cloth->get_exception_slot() == 0 || other->get_exception_slot() == 0) {
+		return;
+	}
+	g_physx_soft_exceptions.remove(cloth->get_exception_slot(), other->get_exception_slot());
 }
 
 void PhysXServer3D::cloth_build(RID p_cloth, const Vector<Vector3> &p_positions, const Vector<int32_t> &p_indices, const Transform3D &p_xform) {
