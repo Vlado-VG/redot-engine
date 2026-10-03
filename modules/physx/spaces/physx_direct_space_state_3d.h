@@ -48,8 +48,20 @@ public:
 private:
     PhysXSpace3D *space = nullptr;
 
+    // Reusable query scratch (queries are fetch-first and issued from a single
+    // thread, so no locking is needed). Avoids a heap allocation per
+    // sweep/motion call in the CharacterBody3D hot path.
+    struct RecoverContact {
+        Vector3 normal;   // MTD push-out direction (collider -> mover)
+        real_t depth = 0; // net penetration beyond the rest-depth slack
+        real_t weight = 1; // the collider body's collision_priority
+    };
+    mutable LocalVector<physx::PxSweepHit> _sweep_touch_scratch;
+    mutable LocalVector<RecoverContact> _recover_scratch;
+    mutable LocalVector<PhysicsServer3D::MotionCollision> _collide_scratch;
+
     bool _body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, Vector3 &r_recovery) const;
-    bool _body_motion_cast(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, bool p_collide_separation_ray, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal, const physx::PxRigidActor *&r_hit_actor, const physx::PxShape *&r_hit_shape) const;
-    bool _body_motion_collide(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, int p_max_collisions, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, PhysicsServer3D::MotionResult *r_result) const;
+    bool _body_motion_cast(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, bool p_collide_separation_ray, float p_rest_slack, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal, real_t &r_hit_depth, int &r_hit_local_shape, const physx::PxRigidActor *&r_hit_actor, const physx::PxShape *&r_hit_shape) const;
+    bool _body_motion_collide(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, int p_max_collisions, float p_min_allowed_depth, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, PhysicsServer3D::MotionResult *r_result) const;
 };
 #endif // PHYSX_DIRECT_SPACE_STATE_3D_H

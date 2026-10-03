@@ -1,7 +1,8 @@
 // Queries: ray / point / shape / rest-info / cast-motion coverage with all
 // returned fields verified, filter flags, degenerate origins, and rotated
 // geometry. Documented module quirks (hit_from_inside synthetic hit with zero
-// normal, cast_motion initial-overlap) are encoded as such.
+// normal) are encoded as such; cast_motion follows godot_physics per-object
+// overlap disregard (godot_space_3d _cast_motion).
 
 using System;
 using System.Collections;
@@ -38,6 +39,9 @@ internal static class QueryTests {
         s.Add("PHYSX-QUERY-026", "query on second space does not leak first space", CrossSpaceLeak);
         s.Add("PHYSX-QUERY-027", "ray_pickable=false body is invisible to raycasts until re-enabled", RayPickableToggle);
         s.Add("PHYSX-QUERY-028", "ray_pickable across bodies and areas; enforcement is ray-only", RayPickableMixed);
+        s.Add("PHYSX-QUERY-029", "cast_motion overlapped start hits the wall behind the overlap", CastMotionOverlapDisregard);
+        s.Add("PHYSX-QUERY-030", "rest_info picks the deepest of several overlaps", RestInfoDeepest);
+        s.Add("PHYSX-QUERY-031", "interior ray against backfaces reports the far wall at its real position", RayBackfaceInterior);
     }
 
     static IEnumerator RayFields() {
@@ -260,10 +264,73 @@ internal static class QueryTests {
     }
     static IEnumerator CastMotionInitialOverlap() {
         using var w = new PhysxWorld();
-        // Probe already inside the floor: module documents this as unobstructed.
+        // Probe already inside the floor, motion driving deeper: godot_physics
+        // disregards overlapped objects entirely, so with no other object
+        // ahead the motion reports unobstructed (safe = unsafe = 1).
         var frac = w.CastMotion(w.Sphere(0.5f), new Transform3D(Basis.Identity, new Vector3(2, -0.2f, 0)), new Vector3(0, -1, 0));
-        Assert.ExpectNear(frac.X, 1f, 1e-4f, "initially-overlapping cast returns safe=1 (documented)");
-        Assert.ExpectNear(frac.Y, 1f, 1e-4f, "initially-overlapping cast returns unsafe=1 (documented)");
+        Assert.ExpectNear(frac.X, 1f, 1e-4f, "initially-overlapping cast disregards the object (safe=1)");
+        Assert.ExpectNear(frac.Y, 1f, 1e-4f, "initially-overlapping cast disregards the object (unsafe=1)");
+        yield return Wait.Frame();
+    }
+
+    // godot_physics contract (godot_space_3d _cast_motion): objects the query
+    // shape already overlaps are disregarded per-object; the closest FORWARD
+    // blocker behind them still bounds the motion.
+    static IEnumerator CastMotionOverlapDisregard() {
+        using var w = new PhysxWorld(false);
+        // Blocker the probe overlaps: sphere r=0.5 at the origin, box spans 0.4..1.4.
+        w.MakeStatic(w.Box(0.5f, 1f, 1f), new Vector3(0.9f, 0, 0));
+        // Wall face at x = 5.
+        w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(5.5f, 0, 0));
+        var frac = w.CastMotion(w.Sphere(0.5f), new Transform3D(Basis.Identity, Vector3.Zero), new Vector3(10, 0, 0));
+        // Wall contact at 5 - 0.5 = 4.5 of 10 -> fraction 0.45.
+        Assert.ExpectNear(frac.X, 0.45f, 0.02f, $"forward blocker found past the overlap (safe={frac.X:F3})");
+        Assert.ExpectNear(frac.Y, 0.45f, 0.02f, "unsafe fraction at the wall");
+        yield return Wait.Frame();
+    }
+
+    // godot_physics keeps the DEEPEST contact as the rest result
+    // (godot_space_3d _rest_cbk_result: is_best_result = len > best.len).
+    static IEnumerator RestInfoDeepest() {
+        using var w = new PhysxWorld(false);
+        // Deep slab: top at y = -0.1 (sphere at y = 0.2, r = 0.5 -> 0.2 deep).
+        var deep = w.MakeStatic(w.Box(5f, 1f, 5f), new Vector3(0, -1.1f, 0));
+        // Shallow block: top at y = -0.2 (0.1 deep) under the same sphere.
+        w.MakeStatic(w.Box(0.5f, 0.25f, 0.5f), new Vector3(0.3f, -0.45f, 0));
+        var rest = w.RestInfo(w.Sphere(0.5f), new Transform3D(Basis.Identity, new Vector3(0, 0.2f, 0)));
+        Assert.Require(rest.Count > 0, "rest_info finds an overlap");
+        Assert.Expect(rest["rid"].AsRid() == deep, "deepest collider wins (slab over shallow block)");
+        Assert.Expect(rest["normal"].AsVector3().Y > 0.9f, "slab normal up");
+        yield return Wait.Frame();
+    }
+
+    // godot_physics contract: with hit_back_faces the ray reports interior
+    // (back) faces at their real position with the raw face normal -- a ray
+    // inside a room hits the far wall. Only distance <= 0 (origin inside the
+    // shape) is "from inside". The wall here is cooked SINGLE-sided
+    // (backface_collision=false): the ray approaches its back, so the query
+    // flag alone decides whether the hit exists.
+    static IEnumerator RayBackfaceInterior() {
+        using var w = new PhysxWorld(false);
+        var wall = PhysicsServer3D.ConcavePolygonShapeCreate();
+        PhysicsServer3D.ShapeSetData(wall, new Godot.Collections.Dictionary {
+            ["faces"] = new Vector3[] {
+                new(2, 0, -2), new(2, 0, 2), new(2, 4, -2),
+                new(2, 4, -2), new(2, 0, 2), new(2, 4, 2),
+            },
+            ["backface_collision"] = false,
+        });
+        w.AdoptShape(wall);
+        w.MakeStatic(wall, Vector3.Zero);
+
+        var hit = w.Ray(new Vector3(0, 1, 0), new Vector3(4, 1, 0), backFaces: true);
+        Assert.Require(hit.Count > 0, "backface-enabled ray hits the far wall from inside the room");
+        Assert.ExpectNear(hit["position"].AsVector3().X, 2f, 0.01f,
+            $"hit at the wall plane (got {hit["position"].AsVector3()})");
+        Assert.Expect(System.Math.Abs(hit["normal"].AsVector3().X) > 0.9f, "normal is the wall's face normal");
+
+        var miss = w.Ray(new Vector3(0, 1, 0), new Vector3(4, 1, 0));
+        Assert.Expect(miss.Count == 0, "with hit_back_faces=false the backface hit is not reported");
         yield return Wait.Frame();
     }
     static IEnumerator AreaQueries() {

@@ -235,6 +235,6 @@ testing.
 * Pin joint `BIAS/DAMPING/IMPULSE_CLAMP`, joint solver priority — stored,
   round-tripped, not simulated; tested as storage only.
 * Slider angular limits — stored only; linear limits enforced.
-* `cast_motion` with initial overlap — returns unobstructed by design.
+* `cast_motion` / `body_test_motion` follow godot_physics per-object overlap disregard: objects the query starts inside of are skipped (a forward blocker behind them still bounds the motion); an overlap deeper than the recovery slack is "stuck" (safe = unsafe = 0).
 * Soft-body — API skeleton, no `PxDeformableVolume`; behavioral tests SKIP.
 * Wind area params — stored, not applied.

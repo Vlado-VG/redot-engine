@@ -24,6 +24,11 @@ internal static class MotionTests {
         s.Add("PHYSX-MOVE-013", "mesh-hit normal matches rest_info on the same setup", SweepMeshNormalMatchesRestInfo);
         s.Add("PHYSX-MOVE-014", "recovery ignores rest-separation within the margin slack", RecoverMarginSlack);
         s.Add("PHYSX-MOVE-015", "recovery applies 0.4 per pass (partial per call)", RecoverScaled);
+        s.Add("PHYSX-MOVE-016", "overlapped start is disregarded: motion reaches the wall behind it", SweepOverlapDisregard);
+        s.Add("PHYSX-MOVE-017", "deeply embedded start is stuck: blocked at fraction 0 with contact depth", SweepStuck);
+        s.Add("PHYSX-MOVE-018", "multi-shape body reports the swept shape's local index", SweepLocalShape);
+        s.Add("PHYSX-MOVE-019", "recovery weights contacts by collision_priority", RecoverPriorityWeighted);
+        s.Add("PHYSX-MOVE-020", "contact collider velocity includes the angular lever arm", SweepColliderContactVelocity);
     }
 
     static IEnumerator SweepHitsFloor() {
@@ -63,10 +68,19 @@ internal static class MotionTests {
         // collision only when explicitly requested, and then only with actual
         // contacts (Godot contract: body_test_motion never returns true with
         // an empty collision list).
+        //
+        // The module's recovery ejects ACTUAL penetration with 0.4-scaled
+        // passes (~0.174 of the 0.2 embedment; margin-inflated speculative
+        // contacts are a documented module gap), so a deeper-than-slack
+        // overlap survives into the cast phase and the body is stuck: travel
+        // is the recovery alone and the collision carries the residual depth.
+        // (godot_physics margin-inflates its recovery, fully ejects, and
+        // reports a free motion here.)
         var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(3, 0.2f, 0)), new Vector3(0, 0.5f, 0), recoveryAsCollision: true);
-        Assert.Expect(r.GetTravel().Y > 0.52f, $"recovery adds depenetration travel (travel.y={r.GetTravel().Y:F2})");
         Assert.Expect(hit, "penetrating motion reports collision");
         Assert.Expect(r.GetCollisionCount() > 0, "reported collision has contacts");
+        Assert.Expect(r.GetTravel().Y > 0.1f && r.GetTravel().Y < 0.25f,
+            $"travel is the partial recovery eject (travel.y={r.GetTravel().Y:F2})");
         yield return Wait.Frame();
     }
     static IEnumerator SweepInitialPenetration() {
@@ -247,6 +261,118 @@ internal static class MotionTests {
         float recovered = r.GetTravel().X - 0.01f;
         Assert.Expect(recovered > 0.12f && recovered < 0.195f,
             $"0.4-scaled recovery recovers part of the embedment ({recovered:F3} of 0.2)");
+        yield return Wait.Frame();
+    }
+
+    // godot_physics contract (godot_space_3d test_body_motion): objects the
+    // mover already overlaps are DISREGARDED in the cast phase ("ignore
+    // objects it's inside of"), so a forward blocker behind the overlapped one
+    // still bounds the motion. Here the overlap sits within the recovery slack
+    // (margin 0.1 -> slack 0.005 > the 0.002 embedment) so it survives into
+    // the cast phase; the far wall 8 m ahead must be what blocks.
+    static IEnumerator SweepOverlapDisregard() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(0, 5, 0));   // face at x = 0.5
+        w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(9, 5, 0));   // face at x = 8.5
+        var body = w.MakeKinematic(w.Box(0.4f), new Vector3(3, 5, 0));
+        var p = new PhysicsTestMotionParameters3D {
+            From = new Transform3D(Basis.Identity, new Vector3(0.898f, 5, 0)),
+            Motion = new Vector3(8, 0, 0),
+            RecoveryAsCollision = false,
+            Margin = 0.1f,
+        };
+        var r = new PhysicsTestMotionResult3D();
+        bool hit = PhysicsServer3D.BodyTestMotion(body, p, r);
+        Assert.Expect(hit, "motion is blocked by the far wall");
+        // Contact at body front x = 8.5: travel 7.202 of 8 -> fraction ~0.900.
+        float safe = r.GetCollisionSafeFraction();
+        Assert.Expect(safe > 0.85f && safe < 0.95f,
+            $"blocked at the far wall, not the overlapped face (safe={safe:F3})");
+        Assert.Expect(r.GetCollisionNormal(0).X < -0.9f, "far wall normal (-X)");
+        yield return Wait.Frame();
+    }
+
+    // godot_physics contract: when an overlap deeper than the recovery slack
+    // survives into the cast phase the body is STUCK -- safe = unsafe = 0 and
+    // the collision carries the actual contact depth.
+    static IEnumerator SweepStuck() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(0, 5, 0));
+        var body = w.MakeKinematic(w.Box(0.4f), new Vector3(3, 5, 0));
+        // Embedded 0.2 into the wall face at x = 0.5: recovery ejects only
+        // ~0.174, so ~0.026 of overlap survives (slack is 5e-5 at margin 1e-3).
+        var p = new PhysicsTestMotionParameters3D {
+            From = new Transform3D(Basis.Identity, new Vector3(0.7f, 5, 0)),
+            Motion = new Vector3(0.5f, 0, 0),
+            RecoveryAsCollision = false,
+            Margin = 0.001f,
+        };
+        var r = new PhysicsTestMotionResult3D();
+        bool hit = PhysicsServer3D.BodyTestMotion(body, p, r);
+        Assert.Expect(hit, "stuck body reports a collision");
+        Assert.ExpectNear(r.GetCollisionSafeFraction(), 0f, 1e-3f,
+            $"stuck: safe fraction 0 (got {r.GetCollisionSafeFraction():F3})");
+        Assert.ExpectNear(r.GetCollisionUnsafeFraction(), 0f, 1e-3f, "stuck: unsafe fraction 0");
+        Assert.Expect(r.GetCollisionCount() > 0, "stuck collision carries contacts");
+        Assert.Expect(r.GetCollisionDepth(0) > 0.001f,
+            $"contact depth reported (got {r.GetCollisionDepth(0):F3})");
+        Assert.Expect(r.GetCollisionLocalShape(0) == 0, "local shape index of the single-shape body");
+        yield return Wait.Frame();
+    }
+
+    // The reported local_shape must be the MOVER shape that produced the
+    // contact (godot_space_3d tracks best_shape per mover shape), not a
+    // constant 0.
+    static IEnumerator SweepLocalShape() {
+        using var w = new PhysxWorld();
+        var body = w.MakeKinematic(w.Sphere(0.3f), new Vector3(6, 5, 0));
+        // Shape 1 sits 1 m lower -> a downward sweep contacts it first.
+        PhysicsServer3D.BodyAddShape(body, w.Box(0.4f), new Transform3D(Basis.Identity, new Vector3(0, -1, 0)));
+        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, new Vector3(6, 4, 0)), new Vector3(0, -3, 0));
+        Assert.Expect(hit, "downward sweep hits the floor");
+        Assert.Expect(r.GetCollisionLocalShape(0) == 1,
+            $"local shape is the lower box (got {r.GetCollisionLocalShape(0)})");
+        yield return Wait.Frame();
+    }
+
+    // godot_space_3d weights each recovery contact by the collider's
+    // collision_priority (normalized to average 1): a priority-0 wall
+    // contributes nothing, so the body depenetrates fully toward it.
+    static IEnumerator RecoverPriorityWeighted() {
+        using var w = new PhysxWorld(false);
+        w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(0.1f, 5, 0));    // face at x = 0.6
+        var wallR = w.MakeStatic(w.Box(0.5f, 2f, 2f), new Vector3(1.9f, 5, 0)); // face at x = 1.4
+        PhysicsServer3D.BodySetCollisionPriority(wallR, 0f);
+        var body = w.MakeKinematic(w.Box(0.45f), new Vector3(3, 5, 0));
+        // Body half 0.45 at x = 1.0 spans 0.55..1.45: embedded 0.05 into BOTH faces.
+        var p = new PhysicsTestMotionParameters3D {
+            From = new Transform3D(Basis.Identity, new Vector3(1.0f, 5, 0)),
+            Motion = new Vector3(0.01f, 0, 0),
+            RecoveryAsCollision = false,
+            Margin = 0.001f,
+        };
+        var r = new PhysicsTestMotionResult3D();
+        PhysicsServer3D.BodyTestMotion(body, p, r);
+        // Priority-1 left wall dominates: recovery_x ~ 0.05 * 0.4 * (2 contacts / weight 1) ~ 0.04.
+        Assert.Expect(r.GetTravel().X > 0.03f,
+            $"priority-0 wall contributes no recovery (travel.x={r.GetTravel().X:F3})");
+        yield return Wait.Frame();
+    }
+
+    // Godot reports the collider's velocity AT the contact point, including
+    // the angular lever arm (linear + omega x r) -- a spinning platform must
+    // drag the contact tangentially.
+    static IEnumerator SweepColliderContactVelocity() {
+        using var w = new PhysxWorld(false);
+        var platform = w.MakeBody(w.Box(1f, 0.5f, 1f), new Vector3(5, 0, 0), mass: 100f);
+        w.SetAngVel(platform, new Vector3(0, 10, 0));
+        var body = w.MakeKinematic(w.Box(0.4f), new Vector3(0, 0, 0));
+        var (hit, r) = w.TestMotion(body, new Transform3D(Basis.Identity, Vector3.Zero), new Vector3(4, 0, 0));
+        Assert.Expect(hit, "sweep reaches the platform (face at x = 4)");
+        // Contact at x ~ 3.6: lever arm (-1.4, 0, 0) from the platform center,
+        // omega = (0, 10, 0) -> omega x r = (0, 0, +14).
+        var v = r.GetColliderVelocity(0);
+        Assert.Expect(v.Z > 5f, $"contact velocity includes omega x r (got {v})");
         yield return Wait.Frame();
     }
 }

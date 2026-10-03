@@ -21,6 +21,16 @@
 #include "geometry/PxGeometryQuery.h"
 #include "geometry/PxMeshQuery.h"
 
+#include "core/templates/sort_array.h"
+
+// Orders motion contacts deepest-first (godot_space_3d _rest_cbk_result keeps
+// the largest contact length as the best result).
+struct DeeperContactFirst {
+    bool operator()(const PhysicsServer3D::MotionCollision &p_a, const PhysicsServer3D::MotionCollision &p_b) const {
+        return p_a.depth > p_b.depth;
+    }
+};
+
 // Async stepping: a scene query against an in-flight solve is a hard PhysX
 // error, so every public query fetches the pending solve first. This collapses
 // the async overlap for any frame that queries — the documented cost; frames
@@ -39,8 +49,9 @@ static constexpr int PHYSX_QUERY_MAX_RESULTS = 256;
 
 // Internal-edge handling for sweep hits (defined below, shared by cast_motion
 // and the body_test_motion cast phase): re-derives the face normal on mesh
-// hits and reports whether the hit opposes the sweep direction.
-static bool _sweep_hit_opposing_normal(const physx::PxSweepHit &p_hit, const physx::PxVec3 &p_dir, physx::PxVec3 &r_normal);
+// hits and decides whether a forward hit is a genuine block or an edge
+// artifact.
+static bool _sweep_forward_hit_blocking(const physx::PxSweepHit &p_hit, physx::PxVec3 &r_normal);
 
 PhysXDirectSpaceState3D::PhysXDirectSpaceState3D(PhysXSpace3D *p_space) {
     space = p_space;
@@ -199,39 +210,40 @@ bool PhysXDirectSpaceState3D::intersect_ray(const RayParameters &p_parameters, R
     if (has_hit && hit.hasBlock) {
         const physx::PxRaycastHit &block = hit.block;
 
-               const bool is_backface = block.normal.dot(dir) > 0.0f;
-
-        if (!p_parameters.hit_from_inside) {
-            // Drop hits where the origin is inside the shape (convex: distance <= 0)
-            // or where the ray hit a backface (mesh: origin is inside the mesh).
-            if (block.distance <= 0.0f || is_backface) {
+        // Godot's contract (godot_space_3d intersect_ray): backface hits are
+        // ordinary hits reported at their real position when hit_back_faces is
+        // set — a ray inside a concave interior hits the far wall's inward
+        // face and MUST report it. Only a hit at distance <= 0 means the ray
+        // origin sits inside the shape.
+        if (block.distance <= 0.0f) {
+            if (!p_parameters.hit_from_inside) {
+                // Origin inside the shape: Godot skips it (other shapes are
+                // still searched there; the single closest-hit raycast cannot
+                // skip and continue, so "no hit" is the faithful fallback).
                 return false;
             }
-        } else {
             // hit_from_inside == true: report a synthetic from-inside hit.
-            if (block.distance <= 0.0f || is_backface) {
-                r_result.position = p_parameters.from;
-                r_result.normal = Vector3();
-                r_result.face_index = block.faceIndex;
+            r_result.position = p_parameters.from;
+            r_result.normal = Vector3();
+            r_result.face_index = block.faceIndex;
 
-                // Map the PhysX hit back to Godot via the actor/shape userData.
-                if (block.actor && block.actor->userData) {
-                    auto *actor_data = static_cast<PhysXActorUserData*>(block.actor->userData);
-                    r_result.rid = actor_data->rid;
-                    r_result.collider_id = actor_data->object_id;
-                    r_result.collider = ObjectDB::get_instance(actor_data->object_id);
-                } else {
-                    r_result.rid = RID();
-                    r_result.collider_id = ObjectID();
-                    r_result.collider = nullptr;
-                }
-                if (block.shape && block.shape->userData) {
-                    r_result.shape = physx_resolve_shape_index(block.actor, block.shape);
-                } else {
-                    r_result.shape = 0;
-                }
-                return true;
+            // Map the PhysX hit back to Godot via the actor/shape userData.
+            if (block.actor && block.actor->userData) {
+                auto *actor_data = static_cast<PhysXActorUserData*>(block.actor->userData);
+                r_result.rid = actor_data->rid;
+                r_result.collider_id = actor_data->object_id;
+                r_result.collider = ObjectDB::get_instance(actor_data->object_id);
+            } else {
+                r_result.rid = RID();
+                r_result.collider_id = ObjectID();
+                r_result.collider = nullptr;
             }
+            if (block.shape && block.shape->userData) {
+                r_result.shape = physx_resolve_shape_index(block.actor, block.shape);
+            } else {
+                r_result.shape = 0;
+            }
+            return true;
         }
 
         r_result.position = Vector3(block.position.x, block.position.y, block.position.z);
@@ -416,71 +428,90 @@ bool PhysXDirectSpaceState3D::cast_motion(const ShapeParameters &p_parameters, r
     filter_cb.collide_with_bodies = p_parameters.collide_with_bodies;
     filter_cb.collide_with_areas = p_parameters.collide_with_areas;
     filter_cb.exclude_rids = &p_parameters.exclude;
-    // cast_motion is single-hit — keep eBLOCK for the closest hit.
+    filter_cb.multi_hit = true; ///< collect all touched shapes; overlapped ones are skipped per-object below
 
     physx::PxQueryFilterData filter_data;
     filter_data.flags = physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::ePREFILTER;
 
-    physx::PxSweepBuffer hit;
+    // Godot's cast_motion contract (godot_space_3d _cast_motion): objects the
+    // query shape ALREADY overlaps are disregarded per-object, and the closest
+    // FORWARD blocker among the rest bounds the motion. A single closest-block
+    // sweep cannot express that — an initial overlap is always the nearest
+    // hit (negative distance under eMTD) and masks every real blocker behind
+    // it. Sweep with a touch buffer instead and scan the hits.
+    const physx::PxU32 touch_max = PHYSX_QUERY_MAX_RESULTS;
+    if (_sweep_touch_scratch.size() < touch_max) {
+        _sweep_touch_scratch.resize(touch_max);
+    }
+    physx::PxHitBuffer<physx::PxSweepHit> hit(_sweep_touch_scratch.ptr(), touch_max);
+
     // eMTD makes initial-overlap sweeps report a well-defined (negative)
     // distance/normal/position instead of distance==0 with garbage fields.
     physx::PxHitFlags hit_flags = physx::PxHitFlag::ePOSITION | physx::PxHitFlag::eNORMAL |
                                   physx::PxHitFlag::eFACE_INDEX | physx::PxHitFlag::eMTD;
 
-    bool has_hit = space->get_px_scene()->sweep(geometry.any(), pose, px_dir, length, hit, hit_flags, filter_data, &filter_cb);
+    space->get_px_scene()->sweep(geometry.any(), pose, px_dir, length, hit, hit_flags, filter_data, &filter_cb);
 
-    if (has_hit && hit.hasBlock) {
-        // Godot's cast_motion contract: shapes that the query is ALREADY
-        // overlapping are completely disregarded. An initial overlap shows up
-        // as distance <= 0 (hadInitialOverlap), so skip it and report an
-        // unobstructed full motion. A real forward hit has distance > 0.
-        if (!hit.block.hadInitialOverlap()) {
-            // Internal-edge handling (see _sweep_hit_opposing_normal): a
-            // forward hit on a mesh with an edge-derived or contradictory
-            // normal does not obstruct the motion.
-            physx::PxVec3 face_normal;
-            if (!_sweep_hit_opposing_normal(hit.block, px_dir, face_normal)) {
-                r_closest_safe = 1.0;
-                r_closest_unsafe = 1.0;
-                return false;
-            }
-            real_t hit_fraction = hit.block.distance / length;
-            real_t margin_fraction = p_parameters.margin / length;
-
-            r_closest_safe = MAX(0.0, hit_fraction - margin_fraction);
-            r_closest_unsafe = hit_fraction;
-
-            // Optional rest info for the blocking hit (C++-only output — the
-            // script binding drops it). Same field mapping as rest_info():
-            // point on the collider's surface, normal toward the query shape,
-            // collider velocity at the point. Initial-overlap casts leave
-            // r_info untouched (the reference reports no rest info there).
-            if (r_info) {
-                if (hit.block.actor && hit.block.actor->userData) {
-                    const auto *actor_data = static_cast<const PhysXActorUserData *>(hit.block.actor->userData);
-                    r_info->rid = actor_data->rid;
-                    r_info->collider_id = actor_data->object_id;
-                } else {
-                    r_info->rid = RID();
-                    r_info->collider_id = ObjectID();
-                }
-                r_info->shape = physx_resolve_shape_index(hit.block.actor, hit.block.shape);
-                r_info->point = Vector3(hit.block.position.x, hit.block.position.y, hit.block.position.z);
-                r_info->normal = Vector3(face_normal.x, face_normal.y, face_normal.z);
-                r_info->linear_velocity = Vector3();
-                if (hit.block.actor && hit.block.actor->is<physx::PxRigidDynamic>()) {
-                    const physx::PxRigidDynamic *dyn = hit.block.actor->is<physx::PxRigidDynamic>();
-                    const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*const_cast<physx::PxRigidDynamic *>(dyn), hit.block.position);
-                    r_info->linear_velocity = Vector3(v.x, v.y, v.z);
-                }
-            }
-            return true;
+    real_t best_fraction = 1.0;
+    const physx::PxSweepHit *best = nullptr;
+    physx::PxVec3 best_normal(0.0f, 0.0f, 0.0f);
+    for (physx::PxU32 i = 0; i < hit.nbTouches; ++i) {
+        const physx::PxSweepHit &touch = hit.getTouch(i);
+        // Disregard objects the query shape starts inside of (Godot contract).
+        if (touch.hadInitialOverlap()) {
+            continue;
+        }
+        // Internal-edge handling: a forward hit on a mesh whose triangle
+        // winding contradicts the reported normal is a shared-edge contact,
+        // not a surface the motion ran into.
+        physx::PxVec3 face_normal;
+        if (!_sweep_forward_hit_blocking(touch, face_normal)) {
+            continue;
+        }
+        const real_t fraction = touch.distance / length;
+        if (!best || fraction < best_fraction) {
+            best_fraction = fraction;
+            best = &touch;
+            best_normal = face_normal;
         }
     }
 
     r_closest_safe = 1.0;
     r_closest_unsafe = 1.0;
-    return false;
+    if (best) {
+        // Godot reports the raw motion fraction — the margin only widens the
+        // reference's broadphase query, it never shrinks the safe fraction.
+        r_closest_safe = MAX(0.0, best_fraction);
+        r_closest_unsafe = best_fraction;
+
+        // Optional rest info for the blocking hit (C++-only output — the
+        // script binding drops it). Same field mapping as rest_info():
+        // point on the collider's surface, normal toward the query shape,
+        // collider velocity at the point.
+        if (r_info) {
+            if (best->actor && best->actor->userData) {
+                const auto *actor_data = static_cast<const PhysXActorUserData *>(best->actor->userData);
+                r_info->rid = actor_data->rid;
+                r_info->collider_id = actor_data->object_id;
+            } else {
+                r_info->rid = RID();
+                r_info->collider_id = ObjectID();
+            }
+            r_info->shape = physx_resolve_shape_index(best->actor, best->shape);
+            r_info->point = Vector3(best->position.x, best->position.y, best->position.z);
+            r_info->normal = Vector3(best_normal.x, best_normal.y, best_normal.z);
+            r_info->linear_velocity = Vector3();
+            if (best->actor && best->actor->is<physx::PxRigidDynamic>()) {
+                const physx::PxRigidDynamic *dyn = best->actor->is<physx::PxRigidDynamic>();
+                const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*const_cast<physx::PxRigidDynamic *>(dyn), best->position);
+                r_info->linear_velocity = Vector3(v.x, v.y, v.z);
+            }
+        }
+    }
+
+    // Godot returns true whenever the query ran (free motion reports [1,1]);
+    // the script binding turns a false return into an empty array.
+    return true;
 }
 
 bool PhysXDirectSpaceState3D::collide_shape(const ShapeParameters &p_parameters, Vector3 *r_results, int p_result_max, int &r_result_count) {
@@ -542,10 +573,15 @@ bool PhysXDirectSpaceState3D::collide_shape(const ShapeParameters &p_parameters,
         // shape's centroid. The collider-side point is the closest point on the
         // collider's surface to the query shape's center; the query-side point
         // sits one penetration depth further along the MTD (push-out vector).
-        physx::PxVec3 closest_on_collider;
-        physx::PxGeometryQuery::pointDistance(query_pose.p, hit_geom.any(), hit_pose, &closest_on_collider);
-        const physx::PxVec3 point_a = closest_on_collider + mtd_dir * penetration_depth; // query side
-        const physx::PxVec3 point_b = closest_on_collider; // collider side
+        // pointDistance is only valid for a strictly positive result (and is
+        // unsupported for heightfields) — fall back to the MTD segment around
+        // the query center instead of consuming an unwritten vector.
+        physx::PxVec3 point_b;
+        const physx::PxReal center_dist = physx::PxGeometryQuery::pointDistance(query_pose.p, hit_geom.any(), hit_pose, &point_b);
+        if (center_dist <= 0.0f) {
+            point_b = query_pose.p - mtd_dir * (penetration_depth * 0.5f);
+        }
+        const physx::PxVec3 point_a = point_b + mtd_dir * penetration_depth; // query side
         r_results[written * 2 + 0] = Vector3(point_a.x, point_a.y, point_a.z);
         r_results[written * 2 + 1] = Vector3(point_b.x, point_b.y, point_b.z);
         written++;
@@ -556,11 +592,11 @@ bool PhysXDirectSpaceState3D::collide_shape(const ShapeParameters &p_parameters,
 }
 
 bool PhysXDirectSpaceState3D::rest_info(const ShapeParameters &p_parameters, ShapeRestInfo *r_info) {
-    // Returns the nearest-surface contact info for the query shape: overlaps
-    // the scene, computes penetration against every hit, and reports the one
-    // with the SMALLEST penetration depth (i.e. the collider the query shape
-    // is just barely touching/penetrating). Used by cast_motion when the sweep
-    // starts already overlapping, and by direct rest_info queries.
+    // Returns the deepest-penetration contact info for the query shape:
+    // overlaps the scene, computes penetration against every hit, and reports
+    // the DEEPEST one (godot_space_3d _rest_cbk_result keeps the largest len).
+    // Used by cast_motion when the sweep starts already overlapping, and by
+    // direct rest_info queries (ground checks).
     _ensure_space_synced(space);
     if (!r_info || !space || !space->get_px_scene()) {
         return false;
@@ -590,9 +626,10 @@ bool PhysXDirectSpaceState3D::rest_info(const ShapeParameters &p_parameters, Sha
         return false;
     }
 
-    // Find the overlapping shape with the minimum penetration depth.
+    // Find the overlapping shape with the deepest penetration (Godot selects
+    // the largest contact length as the rest result).
     bool found = false;
-    physx::PxReal min_depth = PX_MAX_F32;
+    physx::PxReal best_depth = -1.0f;
     const physx::PxOverlapHit *best = nullptr;
     physx::PxVec3 best_mtd(0, 0, 0);
     physx::PxGeometryHolder best_geom;
@@ -613,8 +650,8 @@ bool PhysXDirectSpaceState3D::rest_info(const ShapeParameters &p_parameters, Sha
             continue;
         }
 
-        if (penetration_depth < min_depth) {
-            min_depth = penetration_depth;
+        if (penetration_depth > best_depth) {
+            best_depth = penetration_depth;
             best = &overlap;
             best_mtd = mtd_dir;
             best_geom = hit_geom;
@@ -629,10 +666,16 @@ bool PhysXDirectSpaceState3D::rest_info(const ShapeParameters &p_parameters, Sha
 
     // MTD points from the collider toward the query shape; Godot's rest normal
     // points toward the query shape (away from the surface it rests on). The
-    // rest point is on the collider's surface (see collide_shape).
+    // rest point is on the collider's surface (see collide_shape). When the
+    // pointDistance fallback applies (query center inside the collider, or a
+    // heightfield collider, which pointDistance does not support), approximate
+    // it with the MTD segment around the query center.
     r_info->normal = Vector3(best_mtd.x, best_mtd.y, best_mtd.z);
     physx::PxVec3 rest_pt;
-    physx::PxGeometryQuery::pointDistance(query_pose.p, best_geom.any(), best_pose, &rest_pt);
+    const physx::PxReal center_dist = physx::PxGeometryQuery::pointDistance(query_pose.p, best_geom.any(), best_pose, &rest_pt);
+    if (center_dist <= 0.0f) {
+        rest_pt = query_pose.p - best_mtd * (best_depth * 0.5f);
+    }
     r_info->point = Vector3(rest_pt.x, rest_pt.y, rest_pt.z);
 
     if (best->actor && best->actor->userData) {
@@ -690,27 +733,36 @@ Vector3 PhysXDirectSpaceState3D::get_closest_point_to_object_volume(RID p_object
         physx::PxVec3 local_closest;
         // 0.0f means we don't care about inflation
         physx::PxReal dist = physx::PxGeometryQuery::pointDistance(query_point, geom.any(), pose, &local_closest);
+        // pointDistance only writes the closest point for a strictly positive
+        // distance (heightfields return -1); at distance 0 the query point is
+        // on the surface itself.
+        if (dist < 0.0f) {
+            continue;
+        }
 
         if (dist < min_distance) {
             min_distance = dist;
-            closest_point = local_closest;
+            closest_point = dist > 0.0f ? local_closest : query_point;
         }
     }
 
     return Vector3(closest_point.x, closest_point.y, closest_point.z);
 }
 
-// Fills collisions[0] from a sweep blocking hit when the overlap-based collide
-// phase came back empty (at exact touch there is no penetration to report).
-static void _fill_collision_from_sweep(PhysicsServer3D::MotionResult *r_result, const PhysXBody3D &p_body,
-        const Vector3 &p_position, const Vector3 &p_normal, const physx::PxRigidActor *p_actor, const physx::PxShape *p_shape) {
+// Fills collisions[0] from a sweep hit when the overlap-based collide phase
+// came back empty — at exact touch there is no penetration to report, and in
+// the stuck case against trimesh/heightfield (computePenetration rejects
+// those geometries) the sweep/eMTD hit is the only contact source.
+static void _fill_collision_from_sweep(PhysicsServer3D::MotionResult *r_result,
+        const Vector3 &p_position, const Vector3 &p_normal, real_t p_depth, int p_local_shape,
+        const physx::PxRigidActor *p_actor, const physx::PxShape *p_shape) {
     if (!r_result || r_result->collision_count > 0 || !p_actor) {
         return;
     }
     PhysicsServer3D::MotionCollision &col = r_result->collisions[0];
     col.position = p_position;
     col.normal = p_normal;
-    col.depth = 0.0;
+    col.depth = p_depth;
     if (p_actor->userData) {
         const auto *actor_data = static_cast<const PhysXActorUserData *>(p_actor->userData);
         col.collider = actor_data->rid;
@@ -720,12 +772,13 @@ static void _fill_collision_from_sweep(PhysicsServer3D::MotionResult *r_result, 
         col.collider_id = ObjectID();
     }
     col.collider_shape = physx_resolve_shape_index(p_actor, p_shape);
-    const int local_idx = p_body.find_shape_index(p_shape);
-    col.local_shape = local_idx >= 0 ? local_idx : 0;
+    col.local_shape = p_local_shape >= 0 ? p_local_shape : 0;
     if (const physx::PxRigidDynamic *dyn = p_actor->is<physx::PxRigidDynamic>()) {
-        const physx::PxVec3 lv = dyn->getLinearVelocity();
+        const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(
+                *const_cast<physx::PxRigidDynamic *>(dyn),
+                physx::PxVec3(p_position.x, p_position.y, p_position.z));
+        col.collider_velocity = Vector3(v.x, v.y, v.z);
         const physx::PxVec3 av = dyn->getAngularVelocity();
-        col.collider_velocity = Vector3(lv.x, lv.y, lv.z);
         col.collider_angular_velocity = Vector3(av.x, av.y, av.z);
     } else {
         col.collider_velocity = Vector3();
@@ -739,54 +792,60 @@ static void _fill_collision_from_sweep(PhysicsServer3D::MotionResult *r_result, 
 //
 // Sweeping a convex over such a surface can catch on the shared edge between
 // facets, and PhysX may then report an edge-derived normal (often
-// axis-aligned, looking like a wall to a walking character) or one that does
-// not oppose the motion at all. Re-derive the true world-space face normal
-// from the hit triangle (PxMeshQuery::getTriangle; it flips the normal itself
-// for negative-determinant mesh scales) and reject hits whose normal does not
-// oppose the sweep direction.
-//
-// r_normal is always written: the re-derived face normal for mesh hits
-// (oriented to agree with the side the mover approached from), otherwise the
-// sweep hit's own normal. Returns false when the hit should be treated as
-// non-blocking (grazing/edge artifact). Applies to primitive-geometry hits
-// too: a genuine forward block always opposes the motion.
+// axis-aligned, looking like a wall to a walking character). Re-derive the
+// true world-space face normal from the hit triangle (PxMeshQuery::getTriangle;
+// it flips the normal itself for negative-determinant mesh scales) and reject
+// only the artifact class: a mesh hit whose triangle winding DISAGREES with
+// the reported hit normal. A genuine forward hit's face normal agrees with
+// what PhysX reported and is kept no matter how perpendicular it is to the
+// motion — the old "normal must oppose the sweep" threshold discarded real
+// near-perpendicular blocks (razor-thin steps, steep scrapes) and let the
+// motion tunnel through them.
 // ---------------------------------------------------------------------------
-static bool _sweep_hit_opposing_normal(const physx::PxSweepHit &p_hit, const physx::PxVec3 &p_dir, physx::PxVec3 &r_normal) {
-	r_normal = p_hit.normal;
-
+static bool _sweep_hit_face_normal(const physx::PxSweepHit &p_hit, physx::PxVec3 &r_normal) {
 	const physx::PxGeometryType::Enum geom_type = p_hit.shape
 			? p_hit.shape->getGeometry().getType()
 			: physx::PxGeometryType::eINVALID;
-	const bool is_mesh = geom_type == physx::PxGeometryType::eTRIANGLEMESH ||
-			geom_type == physx::PxGeometryType::eHEIGHTFIELD;
-	if (is_mesh && p_hit.actor && p_hit.faceIndex != 0xffffffffu) {
-		const physx::PxTransform hit_pose = physx::PxShapeExt::getGlobalPose(*p_hit.shape, *p_hit.actor);
-		physx::PxTriangle tri;
-		if (geom_type == physx::PxGeometryType::eTRIANGLEMESH) {
-			physx::PxMeshQuery::getTriangle(
-					static_cast<const physx::PxTriangleMeshGeometry &>(p_hit.shape->getGeometry()),
-					hit_pose, p_hit.faceIndex, tri);
-		} else {
-			physx::PxMeshQuery::getTriangle(
-					static_cast<const physx::PxHeightFieldGeometry &>(p_hit.shape->getGeometry()),
-					hit_pose, p_hit.faceIndex, tri);
-		}
-		physx::PxVec3 face_n;
-		tri.normal(face_n);
-		if (!face_n.isZero()) {
-			// Winding alone decides neither side; keep the orientation that
-			// agrees with the reported hit normal (the mover approached from
-			// that side).
-			if (face_n.dot(p_hit.normal) < 0.0f) {
-				face_n = -face_n;
-			}
-			r_normal = face_n;
-		}
+	if (geom_type != physx::PxGeometryType::eTRIANGLEMESH && geom_type != physx::PxGeometryType::eHEIGHTFIELD) {
+		return false;
 	}
+	if (!p_hit.actor || p_hit.faceIndex == 0xffffffffu) {
+		return false;
+	}
+	const physx::PxTransform hit_pose = physx::PxShapeExt::getGlobalPose(*p_hit.shape, *p_hit.actor);
+	physx::PxTriangle tri;
+	if (geom_type == physx::PxGeometryType::eTRIANGLEMESH) {
+		physx::PxMeshQuery::getTriangle(
+				static_cast<const physx::PxTriangleMeshGeometry &>(p_hit.shape->getGeometry()),
+				hit_pose, p_hit.faceIndex, tri);
+	} else {
+		physx::PxMeshQuery::getTriangle(
+				static_cast<const physx::PxHeightFieldGeometry &>(p_hit.shape->getGeometry()),
+				hit_pose, p_hit.faceIndex, tri);
+	}
+	tri.normal(r_normal);
+	return !r_normal.isZero();
+}
 
-	// A genuine blocking hit opposes the motion; a grazing/edge contact has a
-	// normal along (or barely against) the sweep direction.
-	return r_normal.dot(p_dir) < -0.001f;
+// Evaluates one FORWARD sweep hit (distance > 0): writes the normal to report
+// (the re-derived face normal when the triangle winding agrees with the
+// reported normal, otherwise the reported normal itself) and returns false
+// only for the mesh edge-artifact case described above. Primitive hits are
+// always blocking.
+static bool _sweep_forward_hit_blocking(const physx::PxSweepHit &p_hit, physx::PxVec3 &r_normal) {
+	r_normal = p_hit.normal;
+
+	physx::PxVec3 face_n;
+	if (_sweep_hit_face_normal(p_hit, face_n)) {
+		if (face_n.dot(p_hit.normal) < 0.0f) {
+			// The triangle's winding faces the opposite way of the reported
+			// contact — the sweep caught the shared edge between facets, not
+			// the surface the motion ran into. Not a forward block.
+			return false;
+		}
+		r_normal = face_n;
+	}
+	return true;
 }
 
 bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const PhysicsServer3D::MotionParameters &p_parameters, PhysicsServer3D::MotionResult *r_result) const {
@@ -807,33 +866,43 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
     // RECOVER (Depenetrate initial overlaps)
     Vector3 recovery;
     bool recovered = _body_motion_recover(p_body, transform, margin, self_and_excluded, p_parameters.exclude_objects, recovery);
-    if (!p_parameters.recovery_as_collision) {
-        // The MTD is folded into travel below; lift the pose used for the
-        // subsequent cast so the sweep starts from the depenetrated position.
-        transform.origin += recovery;
-    }
+    // Godot always lifts the working pose by the recovery (godot_space_3d
+    // test_body_motion: body_transform.origin += recover_motion) — the cast
+    // and contact gather must run from the depenetrated position in both
+    // recovery_as_collision modes, or the reported contacts disagree with
+    // travel.
+    transform.origin += recovery;
+
+    const float effective_margin = MAX(margin, 0.0001f);
+    const float min_contact_depth = effective_margin * 0.05f;
+    const float motion_length = motion.length();
+    // Contacts shallower than this are rest separation, not collisions
+    // (godot_space_3d: min_allowed_depth = MIN(motion_length, min_contact_depth)).
+    const float min_allowed_depth = MIN(motion_length, min_contact_depth);
 
     // CAST (Sweep the motion)
     real_t safe_fraction = 1.0;
     real_t unsafe_fraction = 1.0;
     Vector3 hit_position;
     Vector3 hit_normal;
+    real_t hit_depth = 0.0;
+    int hit_local_shape = -1;
     const physx::PxRigidActor *hit_actor = nullptr;
     const physx::PxShape *hit_shape = nullptr;
 
-    bool hit = _body_motion_cast(p_body, transform, motion, p_parameters.collide_separation_ray, self_and_excluded, p_parameters.exclude_objects, safe_fraction, unsafe_fraction, hit_position, hit_normal, hit_actor, hit_shape);
+    bool hit = _body_motion_cast(p_body, transform, motion, p_parameters.collide_separation_ray, min_contact_depth, self_and_excluded, p_parameters.exclude_objects, safe_fraction, unsafe_fraction, hit_position, hit_normal, hit_depth, hit_local_shape, hit_actor, hit_shape);
 
     if (r_result) {
-        // When recovery_as_collision is true and recovery occurred, we still run the cast.
-        // The collision result depends on whether the cast hit AND whether a rest contact
-        // exists at the recovered position (mirrors godot_space_3d.cpp:929).
+        // The collision/contact gather runs at the unsafe pose (Godot: ugt =
+        // body_transform + motion * unsafe) — with recovery_as_collision and
+        // no cast hit that is the full-motion pose, mirroring the reference.
         if (p_parameters.recovery_as_collision && recovered) {
             if (hit) {
                 // Cast hit: collide at the unsafe position and combine with recovery.
                 Transform3D hit_transform = transform;
                 hit_transform.origin += motion * unsafe_fraction;
-                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, self_and_excluded, p_parameters.exclude_objects, r_result);
-                _fill_collision_from_sweep(r_result, p_body, hit_position, hit_normal, hit_actor, hit_shape);
+                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, self_and_excluded, p_parameters.exclude_objects, r_result);
+                _fill_collision_from_sweep(r_result, hit_position, hit_normal, hit_depth, hit_local_shape, hit_actor, hit_shape);
 
                 r_result->travel = motion * safe_fraction + recovery;
                 r_result->remainder = motion - motion * safe_fraction;
@@ -841,11 +910,13 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 r_result->collision_safe_fraction = safe_fraction;
             } else {
                 // No cast hit: recovery alone can be the collision, but only if
-                // the contact pass at the recovered pose actually found
+                // the contact pass at the unsafe pose actually found
                 // touching/overlapping shapes — Godot never reports a hit with
                 // an empty collision list (CharacterBody3D would hand out
                 // slide collisions with no contacts).
-                _body_motion_collide(p_body, transform, Vector3(), p_parameters.max_collisions, self_and_excluded, p_parameters.exclude_objects, r_result);
+                Transform3D hit_transform = transform;
+                hit_transform.origin += motion * unsafe_fraction;
+                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, self_and_excluded, p_parameters.exclude_objects, r_result);
                 r_result->travel = motion + recovery;
                 r_result->remainder = Vector3();
                 r_result->collision_safe_fraction = 1.0;
@@ -864,13 +935,14 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 // COLLIDE (Generate detailed manifold at the hit location)
                 Transform3D hit_transform = transform;
                 hit_transform.origin += motion * unsafe_fraction;
-                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, self_and_excluded, p_parameters.exclude_objects, r_result);
+                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, self_and_excluded, p_parameters.exclude_objects, r_result);
 
                 // The collide phase overlaps the shape at the contact pose; at
                 // exact touch there is no penetration, so it can come back
-                // empty. Godot still reports the blocking collision —
-                // synthesize it from the sweep hit.
-                _fill_collision_from_sweep(r_result, p_body, hit_position, hit_normal, hit_actor, hit_shape);
+                // empty (same for computePenetration-rejected trimesh
+                // contacts in the stuck case). Godot still reports the
+                // blocking collision — synthesize it from the sweep hit.
+                _fill_collision_from_sweep(r_result, hit_position, hit_normal, hit_depth, hit_local_shape, hit_actor, hit_shape);
 
                 // travel = swept motion up to the safe fraction, plus the recovery offset
                 // applied to the transform above (matches Godot: from + travel == final pos).
@@ -880,6 +952,14 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 r_result->collision_safe_fraction = safe_fraction;
             }
         }
+
+        // Godot reports collision_depth as the deepest contact length
+        // (godot_space_3d: r_result->collision_depth = rcd.best_result.len).
+        real_t deepest = 0.0;
+        for (int i = 0; i < r_result->collision_count; ++i) {
+            deepest = MAX(deepest, r_result->collisions[i].depth);
+        }
+        r_result->collision_depth = deepest;
     }
 
     // An initial penetration counts as a collision only when the caller asked
@@ -891,7 +971,20 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
     return hit || (p_parameters.recovery_as_collision && recovered && r_result != nullptr && r_result->collision_count > 0);
 }
 
-bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin, 
+// The collider body's collision_priority (Godot: weights test-motion recovery;
+// godot_space_3d reads it per contact). Non-body actors weight 1.0.
+static real_t _collision_priority_of(const physx::PxRigidActor *p_actor) {
+    if (p_actor && p_actor->userData) {
+        const auto *actor_data = static_cast<const PhysXActorUserData *>(p_actor->userData);
+        const PhysXObject3D *obj = actor_data->object;
+        if (obj && obj->get_type() == PhysXObject3D::OBJECT_TYPE_BODY) {
+            return static_cast<const PhysXBody3D *>(obj)->get_collision_priority();
+        }
+    }
+    return 1.0;
+}
+
+bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin,
     const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, Vector3 &r_recovery) const {
 
     r_recovery = Vector3();
@@ -945,7 +1038,7 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
         Transform3D current_transform = p_transform;
         current_transform.origin += total_recovery;
 
-        Vector3 step_recovery;
+        _recover_scratch.clear();
         bool penetrating_in_this_iter = false;
 
         for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
@@ -988,7 +1081,7 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                             // so depth = ray_length - distance is positive while penetrating.
                             const float penetration_depth = ray_length - ray_hit.block.distance;
 
-                            if (penetration_depth > MIN_PENETRATION_THRESHOLD) {
+                            if (penetration_depth - min_contact_depth > MIN_PENETRATION_THRESHOLD) {
                                 penetrating_in_this_iter = true;
                                 // Godot's separation-ray contact
                                 // (GodotCollisionSolver3D::solve_separation_ray): with
@@ -1000,18 +1093,8 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                                         ? ray_hit.block.normal
                                         : -px_shape_dir;
                                 const Vector3 push_dir(push_dir_px.x, push_dir_px.y, push_dir_px.z);
-                                const Vector3 pen_vec = push_dir * penetration_depth;
-                                if (step_recovery.length_squared() == 0.0f) {
-                                    step_recovery = pen_vec;
-                                } else {
-                                    const float dot = step_recovery.normalized().dot(push_dir);
-                                    if (dot < 0.0f) {
-                                        const Vector3 sub = push_dir * dot * step_recovery.length();
-                                        step_recovery += pen_vec - sub;
-                                    } else {
-                                        step_recovery += pen_vec;
-                                    }
-                                }
+                                _recover_scratch.push_back({push_dir, penetration_depth - min_contact_depth,
+                                        _collision_priority_of(ray_hit.block.actor)});
                             }
                         }
                     }
@@ -1049,28 +1132,51 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                     if (is_pen && effective_depth > MIN_PENETRATION_THRESHOLD) {
                         penetrating_in_this_iter = true;
                         Vector3 recovery_dir(mtd_dir.x, mtd_dir.y, mtd_dir.z);
-                        Vector3 pen_vector = recovery_dir * effective_depth;
-
-                        if (step_recovery.length_squared() == 0.0f) {
-                            step_recovery = pen_vector;
-                        } else {
-                            float dot = step_recovery.normalized().dot(recovery_dir);
-                            if (dot < 0.0f) {
-                                pen_vector -= recovery_dir * dot * step_recovery.length();
-                            }
-                            step_recovery += pen_vector;
-                        }
+                        _recover_scratch.push_back({recovery_dir, effective_depth,
+                                _collision_priority_of(overlap.actor)});
                     }
                 }
             }
         }
 
-        if (!penetrating_in_this_iter || step_recovery.length_squared() < MIN_PENETRATION_THRESHOLD) {
+        if (!penetrating_in_this_iter || _recover_scratch.is_empty()) {
+            break;
+        }
+        recovered = true;
+
+        // Godot weights each contact by the collider body's collision_priority,
+        // normalized so the average contact weights 1
+        // (godot_space_3d: inv_total_weight = amount / total_weight, 1.0 when
+        // the total is zero). Each contact then applies 40% of its remaining
+        // MTD along the push-out direction.
+        real_t total_weight = 0.0;
+        for (physx::PxU32 c = 0; c < _recover_scratch.size(); ++c) {
+            total_weight += _recover_scratch[c].weight;
+        }
+        const real_t inv_total_weight = Math::is_zero_approx(total_weight)
+                ? 1.0
+                : (real_t)_recover_scratch.size() / total_weight;
+
+        Vector3 step_recovery;
+        for (physx::PxU32 c = 0; c < _recover_scratch.size(); ++c) {
+            const RecoverContact &contact = _recover_scratch[c];
+            // Reference projection (godot_space_3d): each contact contributes
+            // against the recovery accumulated SO FAR — recover shrinks the
+            // residual of contacts it already moved away from, so contact
+            // order cannot double-count or cancel weighted contributions.
+            const real_t residual = contact.depth - contact.normal.dot(step_recovery);
+            if (residual > MIN_PENETRATION_THRESHOLD) {
+                step_recovery += contact.normal * (residual * recovery_scale * contact.weight * inv_total_weight);
+            }
+        }
+
+        if (step_recovery.length_squared() < MIN_PENETRATION_THRESHOLD) {
+            // Weighted contacts cancelled out (e.g. all priorities zero, the
+            // reference's recover_motion == Vector3() stop).
             break;
         }
 
-        total_recovery += step_recovery * recovery_scale;
-        recovered = true;
+        total_recovery += step_recovery;
     }
 
     r_recovery = total_recovery;
@@ -1078,12 +1184,14 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
 }
 
 bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const Transform3D &p_transform,
-    const Vector3 &p_motion, bool p_collide_separation_ray, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
-    real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal,
+    const Vector3 &p_motion, bool p_collide_separation_ray, float p_rest_slack, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
+    real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal, real_t &r_hit_depth, int &r_hit_local_shape,
     const physx::PxRigidActor *&r_hit_actor, const physx::PxShape *&r_hit_shape) const {
 
     r_safe_fraction = 1.0;
     r_unsafe_fraction = 1.0;
+    r_hit_depth = 0.0;
+    r_hit_local_shape = -1;
 
     if (!space || !space->get_px_scene()) {
         return false;
@@ -1120,27 +1228,38 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
     filter_cb.exclude_rids = &p_self_and_excluded;
     filter_cb.exclude_objects = &p_excluded_objects;
     filter_cb.motion_body = &p_body;
-    // _body_motion_cast is single-hit — keep eBLOCK for the closest hit.
+    filter_cb.multi_hit = true; ///< collect all touched shapes; overlapped objects are skipped per-object below
 
     physx::PxQueryFilterData filter_data;
     filter_data.flags = physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::ePREFILTER;
 
     // eMTD makes initial-contact sweeps report a well-defined MTD distance
-    // (negative while penetrating, zero while merely touching) together with
-    // the MTD normal/position, instead of distance==0 with undefined fields.
-    // The initial-contact logic below relies on both being well-defined.
+    // (negative while penetrating) together with the MTD normal/position,
+    // instead of distance==0 with undefined fields. The stuck handling below
+    // relies on both being well-defined.
     physx::PxHitFlags sweep_hit_flags = physx::PxHitFlag::ePOSITION | physx::PxHitFlag::eNORMAL | physx::PxHitFlag::eFACE_INDEX | physx::PxHitFlag::eMTD;
 
     bool hit_any = false;
     float min_hit_distance = motion_length;
+    int min_hit_shape = -1;
     Vector3 best_position;
     Vector3 best_normal;
     const physx::PxRigidActor *best_actor = nullptr;
     const physx::PxShape *best_shape = nullptr;
 
+    // Godot's stuck semantics (godot_space_3d test_body_motion): when a mover
+    // shape still overlaps an object at the (recovered) start pose, the motion
+    // is fully blocked — safe = unsafe = 0. Shapes the mover merely starts
+    // inside of are otherwise DISREGARDED per object, so a forward blocker
+    // behind the overlapped one still bounds the motion.
+    bool stuck = false;
+    real_t deepest_overlap = 0.0f;
+    const physx::PxSweepHit *stuck_hit = nullptr;
+    int stuck_shape = -1;
+
     for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
         physx::PxShape *shape = shapes[s];
-        
+
         // Calculate body pose once per shape iteration
         Quaternion q = p_transform.basis.get_rotation_quaternion();
         physx::PxTransform body_pose(
@@ -1168,59 +1287,80 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
             }
         }
 
-        // Regular shapes: sweep as before
+        // Regular shapes: touch-capable sweep (see cast_motion for why a
+        // single closest-block sweep cannot express the Godot contract).
         physx::PxGeometryHolder geom = shape->getGeometry();
         physx::PxTransform shape_pose = body_pose * shape->getLocalPose();
 
-        physx::PxSweepBuffer sweep_hit;
-        if (space->get_px_scene()->sweep(geom.any(), shape_pose, px_dir, motion_length, sweep_hit, sweep_hit_flags, filter_data, &filter_cb)) {
-            if (sweep_hit.hasBlock) {
-                // Initial-contact handling (REG-0012): the recover phase already
-                // depenetrated the body before this cast, so a sweep may start
-                // merely touching (distance == 0) or still penetrating
-                // (distance < 0 under eMTD). PhysX reports that as a
-                // zero/negative-distance block hit, which would clamp travel to
-                // the recovery MTD alone and freeze the motion. Only count it
-                // as a blocking hit when the motion drives the shape INTO the
-                // surface (against the MTD normal); separating or tangential
-                // motion passes through — the MTD is already folded into travel
-                // by the caller, so the shape is ejected as expected.
-                // The MTD normal (a push-out direction) is kept as-reported for
-                // those hits; internal-edge re-derivation applies to forward
-                // hits only.
-                const physx::PxVec3 *reported_normal = &sweep_hit.block.normal;
-                if (sweep_hit.block.distance > 0.0f) {
-                    // Internal-edge handling: a forward hit on a triangle
-                    // mesh/heightfield may carry an edge-derived or
-                    // contradictory normal. Re-derive the face normal and
-                    // require the hit to oppose the motion.
-                    physx::PxVec3 face_normal;
-                    if (!_sweep_hit_opposing_normal(sweep_hit.block, px_dir, face_normal)) {
-                        continue; // grazing/edge contact: not a forward block
-                    }
-                    reported_normal = &face_normal;
-                } else {
-                    const Vector3 mtd_normal(sweep_hit.block.normal.x, sweep_hit.block.normal.y, sweep_hit.block.normal.z);
-                    if (mtd_normal.dot(dir) >= 0.0f) {
-                        continue; // separating or tangential: not a forward block
-                    }
-                }
+        const physx::PxU32 touch_max = PHYSX_QUERY_MAX_RESULTS;
+        if (_sweep_touch_scratch.size() < touch_max) {
+            _sweep_touch_scratch.resize(touch_max);
+        }
+        physx::PxHitBuffer<physx::PxSweepHit> sweep_hit(_sweep_touch_scratch.ptr(), touch_max);
+        space->get_px_scene()->sweep(geom.any(), shape_pose, px_dir, motion_length, sweep_hit, sweep_hit_flags, filter_data, &filter_cb);
 
-                if (sweep_hit.block.distance < min_hit_distance) {
-                    min_hit_distance = sweep_hit.block.distance;
-                    hit_any = true;
-                    best_position = Vector3(sweep_hit.block.position.x, sweep_hit.block.position.y, sweep_hit.block.position.z);
-                    best_normal = Vector3(reported_normal->x, reported_normal->y, reported_normal->z);
-                    best_actor = sweep_hit.block.actor;
-                    best_shape = sweep_hit.block.shape;
+        bool shape_overlapped = false;
+        for (physx::PxU32 i = 0; i < sweep_hit.nbTouches; ++i) {
+            const physx::PxSweepHit &touch = sweep_hit.getTouch(i);
+
+            if (touch.hadInitialOverlap()) {
+                // Overlaps within the recovery slack are rest separation (the
+                // recovery floor leaves bodies at this depth on purpose) —
+                // disregard them exactly like godot_physics's post-ejection
+                // state. Deeper survivors mean the ejection failed: the body
+                // is stuck. (godot_physics never reaches this state for
+                // slack-level overlaps because its margin-inflated recovery
+                // ejects to margin separation; see the documented module gap
+                // on query-margin inflation.)
+                if (-touch.distance > p_rest_slack) {
+                    shape_overlapped = true;
+                    if (!stuck_hit || touch.distance < deepest_overlap) {
+                        deepest_overlap = touch.distance;
+                        stuck_hit = &touch;
+                        stuck_shape = (int)s;
+                    }
                 }
+                continue;
+            }
+
+            physx::PxVec3 face_normal;
+            if (!_sweep_forward_hit_blocking(touch, face_normal)) {
+                continue; // mesh edge artifact: not a forward block
+            }
+
+            if (touch.distance <= min_hit_distance) {
+                min_hit_distance = touch.distance;
+                hit_any = true;
+                min_hit_shape = (int)s;
+                best_position = Vector3(touch.position.x, touch.position.y, touch.position.z);
+                best_normal = Vector3(face_normal.x, face_normal.y, face_normal.z);
+                best_actor = touch.actor;
+                best_shape = touch.shape;
             }
         }
+        stuck = stuck || shape_overlapped;
+    }
+
+    if (stuck) {
+        // Godot: safe = unsafe = 0, the stuck mover shape is the reported
+        // local shape. Report the deepest surviving overlap (its eMTD fields
+        // are well-defined); the caller's collide phase adds the full contact
+        // manifold, and _fill_collision_from_sweep covers computePenetration-
+        // rejected trimesh/heightfield contacts from this hit.
+        r_safe_fraction = 0.0;
+        r_unsafe_fraction = 0.0;
+        if (stuck_hit) {
+            r_hit_position = Vector3(stuck_hit->position.x, stuck_hit->position.y, stuck_hit->position.z);
+            r_hit_normal = Vector3(stuck_hit->normal.x, stuck_hit->normal.y, stuck_hit->normal.z);
+            r_hit_depth = MAX(0.0, -(real_t)stuck_hit->distance);
+            r_hit_local_shape = stuck_shape;
+            r_hit_actor = stuck_hit->actor;
+            r_hit_shape = stuck_hit->shape;
+        }
+        return true;
     }
 
     if (hit_any) {
-        // Initial-contact hits carry distance <= 0 (eMTD: negative while
-        // penetrating); clamp the fraction so safe/unsafe stay within [0, 1].
         real_t hit_fraction = CLAMP(min_hit_distance / motion_length, 0.0, 1.0);
 
         r_unsafe_fraction = hit_fraction;
@@ -1228,6 +1368,8 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
         r_safe_fraction = MAX(0.0, hit_fraction - (1e-4f / motion_length));
         r_hit_position = best_position;
         r_hit_normal = best_normal;
+        r_hit_depth = 0.0;
+        r_hit_local_shape = min_hit_shape;
         r_hit_actor = best_actor;
         r_hit_shape = best_shape;
         return true;
@@ -1236,9 +1378,9 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
 }
 
 bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion,
-    int p_max_collisions, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
+    int p_max_collisions, float p_min_allowed_depth, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
     PhysicsServer3D::MotionResult *r_result) const {
-        
+
     if (!r_result || !space || !space->get_px_scene() || p_max_collisions <= 0) {
         return false;
     }
@@ -1271,15 +1413,16 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
     physx::PxQueryFilterData filter_data;
     filter_data.flags = physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::ePREFILTER;
 
+    // Godot's contact gather keeps the DEEPEST contacts first
+    // (godot_space_3d _rest_cbk_result) and discards contacts shallower than
+    // min_allowed_depth (rest separation, not a collision). Stage every
+    // contact, then sort deepest-first and report the top max_collisions.
     r_result->collision_count = 0;
+    _collide_scratch.clear();
 
     const int max_cols = MIN(p_max_collisions, PhysicsServer3D::MotionResult::MAX_COLLISIONS);
 
     for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
-        if (r_result->collision_count >= max_cols) {
-            break;
-        }
-
         physx::PxShape *body_shape = shapes[s];
 
         // Handle separation-ray shapes in collide phase (when collide_separation_ray is true)
@@ -1310,7 +1453,7 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
                 physx::PxRaycastBuffer ray_hit;
                 if (space->get_px_scene()->raycast(shape_pose.p, px_shape_dir, ray_length, ray_hit, physx::PxHitFlag::ePOSITION | physx::PxHitFlag::eNORMAL, filter_data, &filter_cb)) {
                     if (ray_hit.hasBlock) {
-                        PhysicsServer3D::MotionCollision &col = r_result->collisions[r_result->collision_count];
+                        PhysicsServer3D::MotionCollision col;
 
                         // Same normal contract as the recover phase (Godot's
                         // solve_separation_ray): surface normal with
@@ -1338,12 +1481,19 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
                             col.collider_shape = 0;
                         }
 
-                        const int local_idx = p_body.find_shape_index(body_shape);
-                        col.local_shape = local_idx >= 0 ? local_idx : (int)s;
+                        col.local_shape = (int)s;
 
-                        col.collider_velocity = Vector3();
-                        col.collider_angular_velocity = Vector3();
-                        r_result->collision_count++;
+                        if (ray_hit.block.actor && ray_hit.block.actor->is<physx::PxRigidDynamic>()) {
+                            physx::PxRigidDynamic *dyn = static_cast<physx::PxRigidDynamic*>(ray_hit.block.actor);
+                            const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*dyn, ray_hit.block.position);
+                            col.collider_velocity = Vector3(v.x, v.y, v.z);
+                            const physx::PxVec3 ang_vel = dyn->getAngularVelocity();
+                            col.collider_angular_velocity = Vector3(ang_vel.x, ang_vel.y, ang_vel.z);
+                        } else {
+                            col.collider_velocity = Vector3();
+                            col.collider_angular_velocity = Vector3();
+                        }
+                        _collide_scratch.push_back(col);
                     }
                 }
                 continue;
@@ -1351,12 +1501,7 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
         }
 
         // Regular shapes: overlap-based collide
-        if (r_result->collision_count >= max_cols) {
-            break;
-        }
-
-        physx::PxShape *regular_shape = shapes[s];
-        physx::PxGeometryHolder body_geom = regular_shape->getGeometry();
+        physx::PxGeometryHolder body_geom = body_shape->getGeometry();
 
         Quaternion q = p_transform.basis.get_rotation_quaternion();
         physx::PxTransform body_pose(
@@ -1371,10 +1516,6 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
 
         if (space->get_px_scene()->overlap(body_geom.any(), global_shape_pose, hits, filter_data, &filter_cb)) {
             for (physx::PxU32 i = 0; i < hits.getNbAnyHits(); ++i) {
-                if (r_result->collision_count >= max_cols) {
-                    break;
-                }
-
                 const physx::PxOverlapHit &overlap = hits.getAnyHit(i);
 
                 physx::PxGeometryHolder hit_geom = overlap.shape->getGeometry();
@@ -1389,14 +1530,16 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
                     hit_geom.any(), hit_pose
                 );
 
-                if (is_pen) {
-                    PhysicsServer3D::MotionCollision &col = r_result->collisions[r_result->collision_count];
+                // Godot: contacts shallower than min_allowed_depth are rest
+                // separation, not a collision (MIN(motion_length, margin*0.05)).
+                if (is_pen && (real_t)penetration_depth >= (real_t)p_min_allowed_depth) {
+                    PhysicsServer3D::MotionCollision col;
 
                     col.normal = Vector3(mtd_dir.x, mtd_dir.y, mtd_dir.z);
-                    
+
                     physx::PxVec3 contact_pt = global_shape_pose.p - (mtd_dir * (penetration_depth * 0.5f));
                     col.position = Vector3(contact_pt.x, contact_pt.y, contact_pt.z);
-                    
+
                     col.depth = penetration_depth;
 
                     if (overlap.actor && overlap.actor->userData) {
@@ -1419,19 +1562,32 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
 
                     if (overlap.actor->is<physx::PxRigidDynamic>()) {
                         physx::PxRigidDynamic *dyn = static_cast<physx::PxRigidDynamic*>(overlap.actor);
-                        physx::PxVec3 lin_vel = dyn->getLinearVelocity();
-                        physx::PxVec3 ang_vel = dyn->getAngularVelocity();
-
-                        col.collider_velocity = Vector3(lin_vel.x, lin_vel.y, lin_vel.z);
+                        // Godot reports the collider's velocity AT the contact,
+                        // including the angular lever arm (linear + ω×r).
+                        const physx::PxVec3 v = physx::PxRigidBodyExt::getVelocityAtPos(*dyn, contact_pt);
+                        col.collider_velocity = Vector3(v.x, v.y, v.z);
+                        const physx::PxVec3 ang_vel = dyn->getAngularVelocity();
                         col.collider_angular_velocity = Vector3(ang_vel.x, ang_vel.y, ang_vel.z);
                     } else {
                         col.collider_velocity = Vector3();
                         col.collider_angular_velocity = Vector3();
                     }
-                    r_result->collision_count++;
+                    _collide_scratch.push_back(col);
                 }
             }
         }
     }
-    return r_result->collision_count > 0;
+
+    // Deepest contacts first, then the top max_collisions are reported.
+    if (!_collide_scratch.is_empty()) {
+        SortArray<PhysicsServer3D::MotionCollision, DeeperContactFirst> sorter;
+        sorter.sort(_collide_scratch.ptr(), _collide_scratch.size());
+    }
+
+    const int reported = MIN((int)_collide_scratch.size(), max_cols);
+    for (int i = 0; i < reported; ++i) {
+        r_result->collisions[i] = _collide_scratch[i];
+    }
+    r_result->collision_count = reported;
+    return reported > 0;
 }
