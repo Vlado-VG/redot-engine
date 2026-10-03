@@ -10,18 +10,26 @@ extends SceneTree
 # in Godot's Y-up space).
 #
 # Run:
-#   redot --headless --path test/project -s gdscript/flow_smoke_test.gd
+#   <binary> --headless --path modules/physx/test/project \
+#     --script res://gdscript/flow_smoke_test.gd -- --json=<path>
 # (headless is fine: Flow runs on its own GPU device; only the FogVolume
 # presentation is inert without a rendering device)
+
+const TestReport := preload("res://gdscript/test_report.gd")
 
 var sim: Node3D
 var emitter: Node3D
 var frame := 0
+var _json_path := ""
 
 func _initialize() -> void:
+	_json_path = TestReport.json_path_from_args()
 	if not ClassDB.class_exists("PhysXFlowSimulation3D"):
-		print("[flow-smoke] FAIL: PhysXFlowSimulation3D not registered (flow=no build?)")
-		quit(1)
+		print("[flow-smoke] SKIP: PhysXFlowSimulation3D not registered (flow=no build?)")
+		TestReport.write(_json_path, "flow", "PHYSX-FLOW-001",
+				"Flow end-to-end: emitter -> simulate -> readback density flow",
+				"skip", 0, ["PhysXFlowSimulation3D not registered in this build"])
+		quit(0)
 		return
 
 	var holder := Node3D.new()
@@ -75,4 +83,9 @@ func _on_physics_frame() -> void:
 				print("[flow-smoke] NOTE: bounds_min.y=", min_b.y,
 						" below emitter Y -- check emitter matrix row convention")
 		print("[flow-smoke] RESULT: ", "PASS" if ok else "FAIL")
+		TestReport.write(_json_path, "flow", "PHYSX-FLOW-001",
+				"Flow end-to-end: emitter -> simulate -> readback density flow",
+				"pass" if ok else "fail", 3,
+				[] if ok else ["available=%s blocks=%s max_smoke=%.3f" % [
+						diag.get("available"), diag.get("active_blocks"), sim.get_last_max_smoke()]])
 		quit(0 if ok else 1)

@@ -8,7 +8,10 @@ extends SceneTree
 #   4. telemetry getters return live values (wheel rpm, skid, contact).
 #
 # Run:
-#   redot --headless --path test/project -s gdscript/vehicle_gearbox_test.gd
+#   <binary> --headless --path modules/physx/test/project \
+#     --script res://gdscript/vehicle_gearbox_test.gd -- --json=<path>
+
+const TestReport := preload("res://gdscript/test_report.gd")
 
 var car: Node
 var frame := 0
@@ -19,8 +22,10 @@ var fwd_at_rev_end := 0.0
 var rev_pos := Vector3.ZERO
 var rev_contact := {}
 var neutral_pos := Vector3.ZERO
+var _json_path := ""
 
 func _initialize() -> void:
+	_json_path = TestReport.json_path_from_args()
 	var ground: Node = ClassDB.instantiate("StaticBody3D")
 	root.add_child(ground)
 	var gs: Node = ClassDB.instantiate("CollisionShape3D")
@@ -61,6 +66,9 @@ func _initialize() -> void:
 	# instead of testing direct drive as if it were engine drive.
 	if not bool(car.get("use_gearbox")):
 		print("[gearbox] SKIP: engine drive is blocked (setter refused) -- direct drive remains available")
+		TestReport.write(_json_path, "vehicle", "PHYSX-VEHN-002",
+				"engine-drive gearbox: spin-up, autobox shifts, reverse, neutral hold",
+				"skip", 0, ["use_gearbox setter refused to enable"])
 		quit(0)
 		return
 
@@ -138,4 +146,7 @@ func _tick() -> void:
 				" fwd3s=%.1f revFwd=%.1f endFwd=%.2f pos.z=%.1f max_rpm=%.0f gears=%s contact=%s" % [
 				fwd_at_3s, fwd_at_rev_end, fwd, rev_pos.z, max_rpm, gears_seen.keys(),
 				rev_contact.get("contact")])
+		TestReport.write(_json_path, "vehicle", "PHYSX-VEHN-002",
+				"engine-drive gearbox: spin-up, autobox shifts, reverse, neutral hold",
+				"pass" if failures.is_empty() else "fail", 9, failures)
 		quit(0 if failures.is_empty() else 1)

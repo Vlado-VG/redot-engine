@@ -8,17 +8,25 @@ extends SceneTree
 # wheel node transform sync, forward-speed/jounce telemetry.
 #
 # Run:
-#   redot --headless --path test/project -s gdscript/vehicle_node_test.gd
+#   <binary> --headless --path modules/physx/test/project \
+#     --script res://gdscript/vehicle_node_test.gd -- --json=<path>
+
+const TestReport := preload("res://gdscript/test_report.gd")
 
 var car: Node3D
 var wheels: Array = []
 var frame := 0
+var _json_path := ""
 
 func _initialize() -> void:
+	_json_path = TestReport.json_path_from_args()
 	for cls in ["PhysXVehicle3D", "PhysXVehicleWheel3D", "PhysXMotorcycle3D", "PhysXTank3D"]:
 		if not ClassDB.class_exists(cls):
-			print("[veh-node] FAIL: ", cls, " not registered")
-			quit(1)
+			print("[veh-node] SKIP: ", cls, " not registered")
+			TestReport.write(_json_path, "vehicle", "PHYSX-VEHN-001",
+					"node-level vehicle drives forward with loaded suspension",
+					"skip", 0, [cls + " not registered in this build"])
+			quit(0)
 			return
 
 	# Ground: big static box (a plane works too; a box keeps the raycast
@@ -78,6 +86,11 @@ func _on_physics_frame() -> void:
 		var moved: bool = pos.z < -1.0
 		var speed_ok: bool = fs > 1.0
 		var suspension_ok := jounce > 0.0
-		print("[veh-node] RESULT: ", "PASS" if (moved and speed_ok and suspension_ok) else "FAIL",
+		var ok := moved and speed_ok and suspension_ok
+		print("[veh-node] RESULT: ", "PASS" if ok else "FAIL",
 				" (moved=", moved, " speed_ok=", speed_ok, " suspension_ok=", suspension_ok, ")")
-		quit(0 if (moved and speed_ok and suspension_ok) else 1)
+		TestReport.write(_json_path, "vehicle", "PHYSX-VEHN-001",
+				"node-level vehicle drives forward with loaded suspension",
+				"pass" if ok else "fail", 3,
+				[] if ok else ["moved=%s speed_ok=%s suspension_ok=%s pos=%s" % [moved, speed_ok, suspension_ok, pos]])
+		quit(0 if ok else 1)

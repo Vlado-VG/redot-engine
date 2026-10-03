@@ -1,6 +1,6 @@
-# PhysX 5.8 Backend — Automated Integration & Torture Test Suite
+# PhysX 5.11 Backend — Automated Integration & Torture Test Suite
 
-Automated, headless, CI-ready test suite for the custom PhysX 5.8
+Automated, headless, CI-ready test suite for the custom PhysX 5.11
 `PhysicsServer3D` backend (`modules/physx`). This is **not** a visual debugging
 laboratory — there is no UI, no interactive controls, no rendered inspection.
 Every check is programmatic and every run produces a console report, a
@@ -12,7 +12,7 @@ The chain under test:
 C# / .NET  ─┐
             ├─> Godot PhysicsServer3D API ─> custom PhysX module ─> RID/resource
 GDScript  ─┘                                 management ─> Godot/PhysX conversion
-                                              ─> PhysX 5.8 ─> simulation ─> sync
+                                              ─> PhysX 5.11 ─> simulation ─> sync
                                               ─> PhysicsServer3D results
 ```
 
@@ -33,22 +33,47 @@ modules/physx/test/
     gdscript/
       gdscript_binding_tests.gd   BINDING-VALIDATION SUITE (GDScript, smaller)
       physx_vehicle_bridge.gd     GDScript bridge for module vehicle API
-      blast_smoke_test.gd         standalone Blast smoke test (authoring + destructible)
-                                  run: --script res://gdscript/blast_smoke_test.gd
+      test_report.gd              shared --json= report writer for the
+                                  standalone smoke suites below
+      physics_smoke_test.gd       node-level drop/settle smoke test
+      blast_smoke_test.gd         Blast suite: authoring + .tres round-trip +
+                                  destructible radial damage (SKIP on blast=no)
+      vehicle_server_check.gd     vehicle suite: server-RID drive + telemetry
+      vehicle_node_test.gd        vehicle suite: node-level PhysXVehicle3D drive
+      vehicle_gearbox_test.gd     vehicle suite: engine drive/autobox/reverse/neutral
+      flow_smoke_test.gd          Flow suite: emitter -> simulate -> readback
+                                  (SKIP on flow=no; needs a Vulkan device)
+      gpu_smoke_test.gd           GPU suite: cloth GPU/CPU paths + PBD fluid
+                                  (needs a CUDA device; opt-in)
+      mpm_foam_test.gd            windowed-only MPM/foam/fluid experiments
+      mpm_foam_stream_test.gd     (NOT wired into the driver: MPM needs a
+      mpm_tank_containment_test.gd rendering device, i.e. a windowed run)
+      async_churn_test.gd         windowed async-step GPU churn soak
+      iteration_bench.gd          solver-iteration A/B benchmark (manual)
   run_suite.py                    CI driver: tiers, crash detection, JSON merge
   README.md                       this file
 ```
 
-## Two suites, two purposes (failures are reported separately)
+## Suites (what `--suite` selects; `--suite all` = the blocking default set)
 
-| Suite          | Language | Purpose                                                        |
-|----------------|----------|----------------------------------------------------------------|
-| `tests/csharp` | C#/.NET  | Exhaustive behavioral/torture/regression testing of the backend |
-| `gdscript/`    | GDScript | Validates the same backend through the GDScript binding layer   |
+| Suite     | Scripts | Purpose | Runs in the blocking default set |
+|-----------|---------|---------|----------------------------------|
+| `csharp`  | `tests/csharp/TestMain.cs` | Exhaustive behavioral/torture/regression backend testing (canonical) | yes |
+| `gdscript`| `gdscript_binding_tests.gd` | Same backend through the GDScript binding layer | yes |
+| `smoke`   | `physics_smoke_test.gd` | Node-level drop/settle end-to-end sanity | yes |
+| `blast`   | `blast_smoke_test.gd` | Blast authoring + destructible lifecycle (skips itself on `blast=no` builds) | yes |
+| `vehicle` | `vehicle_server_check.gd`, `vehicle_node_test.gd`, `vehicle_gearbox_test.gd` | Server-RID + node vehicle stacks, engine drive/gearbox | yes |
+| `flow`    | `flow_smoke_test.gd` | NVIDIA Flow end-to-end (needs a Vulkan runtime) | opt-in |
+| `gpu`     | `gpu_smoke_test.gd` | CUDA/GPU object family (needs a CUDA runtime) | opt-in |
+
+Every wired suite parses `--json=<path>` and writes a `final: true` report —
+the driver treats a missing report as `CRASH` even when the process exits 0.
+The `mpm_*`, `async_churn_test.gd`, and `iteration_bench.gd` scripts need a
+rendering device (windowed run) or are benchmarks, and stay manual.
 
 A failure in C# but not GDScript (or vice versa) isolates a marshaling/binding
-regression from an underlying physics regression. Both write their own JSON
-report; `run_suite.py` merges them and tags each with its suite origin.
+regression from an underlying physics regression. All suites write their own
+JSON report; `run_suite.py` merges them and tags each with its suite origin.
 
 ## Running
 
@@ -57,12 +82,16 @@ engine (`module_mono_enabled=yes` for the C# suite). The GDScript suite runs on
 any build with the PhysX module.
 
 ```bash
-# Everything (fast tier), both suites, with crash detection and merged JSON:
+# Everything (fast tier): csharp + gdscript + smoke + blast + vehicle, with
+# crash detection and merged JSON:
 python modules/physx/test/run_suite.py --godot bin/redot.windows.editor.x86_64.console.exe
 
-# C# suite only / GDScript suite only:
+# Individual suites (repeatable --suite):
 python modules/physx/test/run_suite.py --godot <exe> --suite csharp
-python modules/physx/test/run_suite.py --godot <exe> --suite gdscript
+python modules/physx/test/run_suite.py --godot <exe> --suite blast --suite vehicle
+
+# GPU tier (opt-in; needs a CUDA/Vulkan runtime on this machine):
+python modules/physx/test/run_suite.py --godot <exe> --suite flow --suite gpu
 
 # Extended tier (fast + extended tests):
 python modules/physx/test/run_suite.py --godot <exe> --tier extended
@@ -102,14 +131,17 @@ User arguments (after `--`): `--tier=fast|extended|nightly`,
 
 | Tier     | Trigger      | Contents                                                     | Budget |
 |----------|--------------|--------------------------------------------------------------|--------|
-| `fast`   | every commit | both suites, all categories except heavy stress/soak         | ~10 min |
+| `fast`   | every commit | default suites (csharp, gdscript, smoke, blast, vehicle) + a non-blocking GPU step (flow, gpu) | ~10 min |
 | `extended` | pre-merge  | fast + extended-tagged tests (bigger stacks, longer runs)    | ~30 min |
 | `nightly`| scheduled    | extended + soak (10,000+ frames) + randomized op storm, run per-category for crash isolation | hours |
 
 `run_suite.py --tier nightly` launches each category as a **separate process**
 so a native crash takes out only its category and is reported as `CRASH`,
 never as a pass. A missing JSON `final: true` marker or a non-zero/negative
-engine exit code is treated as `CRASH`/`TIMEOUT` respectively.
+engine exit code is treated as `CRASH`/`TIMEOUT` respectively. The CI job
+(`gitlab-ci-physx.yml`) runs the GPU suites (flow, gpu) as a trailing step
+whose test failures are reported but do not fail the pipeline — a driver-level
+error (exit 2) still does.
 
 ## Result model
 
@@ -117,7 +149,7 @@ Per test: `PASS` / `FAIL` / `SKIP` / `TIMEOUT` / `CRASH`. Console summary:
 
 ```
 ====================================================
-  Godot PhysX 5.8 Integration Test Suite (C#)
+  Godot PhysX 5.11 Integration Test Suite (C#)
 ====================================================
   Backend: PhysX    Physics FPS: 60    Seed: 123456
   Foundation       PASS   14/14

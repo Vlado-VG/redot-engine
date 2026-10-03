@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI driver for the PhysX 5.8 integration & torture test suite.
+"""CI driver for the PhysX 5.11 integration & torture test suite.
 
 Usage (from the repository root):
 
@@ -8,6 +8,7 @@ Usage (from the repository root):
     python modules/physx/test/run_suite.py --godot <exe> --tier nightly
     python modules/physx/test/run_suite.py --godot <exe> --test PHYSX-CCD-001
     python modules/physx/test/run_suite.py --godot <exe> --test PHYSX-STRS-002 --seed 123456
+    python modules/physx/test/run_suite.py --godot <exe> --suite flow --suite gpu
 
 Responsibilities:
   * builds the C# test assembly (dotnet build) when running the C# suite;
@@ -34,6 +35,32 @@ PROJECT = HERE / "project"
 CSHARP_SCRIPT = "res://tests/csharp/TestMain.cs"
 GDSCRIPT_SCRIPT = "res://gdscript/gdscript_binding_tests.gd"
 SMOKE_SCRIPT = "res://gdscript/physics_smoke_test.gd"
+BLAST_SCRIPT = "res://gdscript/blast_smoke_test.gd"
+VEHICLE_SCRIPTS = [
+    "res://gdscript/vehicle_server_check.gd",
+    "res://gdscript/vehicle_node_test.gd",
+    "res://gdscript/vehicle_gearbox_test.gd",
+]
+FLOW_SCRIPT = "res://gdscript/flow_smoke_test.gd"
+GPU_SCRIPT = "res://gdscript/gpu_smoke_test.gd"
+
+# Suites run by "--suite all" (the default, blocking CI tier): everything
+# deterministic, CPU-only, and headless-safe. "flow" and "gpu" are opt-in —
+# they need a usable CUDA/Vulkan runtime on the machine running them — and
+# the CI job runs them as a separate, non-blocking step.
+DEFAULT_SUITES = ["csharp", "gdscript", "smoke", "blast", "vehicle"]
+SUITES = {
+    "csharp": [CSHARP_SCRIPT],
+    "gdscript": [GDSCRIPT_SCRIPT],
+    "smoke": [SMOKE_SCRIPT],
+    "blast": [BLAST_SCRIPT],
+    "vehicle": VEHICLE_SCRIPTS,
+    "flow": [FLOW_SCRIPT],
+    "gpu": [GPU_SCRIPT],
+}
+# Suites whose tests carry categories and can run one category per process.
+CATEGORIZABLE_SUITES = ("csharp", "gdscript")
+
 DEFAULT_GODOT = pathlib.Path("bin/redot.windows.editor.x86_64.console.exe")
 
 TIER_TIMEOUTS = {"fast": 1500, "extended": 3600, "nightly": 6 * 3600}
@@ -42,7 +69,8 @@ TIER_TIMEOUTS = {"fast": 1500, "extended": 3600, "nightly": 6 * 3600}
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--godot", default=str(DEFAULT_GODOT), help="engine binary (default: %(default)s)")
-    ap.add_argument("--suite", choices=["csharp", "gdscript", "smoke", "all"], default="all")
+    ap.add_argument("--suite", action="append", choices=sorted(SUITES.keys() | {"all"}), default=None,
+                    help="suite to run (repeatable; default: all = %s)" % " ".join(DEFAULT_SUITES))
     ap.add_argument("--tier", choices=["fast", "extended", "nightly"], default="fast")
     ap.add_argument("--category", action="append", default=[], help="restrict to category (repeatable)")
     ap.add_argument("--test", action="append", default=[], help="restrict to test ID (repeatable)")
@@ -155,12 +183,10 @@ def main():
     per_category = args.per_category or (args.tier == "nightly")
 
     suites = []
-    if args.suite in ("csharp", "all"):
-        suites.append("csharp")
-    if args.suite in ("gdscript", "all"):
-        suites.append("gdscript")
-    if args.suite in ("smoke", "all"):
-        suites.append("smoke")
+    for requested in (args.suite or ["all"]):
+        for s in (DEFAULT_SUITES if requested == "all" else [requested]):
+            if s not in suites:
+                suites.append(s)
 
     if "csharp" in suites and not args.skip_build:
         if not build_csharp():
@@ -180,55 +206,63 @@ def main():
     failed_processes = 0
 
     for suite in suites:
-        if suite == "csharp":
-            script = CSHARP_SCRIPT
-        elif suite == "gdscript":
-            script = GDSCRIPT_SCRIPT
-        else:
-            script = SMOKE_SCRIPT
-        if per_category and suite != "smoke" and not args.list:
-            categories = args.category if args.category else list_categories(godot, script, user_args, timeout)
-            for cat in categories:
-                cat_args = [a for a in user_args if not a.startswith("--category=")] + [f"--category={cat}"]
-                out_json = out_dir / f"report_{suite}_{cat}.json"
-                code, status, report = run_engine(godot, script, cat_args, out_json, timeout)
-                totals = suite_totals(report, f"{suite}/{cat}")
+        for script in SUITES[suite]:
+            # Single-script suites keep the historical report_<suite>.json
+            # name; multi-script suites tag each process with the script stem.
+            if len(SUITES[suite]) == 1:
+                out_json = out_dir / f"report_{suite}.json"
+                label = suite
+            else:
+                out_json = out_dir / f"report_{suite}_{pathlib.Path(script).stem}.json"
+                label = f"{suite}/{pathlib.Path(script).stem}"
+
+            if per_category and suite in CATEGORIZABLE_SUITES and not args.list:
+                categories = args.category if args.category else list_categories(godot, script, user_args, timeout, out_dir)
+                for cat in categories:
+                    cat_args = [a for a in user_args if not a.startswith("--category=")] + [f"--category={cat}"]
+                    # '*' (and None) are display fallbacks, not legal filename
+                    # characters everywhere -- map them to 'all'.
+                    cat_tag = "all" if cat in (None, "*") else str(cat)
+                    cat_json = out_dir / f"report_{suite}_{cat_tag}.json"
+                    code, status, report = run_engine(godot, script, cat_args, cat_json, timeout)
+                    totals = suite_totals(report, f"{suite}/{cat}")
+                    if report is not None:
+                        report["engine_exit_code"] = code
+                    all_reports.append((suite, cat, totals, report))
+                    if status != "done" or code not in (0,):
+                        failed_processes += 1
+                    if status in ("crash", "timeout"):
+                        print(f"[driver] {suite}/{cat}: {status.upper()} -- see partial JSON at {cat_json}")
+            else:
+                code, status, report = run_engine(godot, script, user_args, out_json, timeout)
                 if report is not None:
                     report["engine_exit_code"] = code
-                all_reports.append((suite, cat, totals, report))
+                    with open(out_json, "w", encoding="utf-8") as f:
+                        json.dump(report, f, indent=2)
+                totals = suite_totals(report, label)
+                all_reports.append((suite, "*" if len(SUITES[suite]) == 1 else pathlib.Path(script).stem, totals, report))
                 if status != "done" or code not in (0,):
                     failed_processes += 1
                 if status in ("crash", "timeout"):
-                    print(f"[driver] {suite}/{cat}: {status.upper()} -- see partial JSON at {out_json}")
-        else:
-            out_json = out_dir / f"report_{suite}.json"
-            code, status, report = run_engine(godot, script, user_args, out_json, timeout)
-            if report is not None:
-                report["engine_exit_code"] = code
-                with open(out_json, "w", encoding="utf-8") as f:
-                    json.dump(report, f, indent=2)
-            totals = suite_totals(report, suite)
-            all_reports.append((suite, "*", totals, report))
-            if status != "done" or code not in (0,):
-                failed_processes += 1
-            if status in ("crash", "timeout"):
-                print(f"[driver] {suite}: {status.upper()} -- partial JSON at {out_json}")
+                    print(f"[driver] {label}: {status.upper()} -- partial JSON at {out_json}")
 
     # Merged machine-readable summary.
     merged = {
-        "driver_version": 1,
+        "driver_version": 2,
         "tier": args.tier,
         "seed": args.seed,
         "godot": godot,
         "generated_unix": int(time.time()),
         "suites": [],
-        "final": True,
     }
     any_failed = failed_processes > 0
     for suite, cat, totals, report in all_reports:
         merged["suites"].append(totals)
         if totals["failed"] > 0 or totals["timeout"] > 0 or totals["status"] in ("crash", "timeout"):
             any_failed = True
+    # Only a fully clean run is "final": consumers keying on this flag alone
+    # must never mistake a crashed suite run for a completed one.
+    merged["final"] = not any_failed
 
     merged_path = out_dir / "report_merged.json"
     with open(merged_path, "w", encoding="utf-8") as f:
@@ -247,11 +281,9 @@ def main():
     return 1 if any_failed else 0
 
 
-def list_categories(godot, script, user_args, timeout):
-    """Runs the C#/GDScript suite with --list to enumerate categories."""
-    tmp = pathlib.Path("test_results")
-    tmp.mkdir(exist_ok=True)
-    out_json = tmp / "report_list.json"
+def list_categories(godot, script, user_args, timeout, out_dir):
+    """Runs the suite once with --list to enumerate categories."""
+    out_json = out_dir / "report_list.json"
     _, _, report = run_engine(godot, script, user_args + ["--list"], out_json, min(timeout, 300))
     cats = set()
     if report:

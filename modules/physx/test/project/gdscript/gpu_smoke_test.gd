@@ -15,10 +15,14 @@
 # Result model: PASS/FAIL lines + summary, exit code 1 on failure.
 extends SceneTree
 
+const TestReport := preload("res://gdscript/test_report.gd")
+
 var _failures: Array = []
 var _checks := 0
+var _json_path := ""
 
 func _initialize() -> void:
+	_json_path = TestReport.json_path_from_args()
 	_run()
 
 func _chk(ok: bool, msg: String) -> void:
@@ -134,5 +138,9 @@ func _run() -> void:
 		await process_frame
 
 	print("=== %d checks, %d failures ===" % [_checks, _failures.size()])
-	quit(1 if _failures.size() > 0 else 0)
+	var ok := _failures.is_empty()
+	TestReport.write(_json_path, "gpu", "PHYSX-GPU-001",
+			"GPU family: cloth GPU path + CPU fallback, PBD fluid spawn/emit/surface",
+			"pass" if ok else "fail", _checks, _failures)
+	quit(0 if ok else 1)
 

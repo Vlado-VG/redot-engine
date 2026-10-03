@@ -8,15 +8,20 @@ extends SceneTree
 # with live wheel telemetry.
 #
 # Run:
-#   redot --headless --path test/project -s gdscript/vehicle_server_check.gd
+#   <binary> --headless --path modules/physx/test/project \
+#     --script res://gdscript/vehicle_server_check.gd -- --json=<path>
+
+const TestReport := preload("res://gdscript/test_report.gd")
 
 var frame := 0
 var vrid: RID
 var chassis: RID
 var space: RID
 var server: Object
+var _json_path := ""
 
 func _initialize() -> void:
+	_json_path = TestReport.json_path_from_args()
 	server = PhysXServer3D.get_singleton()
 	space = PhysicsServer3D.space_create()
 	PhysicsServer3D.space_set_active(space, true)
@@ -72,7 +77,12 @@ func _tick() -> void:
 		# longitudinal velocity.
 		var moved: bool = xform.origin.z < -1.0
 		var speed_ok: bool = vel.z < -1.0
-		print("[veh-server] RESULT: ", "PASS" if (moved and speed_ok) else "FAIL",
+		var ok := moved and speed_ok
+		print("[veh-server] RESULT: ", "PASS" if ok else "FAIL",
 				" (moved=", moved, " speed_ok=", speed_ok, " pos=", xform.origin, " vel=", vel, ")")
+		TestReport.write(_json_path, "vehicle", "PHYSX-VEHS-001",
+				"server-RID vehicle rolls forward (-Z) with live wheel telemetry",
+				"pass" if ok else "fail", 2,
+				[] if ok else ["moved=%s speed_ok=%s pos=%s vel=%s" % [moved, speed_ok, xform.origin, vel]])
 		PhysicsServer3D.space_set_active(space, false)
-		quit(0 if (moved and speed_ok) else 1)
+		quit(0 if ok else 1)

@@ -1143,7 +1143,7 @@ WaterSolver::WaterSolver() {
 		}
 		gpu->local = true;
 	}
-	_dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_compile).bind(gpu));
+	if (!gpu.is_null()) _dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_compile).bind(gpu));
 }
 
 WaterSolver::~WaterSolver() {
@@ -1178,7 +1178,7 @@ void WaterSolver::configure(const Settings &p_settings) {
 		s = SphereSlot();
 	}
 	pending_impulses.clear();
-	_dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_build).bind(gpu, settings.grid_resolution, settings.domain_size, settings.ocean_grid_resolution, settings.ocean_domain_size, settings.wind_speed, settings.wind_direction, settings.wave_amplitude, settings.gravity, settings.caustics_enabled, settings.cell_depth, settings.depth, settings.shallow_fade_depth, settings.fetch));
+	if (!gpu.is_null()) _dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_build).bind(gpu, settings.grid_resolution, settings.domain_size, settings.ocean_grid_resolution, settings.ocean_domain_size, settings.wind_speed, settings.wind_direction, settings.wave_amplitude, settings.gravity, settings.caustics_enabled, settings.cell_depth, settings.depth, settings.shallow_fade_depth, settings.fetch));
 }
 
 PackedFloat32Array WaterSolver::_pack_spheres() const {
@@ -1210,7 +1210,7 @@ void WaterSolver::step(double p_delta) {
 	if (!is_available()) {
 		return;
 	}
-	_dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_step).bind(gpu, p_delta, settings.depth, settings.damping, settings.gravity, settings.water_level, settings.ripple_amplitude, _pack_spheres(), _pack_impulses()));
+	if (!gpu.is_null()) _dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_step).bind(gpu, p_delta, settings.depth, settings.damping, settings.gravity, settings.water_level, settings.ripple_amplitude, _pack_spheres(), _pack_impulses()));
 	// One-shot: consumed by exactly one step, then cleared. Persistent
 	// sphere proxies stay until explicitly cleared/overwritten by the caller.
 	pending_impulses.clear();
@@ -1274,7 +1274,7 @@ void WaterSolver::render_caustics(const Vector3 &p_origin, const Vector3 &p_sun_
 	p_reference_depth = MAX(p_reference_depth, 0.1f);
 	p_ior = MAX(p_ior, 1.001f);
 	caustics_half_extent = MAX(settings.ocean_domain_size.x, settings.ocean_domain_size.y) * 0.5f * WaterSolverGPU::CAUSTICS_TILE_MARGIN + p_reference_depth * 0.75f;
-	_dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_render_caustics).bind(gpu, sun_direction, caustics_light_right, caustics_light_up, caustics_origin, caustics_half_extent, p_reference_depth, p_ior, p_open_beyond));
+	if (!gpu.is_null()) _dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_render_caustics).bind(gpu, sun_direction, caustics_light_right, caustics_light_up, caustics_origin, caustics_half_extent, p_reference_depth, p_ior, p_open_beyond));
 }
 
 RID WaterSolver::get_ripple_height_texture_rd_rid() const {
@@ -1299,11 +1299,11 @@ RID WaterSolver::get_ocean_foam_texture_rd_rid() const {
 }
 
 void WaterSolver::set_foam_settings(bool p_enabled, float p_choppiness, float p_threshold, float p_persistence, float p_shore_band, float p_shore_undertow) {
-	_dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_set_foam).bind(gpu, p_enabled, p_choppiness, p_threshold, p_persistence, p_shore_band, p_shore_undertow));
+	if (!gpu.is_null()) _dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_set_foam).bind(gpu, p_enabled, p_choppiness, p_threshold, p_persistence, p_shore_band, p_shore_undertow));
 }
 
 void WaterSolver::set_swash_settings(float p_run_up, float p_drain_speed, float p_dry_time) {
-	_dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_set_swash).bind(gpu, p_run_up, p_drain_speed, p_dry_time));
+	if (!gpu.is_null()) _dispatch(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_set_swash).bind(gpu, p_run_up, p_drain_speed, p_dry_time));
 }
 
 RID WaterSolver::get_swash_texture_rd_rid() const {
