@@ -840,6 +840,16 @@ bool PhysXVehicleServer::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_
 		return false;
 	}
 
+	// The teardown below destroys vehicle constraints bound to the OLD
+	// chassis's scene and writes actor flags on both chassis actors — forbidden
+	// while either space has a solve in flight (async stepping). Fetch both.
+	if (space) {
+		space->ensure_synced();
+	}
+	if (p_chassis_body && p_chassis_body->get_space() && p_chassis_body->get_space() != space) {
+		p_chassis_body->get_space()->ensure_synced();
+	}
+
 	// Validate prerequisites BEFORE tearing down the previous configuration:
 	// a failed adopt used to leave the new chassis registered (and the old one
 	// un-flagged) with no vehicle state attached.
@@ -931,7 +941,12 @@ bool PhysXVehicleServer::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_
 // ============================================================================
 
 void PhysXVehicleServer::release() {
+	// PxVehicleConstraintsDestroy below releases constraints bound to the
+	// chassis's scene — forbidden while a solve is in flight (async stepping).
+	// Fetch first. This also guards the server free() path, which calls
+	// release().
 	if (space) {
+		space->ensure_synced();
 		space->unregister_vehicle(this);
 	}
 	if (chassis_body) {

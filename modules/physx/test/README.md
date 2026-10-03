@@ -41,6 +41,9 @@ modules/physx/test/
       vehicle_server_check.gd     vehicle suite: server-RID drive + telemetry
       vehicle_node_test.gd        vehicle suite: node-level PhysXVehicle3D drive
       vehicle_gearbox_test.gd     vehicle suite: engine drive/autobox/reverse/neutral
+      async_stress_test.gd        async suite: mid-flight mutation churn under
+                                  async_step (bodies, shape transforms, params,
+                                  exceptions, vehicle adopt/release)
       flow_smoke_test.gd          Flow suite: emitter -> simulate -> readback
                                   (SKIP on flow=no; needs a Vulkan device)
       gpu_smoke_test.gd           GPU suite: cloth GPU/CPU paths + PBD fluid
@@ -63,6 +66,7 @@ modules/physx/test/
 | `smoke`   | `physics_smoke_test.gd` | Node-level drop/settle end-to-end sanity | yes |
 | `blast`   | `blast_smoke_test.gd` | Blast authoring + destructible lifecycle (skips itself on `blast=no` builds) | yes |
 | `vehicle` | `vehicle_server_check.gd`, `vehicle_node_test.gd`, `vehicle_gearbox_test.gd` | Server-RID + node vehicle stacks, engine drive/gearbox | yes |
+| `async`   | `async_stress_test.gd` | Mid-flight mutation churn under `async_step` (fetch-guard coverage) | yes |
 | `flow`    | `flow_smoke_test.gd` | NVIDIA Flow end-to-end (needs a Vulkan runtime) | opt-in |
 | `gpu`     | `gpu_smoke_test.gd` | CUDA/GPU object family (needs a CUDA runtime) | opt-in |
 
@@ -131,7 +135,7 @@ User arguments (after `--`): `--tier=fast|extended|nightly`,
 
 | Tier     | Trigger      | Contents                                                     | Budget |
 |----------|--------------|--------------------------------------------------------------|--------|
-| `fast`   | every commit | default suites (csharp, gdscript, smoke, blast, vehicle) + a non-blocking GPU step (flow, gpu) | ~10 min |
+| `fast`   | every commit | default suites (csharp, gdscript, smoke, blast, vehicle, async) + a non-blocking GPU step (flow, gpu) | ~10 min |
 | `extended` | pre-merge  | fast + extended-tagged tests (bigger stacks, longer runs)    | ~30 min |
 | `nightly`| scheduled    | extended + soak (10,000+ frames) + randomized op storm, run per-category for crash isolation | hours |
 

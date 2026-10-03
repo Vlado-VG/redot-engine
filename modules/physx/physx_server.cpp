@@ -920,6 +920,20 @@ bool PhysXServer3D::body_is_axis_locked(RID p_body, PhysicsServer3D::BodyAxis p_
 void PhysXServer3D::body_add_collision_exception(RID p_body, RID p_excepted_body) {
 	PhysXBody3D *body = body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(body);
+
+	// Everything below mutates state the solver reads mid-flight: the word2
+	// slot registry (read by the GPU filter shader on the sim threads) and
+	// PxShape::setSimulationFilterData via refresh_collision_filters —
+	// forbidden while a solve is in flight (async stepping). Fetch from both
+	// bodies' spaces first.
+	if (body->get_space()) {
+		body->get_space()->ensure_synced();
+	}
+	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
+	if (other && other->get_space() && other->get_space() != body->get_space()) {
+		other->get_space()->ensure_synced();
+	}
+
 	body->add_collision_exception(p_excepted_body);
 
 	// GPU path: the simulation filter shader cannot see actors/userData (it
@@ -928,7 +942,6 @@ void PhysXServer3D::body_add_collision_exception(RID p_body, RID p_excepted_body
 	// slot registry soft-body exceptions use. The CPU PhysXPairFilterCallback
 	// keeps enforcing the set from the wrappers as well — both kill the same
 	// pair, whichever path a pair takes.
-	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
 	if (!other) {
 		return;
 	}
@@ -942,8 +955,18 @@ void PhysXServer3D::body_add_collision_exception(RID p_body, RID p_excepted_body
 void PhysXServer3D::body_remove_collision_exception(RID p_body, RID p_excepted_body) {
 	PhysXBody3D *body = body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(body);
-	body->remove_collision_exception(p_excepted_body);
+
+	// Same mid-flight discipline as body_add_collision_exception: the registry
+	// entry is read by the GPU filter shader during the solve.
+	if (body->get_space()) {
+		body->get_space()->ensure_synced();
+	}
 	PhysXBody3D *other = body_owner.get_or_null(p_excepted_body);
+	if (other && other->get_space() && other->get_space() != body->get_space()) {
+		other->get_space()->ensure_synced();
+	}
+
+	body->remove_collision_exception(p_excepted_body);
 	if (other && body->get_exception_slot() != 0 && other->get_exception_slot() != 0) {
 		g_physx_soft_exceptions.remove(body->get_exception_slot(), other->get_exception_slot());
 	}
@@ -1025,8 +1048,19 @@ PhysicsDirectBodyState3D *PhysXServer3D::body_get_direct_state(RID p_body) {
 	return body->get_direct_state();
 }
 
+void PhysXServer3D::_warn_module_api_separate_thread() {
+	if ((bool)GLOBAL_GET("physics/3d/run_on_separate_thread")) {
+		WARN_PRINT_ONCE(
+				"PhysX: module extension APIs (vehicles, GPU fluids/cloths, articulations) assume "
+				"single-threaded physics; with physics/3d/run_on_separate_thread their calls run on the "
+				"main thread and can interleave with marshaled server commands executing on the physics "
+				"thread. Keep that mode off for projects using these APIs.");
+	}
+}
+
 RID PhysXServer3D::vehicle_create(int p_archetype) {
 	MutexLock lock(api_mutex);
+	_warn_module_api_separate_thread();
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
         "PhysX: vehicle_create() called before PhysX initialization.");
 	PhysXVehicleServer *vehicle = memnew(PhysXVehicleServer);
@@ -1273,6 +1307,7 @@ Dictionary PhysXServer3D::vehicle_get_balance_state(RID p_vehicle) const {
 
 RID PhysXServer3D::articulation_create() {
 	MutexLock lock(api_mutex);
+	_warn_module_api_separate_thread();
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
 			"PhysX: articulation_create() called before PhysX initialization.");
 	PhysXArticulation3D *articulation = memnew(PhysXArticulation3D);
@@ -1687,6 +1722,7 @@ bool PhysXServer3D::soft_body_is_point_pinned(RID p_body, int p_point_index) con
 
 RID PhysXServer3D::particle_fluid_create() {
 	MutexLock lock(api_mutex);
+	_warn_module_api_separate_thread();
 	PhysXGPUParticleFluid3D *fluid = memnew(PhysXGPUParticleFluid3D);
 	RID rid = fluid_owner.make_rid(fluid);
 	fluid->set_self(rid);
@@ -1878,6 +1914,7 @@ real_t PhysXServer3D::particle_fluid_get_submersion(RID p_fluid, const AABB &p_w
 
 RID PhysXServer3D::cloth_create() {
 	MutexLock lock(api_mutex);
+	_warn_module_api_separate_thread();
 	if (!px_cuda_context) {
 		return RID(); // no CUDA -> the node uses its CPU fallback
 	}
@@ -2350,6 +2387,15 @@ void PhysXServer3D::free(RID p_rid) {
 		a = area_owner.get_or_null(p_rid);
 
 		area_owner.free(p_rid);
+		// If this was a space's default area, clear the space's pointer: the
+		// space-free branch frees the default area via get_rid(), and without
+		// this it would dereference the freed wrapper and double-free the RID
+		// when the space itself is torn down later (finish()'s area loop runs
+		// before its space loop, so a leaked space's default area is freed
+		// here first).
+		if (a->get_space() && a->get_space()->get_default_area() == a) {
+			a->get_space()->set_default_area(nullptr);
+		}
 		memdelete(a);
 		return;
 	}
@@ -2454,7 +2500,7 @@ void PhysXServer3D::free(RID p_rid) {
 		memdelete(c);
 		return;
 	}
-	ERR_PRINT("PhysX: attempted to free unknown RID");
+	ERR_PRINT(vformat("PhysX: attempted to free unknown RID (id %d)", p_rid.get_id()));
 }
 
 void PhysXServer3D::space_set_active(RID p_space, bool p_active) {

@@ -364,6 +364,12 @@ void PhysXBody3D::set_state(PhysicsServer3D::BodyState p_state, const Variant &p
 
 	switch (p_state) {
 		case PhysicsServer3D::BODY_STATE_TRANSFORM: {
+			// setKinematicTarget/setGlobalPose below, and a scale change's
+			// refresh_shape_scaling() (PxShape::setGeometry), are forbidden
+			// while a solve is in flight (async stepping). Fetch first.
+			if (space) {
+				space->ensure_synced();
+			}
 			// Capture the node scale BEFORE the pose conversion strips it:
 			// PhysX actor poses carry no scale, so godot_physics' "the whole
 			// body transform scales its shapes" behavior is produced by baking
@@ -718,6 +724,14 @@ void PhysXBody3D::_apply_surface_params_to_actor() {
 		return;
 	}
 
+	// The userData bounce/friction floats are read by the worker-thread
+	// contact-modify callback DURING the solve — a write here while a solve is
+	// in flight (async stepping) is a data race. Fetch first; also covers the
+	// PxMaterial restitution/friction writes below. No-op when idle.
+	if (space) {
+		space->ensure_synced();
+	}
+
 	// Cache the SIGNED bounce/friction into the actor userData so the worker-
 	// thread contact-modify callback can apply Godot's combiner without touching
 	// Godot objects. Done before any material writes so it stays in sync.
@@ -1045,6 +1059,13 @@ void PhysXBody3D::set_omit_force_integration(bool p_enable) {
 void PhysXBody3D::set_shape_disabled(int p_shape_idx, bool p_disabled) {
 	ERR_FAIL_INDEX(p_shape_idx, get_shape_count());
 	if (p_disabled == shapes[p_shape_idx].disabled) return;
+
+	// The eSIMULATION_SHAPE/eSCENE_QUERY_SHAPE flag writes below mutate the
+	// scene's broadphase pair state — forbidden while a solve is in flight
+	// (async stepping). Fetch first, like the attach/detach paths.
+	if (space) {
+		space->ensure_synced();
+	}
 
 	shapes[p_shape_idx].disabled = p_disabled;
 

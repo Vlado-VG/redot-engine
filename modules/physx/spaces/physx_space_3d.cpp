@@ -286,6 +286,9 @@ void PhysXSpace3D::step(float p_step) {
     // cleared — _finish_step itself issues scene queries (CPU soft bodies), and
     // a re-entrant sync() while stepping is still set would recurse.
     stepping = true;
+    // Record the simulating thread: ensure_synced() refuses to fetch from any
+    // other thread (PhysX requires simulate/fetchResults on one thread).
+    stepping_thread = Thread::get_caller_id();
     px_scene->simulate(p_step);
     if (!PhysXServer3D::get_singleton()->is_async_stepping()) {
         px_scene->fetchResults(true);
@@ -304,6 +307,26 @@ void PhysXSpace3D::sync() {
     // still set would fetch-and-recurse.
     stepping = false;
     _finish_step();
+}
+
+void PhysXSpace3D::ensure_synced() {
+    if (!stepping || !px_scene) {
+        return;
+    }
+    // Only the thread that called simulate() may fetchResults. A query or
+    // mutation arriving from another thread (e.g. a node's frame callback
+    // while the WrapMT physics thread is inside step()) must not touch the
+    // scene — it reads the last fetched state instead, and the physics thread
+    // fetches at the next tick. The server-tick sync() path is exempt: the
+    // WrapMT sync drains the command queue (physics thread idle by
+    // construction) before fetching on the main thread.
+    if (Thread::get_caller_id() != stepping_thread) {
+        WARN_PRINT_ONCE(
+                "PhysX: a query/mutation from a non-simulating thread raced an in-flight solve; "
+                "using the last fetched state (fetchResults must stay on the simulating thread).");
+        return;
+    }
+    sync();
 }
 
 // Everything after fetchResults, shared by the sync and async paths. Runs on

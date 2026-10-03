@@ -423,6 +423,13 @@ void PhysXShapedObject3D::remove_shape(PhysXShape3D *p_shape) {
 void PhysXShapedObject3D::set_shape_transform(int p_index, const Transform3D &p_transform) {
     ERR_FAIL_INDEX(p_index, (int)shapes.size());
 
+	// The paths below issue PxShape::setGeometry/setLocalPose — forbidden
+	// while a solve is in flight (async stepping; setGeometry also mutates
+	// broadphase bounds). Fetch first, like the attach/detach paths above.
+	if (space) {
+		space->ensure_synced();
+	}
+
 	AttachedShape &record = shapes[p_index];
 
 	// A scale change must be re-baked into the geometry (PxShape::setGeometry);

@@ -46,8 +46,8 @@ physx-tests:
     # 3. Build the test assembly.
     - dotnet build modules\physx\test\project\physx_ci.csproj -v q -nologo
     # 4. Blocking tier: C# + GDScript binding + node smoke + Blast + vehicle
-    #    suites (the driver's default set). Non-zero exit on any test failure,
-    #    crash, or hang fails the pipeline.
+    #    + async churn suites (the driver's default set). Non-zero exit on any
+    #    test failure, crash, or hang fails the pipeline.
     - python modules\physx\test\run_suite.py --tier fast --godot $env:GODOT
     # 5. GPU tier: Flow + CUDA/GPU-object suites. These need a usable
     #    CUDA/Vulkan runtime, so a test failure here is reported but does NOT

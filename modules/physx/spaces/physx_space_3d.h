@@ -21,6 +21,7 @@
 #include "servers/physics_3d/physics_server_3d.h"
 #include "core/templates/local_vector.h"
 #include "core/math/math_funcs.h"
+#include "core/os/thread.h"
 // Forward declarations of PhysX types to keep the header clean
 namespace physx {
 class PxScene;
@@ -64,7 +65,15 @@ public:
     /// release, shape attach/detach and scene queries are all forbidden while
     /// simulate() is outstanding. Mutation entry points that cannot be deferred
     /// call this first — mutating frames lose the async overlap by design.
-    void ensure_synced() { sync(); }
+    ///
+    /// Thread discipline: only the thread that called simulate() may fetch.
+    /// A call from another thread (frame-thread queries against a space whose
+    /// step runs on the WrapMT physics thread) is refused with a one-shot
+    /// warning and reads the last fetched state instead — PhysX requires
+    /// simulate/fetchResults on one thread. The server-tick sync() below is
+    /// exempt: the WrapMT sync drains the command queue (the physics thread is
+    /// idle by construction) before fetching on the main thread.
+    void ensure_synced();
     bool is_stepping() const { return stepping; }
     float get_last_step() const { return last_step; }
     /// Active-actor count of the last completed solve (INFO_ACTIVE_OBJECTS).
@@ -285,6 +294,9 @@ private:
     RID rid;
     bool active = false;
     bool stepping = false;
+    // Thread that called simulate() for the in-flight solve (0 = none).
+    // ensure_synced() refuses to fetch from any other thread.
+    Thread::ID stepping_thread = 0;
     bool batched_isosurface = false;
     float last_step = 0.0f;
     int active_objects = 0;

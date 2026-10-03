@@ -109,6 +109,15 @@ private:
 
 	static void _bind_methods();
 
+	/// One-shot warning: module extension APIs (vehicles, GPU fluids/cloths,
+	/// articulations, water/flow probes) assume single-threaded physics —
+	/// under physics/3d/run_on_separate_thread their ClassDB calls run on the
+	/// main thread and can interleave with marshaled server commands executing
+	/// on the physics thread (the module APIs hold PhysXServer3D::api_mutex,
+	/// the marshaled commands do not). Called from the module API creation
+	/// entry points.
+	void _warn_module_api_separate_thread();
+
 public:
 	PhysXServer3D() {singleton_ptr = this;}
 	~PhysXServer3D() = default;
