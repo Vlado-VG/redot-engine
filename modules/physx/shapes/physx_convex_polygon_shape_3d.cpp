@@ -123,7 +123,14 @@ bool PhysXConvexPolygonShape3D::_ensure_convex_mesh(bool p_mirrored) const {
 	mesh_desc.points.data = px_vertices.ptr();
 
 	// eCOMPUTE_CONVEX tells PhysX to generate the hull from our point cloud.
-	mesh_desc.flags = physx::PxConvexFlag::eCOMPUTE_CONVEX;
+	// eQUANTIZE_INPUT welds near-coincident points (hulls decomposed from
+	// arbitrary Godot meshes routinely carry duplicates that break the strict
+	// hull path); eDISABLE_MESH_VALIDATION skips re-validating already
+	// validated Godot mesh data (same flag the reference PhysX backend cooks
+	// with). eFAST_INERTIA_COMPUTATION is deliberately NOT set: it trades
+	// tensor accuracy for speed the explicit-mass path does not need.
+	mesh_desc.flags = physx::PxConvexFlag::eCOMPUTE_CONVEX | physx::PxConvexFlag::eQUANTIZE_INPUT |
+			physx::PxConvexFlag::eDISABLE_MESH_VALIDATION;
 
 	// 3. Fetch singletons
 	const physx::PxCookingParams &cooking_params = PhysXServer3D::get_singleton()->get_cooking_params();
@@ -131,11 +138,18 @@ bool PhysXConvexPolygonShape3D::_ensure_convex_mesh(bool p_mirrored) const {
 
 	ERR_FAIL_NULL_V_MSG(&physics, false, "PhysX PxPhysics is not initialized.");
 
-	// 4. Cook the convex mesh
+	// 4. Cook the convex mesh. PhysX caps cooked hulls at 255 polygons; dense
+	// point clouds can exceed it and fail outright. ePLANE_SHIFTING is the
+	// SDK's dedicated algorithm for that case (it shifts hull planes to merge
+	// facets) — retry with it before giving up.
 	physx::PxConvexMesh *mesh = PxCreateConvexMesh(cooking_params, mesh_desc, physics.getPhysicsInsertionCallback());
+	if (!mesh) {
+		mesh_desc.flags |= physx::PxConvexFlag::ePLANE_SHIFTING;
+		mesh = PxCreateConvexMesh(cooking_params, mesh_desc, physics.getPhysicsInsertionCallback());
+	}
 
 	if (!mesh) {
-		ERR_PRINT("PhysX failed to create convex mesh.");
+		ERR_PRINT("PhysX failed to create convex mesh (hull exceeds the 255-polygon limit even with plane shifting?).");
 		return false;
 	}
 

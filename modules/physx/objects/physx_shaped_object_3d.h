@@ -202,6 +202,13 @@ protected:
 	/// Cached body scale (applied to shape geometry + local pose origins).
 	Vector3 body_scale = Vector3(1, 1, 1);
 
+public:
+	/// The node scale baked into every attached shape's geometry (motion-query
+	/// ray bases scale their length with it).
+	Vector3 get_body_scale() const { return body_scale; }
+
+private:
+
 	/// True when contact-point notifications are requested.
 	bool contact_notify = false;
 };

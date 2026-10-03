@@ -240,7 +240,7 @@ void PhysXArticulation3D::set_link_shape(int p_link_index, PhysXShape3D *p_shape
 			server->get_default_material(),
 			flags);
 	ERR_FAIL_NULL_MSG(shape, "PhysX: failed to create articulation link shape.");
-	shape->setLocalPose(physx_to_px(p_transform) * p_shape->get_local_pose());
+	shape->setLocalPose(physx_to_px(p_transform) * p_shape->get_local_pose(physx::PxVec3(scale.x, scale.y, scale.z)));
 	rec->link->attachShape(*shape);
 	// The link owns the shape after attach (refcount 2 -> 1 on release).
 	shape->release();

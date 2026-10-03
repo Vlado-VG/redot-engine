@@ -35,11 +35,22 @@ AABB PhysXSeparationRayShape3D::get_aabb() const {
 
 bool PhysXSeparationRayShape3D::get_physx_geometry(physx::PxGeometryHolder &holder, const physx::PxVec3 &scale) const {
 	// Emulate the ray using a very thin Box Geometry.
-	// A Box is defined by its half-extents in PhysX.
+	// A Box is defined by its half-extents in PhysX. The length scales with
+	// the body's Z scale; the cross-section scales with X/Y so a scaled body's
+	// ray probes a correspondingly scaled volume.
 	float half_length = (length * scale.z) * 0.5f;
-	float thickness = 0.01f; 
+	float thickness = 0.01f;
 
-	holder.storeAny(physx::PxBoxGeometry(thickness, thickness, half_length));
+	holder.storeAny(physx::PxBoxGeometry(thickness * scale.x, thickness * scale.y, half_length));
 
 	return true;
+}
+
+physx::PxTransform PhysXSeparationRayShape3D::get_local_pose(const physx::PxVec3 &p_scale) const {
+	// Godot's separation-ray convention (gizmo, motion-query ray bases) is
+	// that the shape extends [0, +length] along +Z from the shape origin. The
+	// emulated box is centered on its local pose, so offset it forward by half
+	// the SCALED length — a centered volume stuck half a ray out the back of
+	// the body, and query/motion code had to un-center it everywhere.
+	return physx::PxTransform(physx::PxVec3(0.0f, 0.0f, (length * p_scale.z) * 0.5f));
 }

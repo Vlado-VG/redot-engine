@@ -136,7 +136,7 @@ void PhysXShapedObject3D::refresh_shape_scaling() {
 		Transform3D final_tr = record.relative_transform;
 		final_tr.origin *= body_scale;
 		final_tr.basis.orthonormalize();
-		const physx::PxTransform composed = to_physx_transform(final_tr) * record.shareable_shape->get_local_pose();
+		const physx::PxTransform composed = to_physx_transform(final_tr) * record.shareable_shape->get_local_pose(scale);
 		if (record.px_shape) {
 			record.px_shape->setLocalPose(composed);
 		}
@@ -301,10 +301,19 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
         // participates in raycasts/overlaps but never collides (REG-0014).
         physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
 
+        // Separation-ray shapes are QUERY-ONLY on every body: Godot's ray
+        // shapes never generate simulation contacts — the ray participates
+        // only in its owner's motion queries (which raycast/sweep the
+        // geometry directly, not through this attached PxShape). As a
+        // simulation shape the emulated thin box produced real contacts
+        // Godot rays do not.
+        if (p_shape->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
+            shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
+        }
         // Check: is the shape concave? (triangle mesh / heightfield / plane)
         // Concave geometries on a non-kinematic dynamic body are created
         // query-only (REG-0014): PhysX forbids those simulation shapes there.
-        if (!p_shape->is_convex()) {
+        else if (!p_shape->is_convex()) {
             // Check: is the actor a non-kinematic dynamic body?
             physx::PxRigidDynamic *dyn = px_actor->is<physx::PxRigidDynamic>();
             if (dyn && !(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC)) {
@@ -334,7 +343,7 @@ void PhysXShapedObject3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_
             // is lost.
             Transform3D placed_tr = p_transform;
             placed_tr.origin *= body_scale;
-            const physx::PxTransform composed = to_physx_transform(placed_tr) * p_shape->get_local_pose();
+            const physx::PxTransform composed = to_physx_transform(placed_tr) * p_shape->get_local_pose(total_scale);
             record.px_shape->setLocalPose(composed);
 
             // Apply the owner's collision filter (layer/mask/contact-notify) to this
@@ -448,7 +457,8 @@ void PhysXShapedObject3D::set_shape_transform(int p_index, const Transform3D &p_
 
 		// Compose placement with the shape's intrinsic alignment pose
 		// (e.g. capsule Z-90°) so it isn't clobbered.
-		const physx::PxTransform composed = to_physx_transform(final_tr) * record.shareable_shape->get_local_pose();
+		const physx::PxTransform composed = to_physx_transform(final_tr) * record.shareable_shape->get_local_pose(
+				physx::PxVec3(new_geom_scale.x, new_geom_scale.y, new_geom_scale.z));
 
 		if (scale_changed) {
 			physx::PxGeometryHolder holder;
@@ -529,9 +539,12 @@ void PhysXShapedObject3D::rebuild_shapes() {
 		}
 
 		// Per-shape flags (REG-0014): only concave geometries on a non-kinematic
-		// dynamic actor degrade to query-only.
+		// dynamic actor degrade to query-only. Separation-ray shapes are
+		// query-only everywhere (see add_shape).
 		physx::PxShapeFlags shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE | physx::PxShapeFlag::eSIMULATION_SHAPE;
-		if (dynamic_non_kinematic && !record.shareable_shape->is_convex()) {
+		if (record.shareable_shape->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
+			shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
+		} else if (dynamic_non_kinematic && !record.shareable_shape->is_convex()) {
 			shape_flags = physx::PxShapeFlag::eVISUALIZATION | physx::PxShapeFlag::eSCENE_QUERY_SHAPE;
 		}
 		// Preserve the slot's disabled state across the actor recreation — a
@@ -555,7 +568,7 @@ void PhysXShapedObject3D::rebuild_shapes() {
 		// Restore local pose (placement * intrinsic alignment).
 		Transform3D final_tr = record.relative_transform;
 		final_tr.origin *= body_scale;
-		record.px_shape->setLocalPose(to_physx_transform(final_tr) * record.shareable_shape->get_local_pose());
+		record.px_shape->setLocalPose(to_physx_transform(final_tr) * record.shareable_shape->get_local_pose(total_scale));
 
 		// Attach to the new actor (refcount -> 2, then release drops to 1).
 		rigid_actor->attachShape(*record.px_shape);

@@ -16,7 +16,13 @@ void PhysXBoxShape3D::set_data(const Variant &p_data) {
     // full size and halving it here shrinks every box to a quarter of its
     // volume (REG: P5 probe measured boxes resting at exactly half height
     // and a 2 m cube reporting a 1 m cube's inertia).
-    half_extents = Vector3(p_data);
+    const Vector3 new_half_extents = Vector3(p_data);
+    // Negative half-extents are invalid data — rejected before they are stored
+    // (zero is a degenerate-but-tolerated case: the geometry clamp keeps it a
+    // hair-thin slab instead of crashing).
+    ERR_FAIL_COND_MSG(new_half_extents.x < 0.0f || new_half_extents.y < 0.0f || new_half_extents.z < 0.0f,
+            "PhysX box shape half-extents must be >= 0.");
+    half_extents = new_half_extents;
     _notify_shape_changed();
 }
 

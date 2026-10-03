@@ -55,22 +55,26 @@ struct PhysXActorUserData {
 	float friction = 1.0f;       ///< Signed friction (negative = rough). Read by contact-modify.
 };
 
-// Resolves a (actor, shape) query hit to the body-local shape index, or 0.
+// Resolves a (actor, shape) query hit to the body-local shape index, or -1
+// when the hit cannot be mapped (soft-body/articulation actors without
+// userData, or a shape the object does not carry). -1 is the "invalid"
+// sentinel: 0 is a legitimate shape index and must not double as the failure
+// value.
 // Both PhysXBody3D and PhysXArea3D are shaped objects; areas/bodies both
 // support find_shape_index, so we check the type and cast accordingly.
 static inline int physx_resolve_shape_index(const physx::PxRigidActor *p_actor,
                                              const physx::PxShape *p_shape) {
-    if (!p_actor || !p_actor->userData || !p_shape) return 0;
+    if (!p_actor || !p_actor->userData || !p_shape) return -1;
     const auto *ad = static_cast<const PhysXActorUserData *>(p_actor->userData);
-    if (!ad->object) return 0;
+    if (!ad->object) return -1;
     // Bodies and areas are both shaped objects; areas/bodies both support this.
     if (ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_BODY &&
         ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_AREA) {
-        return 0;
+        return -1;
     }
     const PhysXShapedObject3D *shaped = static_cast<const PhysXShapedObject3D *>(ad->object);
     const int idx = shaped->find_shape_index(p_shape);
-    return idx >= 0 ? idx : 0;
+    return idx;
 }
 
 #endif // PHYSX_USER_DATA_H

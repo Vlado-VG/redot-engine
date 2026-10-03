@@ -85,11 +85,25 @@ public:
 	 * @brief Returns the local alignment pose for geometries that need it.
 	 *
 	 * For example, PhysX capsules are X-axis aligned but Godot's are Y-axis,
-	 * so the capsule subclass returns a 90-degree rotation around Z.
+	 * so the capsule subclass returns a 90-degree rotation around Z. Shapes
+	 * whose geometry the body scale also scales (heightfields: the
+	 * quantization-restore lift; separation rays: the forward half-length
+	 * offset) apply the same scale to their pose translation — the consumer
+	 * passes the identical scale it gave get_physx_geometry().
 	 */
-    virtual physx::PxTransform get_local_pose() const {
+    virtual physx::PxTransform get_local_pose(const physx::PxVec3 &p_scale = physx::PxVec3(1.0f)) const {
         return physx::PxTransform(physx::PxIdentity);
     }
+
+	/**
+	 * @brief Translates a raw PhysX face index into the user-facing index.
+	 *
+	 * Concave shapes cooked with backface collision duplicate every triangle
+	 * (reversed winding), so raw PhysX face indices index the DOUBLED mesh;
+	 * Godot consumers expect indices into their own faces array. The base
+	 * implementation is the identity.
+	 */
+	virtual int translate_face_index(int p_face_index) const { return p_face_index; }
 	
 	// Shape data
 	virtual void set_data(const Variant &p_data) = 0;
@@ -103,7 +117,7 @@ public:
 	virtual AABB get_aabb() const = 0;
 	
 	// Margin
-	void set_margin(float p_margin);
+	virtual void set_margin(float p_margin);
 	float get_margin() const { return margin; }
 
 	/** @brief Detach PxShape from all owners.

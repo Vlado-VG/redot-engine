@@ -20,7 +20,7 @@ AABB PhysXWorldBoundaryShape3D::get_aabb() const {
 	return AABB(Vector3(-half_size, -half_size, -half_size), Vector3(size, size, size));
 }
 
-physx::PxTransform PhysXWorldBoundaryShape3D::get_local_pose() const {
+physx::PxTransform PhysXWorldBoundaryShape3D::get_local_pose(const physx::PxVec3 &p_scale) const {
 	// Define the normals using Godot's native Vector3
 	Vector3 default_normal(1.0f, 0.0f, 0.0f);
 	Vector3 n = plane.normal;

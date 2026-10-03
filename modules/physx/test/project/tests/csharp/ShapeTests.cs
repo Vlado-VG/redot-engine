@@ -89,6 +89,126 @@ internal static class ShapeTests {
         s.Add("PHYSX-SHAPE-MIR-001", "mirrored convex cube drops and rests like unmirrored", MirroredCubeRest);
         s.Add("PHYSX-SHAPE-MIR-002", "mirrored convex wedge: ray height + normal follow the mirror", MirroredWedgeRay);
         s.Add("PHYSX-SHAPE-MIR-003", "rest_info on a mirrored query shape matches floor surface", MirroredRestInfo);
+        s.Add("PHYSX-SHAPE-SCA-001", "heightmap at scale.y=2 collides at doubled sample height", HeightmapScaledUp);
+        s.Add("PHYSX-SHAPE-SCA-002", "heightmap at scale.y=0.5 collides at halved sample height", HeightmapScaledDown);
+        s.Add("PHYSX-SHAPE-SCA-003", "convex hull from >255 points cooks and collides", ConvexManyPoints);
+        s.Add("PHYSX-SHAPE-SCA-004", "backface ray hit reports the author's face index", BackfaceFaceIndex);
+        s.Add("PHYSX-SHAPE-SCA-005", "separation-ray-only body does not collide (query-only)", RayShapeNoSimulation);
+    }
+
+    // ------------------------------------------------------- Phase 5: scaling
+    // 2x2 heightmap with a single raised sample at the (-0.5, -0.5) corner.
+    static Rid RaisedHeightmap(PhysxWorld w) {
+        var s = PhysicsServer3D.HeightmapShapeCreate();
+        w.AdoptShape(s);
+        PhysicsServer3D.ShapeSetData(s, new Godot.Collections.Dictionary {
+            ["width"] = 2, ["depth"] = 2, ["cell_size"] = 1f,
+            ["heights"] = new float[] { 1f, 0f, 0f, 0f },
+        });
+        return s;
+    }
+
+    // A static body carrying a scaled heightmap: the raised sample (h=1) sits
+    // at world y = 1*scale.y — the surface point a query must find.
+    static Rid ScaledHeightmapBody(PhysxWorld w, float scaleY) {
+        var shape = RaisedHeightmap(w);
+        var b = PhysicsServer3D.BodyCreate();
+        w.TrackBody(b);
+        PhysicsServer3D.BodySetMode(b, PhysicsServer3D.BodyMode.Static);
+        PhysicsServer3D.BodySetSpace(b, w.Space);
+        PhysicsServer3D.BodyAddShape(b, shape);
+        PhysicsServer3D.BodySetCollisionLayer(b, 1);
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform,
+            new Transform3D(Basis.FromScale(new Vector3(1, scaleY, 1)), Vector3.Zero));
+        return b;
+    }
+
+    static IEnumerator HeightmapScaledUp() {
+        using var w = new PhysxWorld(false);
+        ScaledHeightmapBody(w, 2f);
+        yield return Wait.Frames(2);
+        // The h=1 sample sits at world (-0.5, 2, -0.5) — a downward ray must
+        // hit there, not at the unscaled height y=1 (raycasts probe heightfields;
+        // rest_info's computePenetration rejects them).
+        var hit = w.Ray(new Vector3(-0.5f, 5, -0.5f), new Vector3(-0.5f, -5, -0.5f));
+        Assert.Require(hit.Count > 0, "ray hits the scaled heightmap");
+        Assert.ExpectNear(hit["position"].AsVector3().Y, 2f, 0.05f,
+            $"surface at the doubled sample height (got {hit["position"].AsVector3().Y:F3})");
+    }
+
+    static IEnumerator HeightmapScaledDown() {
+        using var w = new PhysxWorld(false);
+        ScaledHeightmapBody(w, 0.5f);
+        yield return Wait.Frames(2);
+        var hit = w.Ray(new Vector3(-0.5f, 5, -0.5f), new Vector3(-0.5f, -5, -0.5f));
+        Assert.Require(hit.Count > 0, "ray hits the scaled heightmap");
+        Assert.ExpectNear(hit["position"].AsVector3().Y, 0.5f, 0.05f,
+            $"surface at the halved sample height (got {hit["position"].AsVector3().Y:F3})");
+    }
+
+    // Decomposed-mesh hulls routinely exceed PhysX's 255 cooked-polygon cap;
+    // the cook must quantize and retry with plane shifting instead of failing.
+    static IEnumerator ConvexManyPoints() {
+        using var w = new PhysxWorld();
+        var pts = new System.Collections.Generic.List<Vector3>();
+        for (int i = 0; i < 300; i++) {
+            float phi = i * 2.399963f; // golden-angle spiral on a sphere
+            float theta = i * 1.117f;
+            pts.Add(new Vector3(Mathf.Cos(phi) * Mathf.Cos(theta), Mathf.Sin(theta), Mathf.Sin(phi) * Mathf.Cos(theta)));
+        }
+        var hull = w.Convex(pts.ToArray());
+        w.MakeStatic(hull, new Vector3(0, 3, 0));
+        var ball = w.MakeBody(w.Sphere(0.3f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(ball, PhysicsServer3D.BodyParameter.Mass, 1f);
+        yield return Wait.UntilOrFail(() => w.Pos(ball).Origin.Y < 4.0f, 240, "ball lands on the 300-point hull");
+        Assert.Expect(w.Pos(ball).Origin.Y > 3.3f, $"ball rests ON the hull (y={w.Pos(ball).Origin.Y:F2})");
+    }
+
+    // Backface cooking duplicates every triangle; a ray hitting a reversed
+    // duplicate must report the AUTHOR's triangle index (raw/2), not the raw
+    // doubled-mesh index.
+    static IEnumerator BackfaceFaceIndex() {
+        using var w = new PhysxWorld(false);
+        // Quad of 2 triangles at y=0, front faces UP (Godot CW convention).
+        var concave = PhysicsServer3D.ConcavePolygonShapeCreate();
+        w.AdoptShape(concave);
+        PhysicsServer3D.ShapeSetData(concave, new Godot.Collections.Dictionary {
+            ["faces"] = new Vector3[] {
+                new(-1, 0, -1), new(1, 0, -1), new(-1, 0, 1),   // triangle 0
+                new(-1, 0, 1), new(1, 0, -1), new(1, 0, 1),     // triangle 1
+            },
+            ["backface_collision"] = true,
+        });
+        w.MakeStatic(concave, Vector3.Zero);
+        yield return Wait.Frames(2);
+        // Ray from BELOW hits the reversed duplicate of triangle 0 (raw PhysX
+        // index 2*0+1 = 1... in the module's cook the forward copy is the
+        // swizzled (0,2,1) and the duplicate the original winding); the author
+        // index must land back in [0, 1] and identify triangle 0's area.
+        var hit = w.Ray(new Vector3(0, -2, 0), new Vector3(0, 2, 0), backFaces: true);
+        Assert.Require(hit.Count > 0, "backface-enabled ray hits the quad from below");
+        int fi = hit["face_index"].AsInt32();
+        Assert.Expect(fi >= 0 && fi < 2, $"face index maps to the author's triangle (got {fi})");
+
+        // From above, the forward copy of triangle 1's area also maps into range.
+        var hit2 = w.Ray(new Vector3(0.5f, 2, 0.5f), new Vector3(0.5f, -2, 0.5f));
+        Assert.Require(hit2.Count > 0, "front ray hits triangle 1's area");
+        int fi2 = hit2["face_index"].AsInt32();
+        Assert.Expect(fi2 >= 0 && fi2 < 2, $"front face index in author range (got {fi2})");
+    }
+
+    // Godot separation-ray shapes never generate simulation contacts — the
+    // module's emulated thin box must be query-only, so a body resting where
+    // only the ray volume is falls straight through.
+    static IEnumerator RayShapeNoSimulation() {
+        using var w = new PhysxWorld();
+        var ray = w.SeparationRay(2f);
+        w.MakeStatic(ray, new Vector3(6, 2, 0)); // ray-only static body
+        var b = w.MakeBody(w.Sphere(0.3f), new Vector3(6, 2.4f, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Mass, 1f);
+        yield return Wait.Frames(90);
+        Assert.Expect(w.Pos(b).Origin.Y < 1.5f,
+            $"sphere fell through the ray-only body (y={w.Pos(b).Origin.Y:F2})");
     }
 
     // Godot front faces are CW seen from outside; the module (like Jolt)

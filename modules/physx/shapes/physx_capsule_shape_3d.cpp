@@ -14,8 +14,15 @@ void PhysXCapsuleShape3D::set_data(const Variant &p_data) {
 	height = maybe_height;
 	radius = maybe_radius;
 
+	// PhysX requires halfCylinderHeight >= 0; the geometry clamps a capsule
+	// whose height is below 2*radius into a sphere. Godot's node clamps this
+	// at the resource level, but raw server data can arrive unclamped — say so
+	// instead of silently changing the shape.
+	if (height < radius * 2.0f) {
+		WARN_PRINT_ONCE("PhysX: capsule height < 2*radius is clamped to a sphere (Godot's resource layer normally prevents this).");
+	}
+
 	_notify_shape_changed();
-	// Trigger shape update listener here if needed
 }
 
 Variant PhysXCapsuleShape3D::get_data() const {
@@ -31,7 +38,7 @@ AABB PhysXCapsuleShape3D::get_aabb() const {
 	return AABB(-half_extents, half_extents * 2.0f);
 }
 
-physx::PxTransform PhysXCapsuleShape3D::get_local_pose() const {
+physx::PxTransform PhysXCapsuleShape3D::get_local_pose(const physx::PxVec3 &p_scale) const {
     // Rotate PhysX's local X-axis to match Redot's Y-axis
     physx::PxQuat rot_z_90(physx::PxHalfPi, physx::PxVec3(0.0f, 0.0f, 1.0f));
     return physx::PxTransform(physx::PxVec3(0.0f), rot_z_90);

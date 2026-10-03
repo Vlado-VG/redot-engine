@@ -5,7 +5,12 @@ PhysXConeShape3D::PhysXConeShape3D() {}
 PhysXConeShape3D::~PhysXConeShape3D() {}
 
 void PhysXConeShape3D::set_data(const Variant &p_data) {
+    ERR_FAIL_COND(p_data.get_type() != Variant::DICTIONARY);
     Dictionary d = p_data;
+    // Same validation contract as the cylinder (positive dimensions).
+    ERR_FAIL_COND(!d.has("radius") || !d.has("height"));
+    ERR_FAIL_COND_MSG((float)d["radius"] <= 0.0f || (float)d["height"] <= 0.0f,
+            "PhysX cone shape radius and height must be > 0.");
     radius = d["radius"];
     height = d["height"];
 

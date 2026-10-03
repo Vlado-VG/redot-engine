@@ -23,15 +23,23 @@ AABB PhysXHeightMapShape3D::_calculate_aabb() const {
 	return AABB(position, size);
 }
 
-physx::PxTransform PhysXHeightMapShape3D::get_local_pose() const {
+physx::PxTransform PhysXHeightMapShape3D::get_local_pose(const physx::PxVec3 &p_scale) const {
 	// PhysX heightfields originate at a corner (0,0,0). Godot expects them
 	// centered on the local origin. Apply the offset so the shape is centered
 	// when the body places it at the origin. The Y offset reverses the
 	// quantization bake: sample value -32768 (== min_height) must land at
 	// min_height, not min_height - 32768 * height_scale.
-	float x_offset = -(float)(width - 1) * 0.5f;
-	float z_offset = -(float)(depth - 1) * 0.5f;
-	float y_offset = (float)min_height + 32768.0f * height_scale;
+	//
+	// The offset lives in UNSCALED heightfield-grid units, but the geometry
+	// scales sample spacing by (scale.x, scale.y, scale.z) — PxHeightField
+	// scaling never touches the pose translation. Composing the unscaled
+	// offset with a scaled geometry placed every sample at
+	// A + (h - A)*scale.y instead of h*scale.y (a constant vertical error of
+	// A*(1-scale.y) — scaled terrain floated or sank). Scale the translation
+	// by the same scale the geometry received.
+	const float x_offset = -(float)(width - 1) * 0.5f * p_scale.x;
+	const float z_offset = -(float)(depth - 1) * 0.5f * p_scale.z;
+	const float y_offset = ((float)min_height + 32768.0f * height_scale) * p_scale.y;
 	return physx::PxTransform(physx::PxVec3(x_offset, y_offset, z_offset));
 }
 
@@ -72,6 +80,11 @@ void PhysXHeightMapShape3D::set_data(const Variant &p_data) {
 
 	aabb = _calculate_aabb();
 	_release_height_field();
+	// Notify unconditionally: a previous cook may have failed (physics not yet
+	// initialized), leaving height_field null — the side-effect notification in
+	// _release_height_field would then never fire and owners would keep the
+	// stale geometry until some other trigger.
+	_notify_shape_changed();
 }
 
 Variant PhysXHeightMapShape3D::get_data() const {
@@ -107,7 +120,9 @@ void PhysXHeightMapShape3D::_release_height_field() {
 	if (height_field) {
 		height_field->release();
 		height_field = nullptr;
-        _notify_shape_changed();
+		// Notification is the caller's job: set_data notifies unconditionally
+		// (a failed previous cook leaves height_field null), and the
+		// destructor must not notify owners on a half-destroyed shape.
 	}
 }
 

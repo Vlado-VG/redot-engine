@@ -118,8 +118,10 @@ physx::PxShape *PhysXShape3D::create_shape(physx::PxPhysics &p_physics, const ph
 		return nullptr;
 	}
 
-	// Apply the coordinate alignment for Capsules/Planes
-    shape->setLocalPose(get_local_pose());
+	// Apply the coordinate alignment for Capsules/Planes (scale-dependent for
+	// heightfields / separation rays — the attach-time scale is the same one
+	// the geometry received).
+    shape->setLocalPose(get_local_pose(p_scale));
 
 	// Apply the contact offset (from the margin) and store a back-pointer
 	// for reverse lookups in query results and simulation callbacks.

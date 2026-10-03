@@ -664,7 +664,7 @@ void PhysXArea3D::_sync_detection_shape(AttachedShape &p_record) {
 	// shape's intrinsic alignment pose).
 	Transform3D final_tr = p_record.relative_transform;
 	final_tr.origin *= body_scale;
-	detection->setLocalPose(to_physx_transform(final_tr) * p_record.shareable_shape->get_local_pose());
+	detection->setLocalPose(to_physx_transform(final_tr) * p_record.shareable_shape->get_local_pose(total_scale));
 
 	// Areas never collide (see physx_simulation_filter_shader).
 	physx::PxFilterData filter_data;

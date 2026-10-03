@@ -41,6 +41,17 @@ static void _ensure_space_synced(const PhysXSpace3D *p_space) {
 	}
 }
 
+// Translates a raw PhysX ray face index into the author-facing index: a
+// backface-cooked concave mesh doubles every triangle, and its blueprint
+// (PxShape::userData) knows how to map back. Identity for every other shape.
+static int _resolve_face_index(const physx::PxRaycastHit &p_block) {
+	if (p_block.shape && p_block.shape->userData) {
+		const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(p_block.shape->userData);
+		return shape_bp->translate_face_index((int)p_block.faceIndex);
+	}
+	return (int)p_block.faceIndex;
+}
+
 // Upper bound on the number of results a single scene query can return.
 // Caller-provided p_result_max is clamped to this so a hostile or buggy
 // caller cannot exhaust the stack/heap. Godot caps its own result arrays
@@ -101,9 +112,11 @@ static bool _build_query_shape(const RID &p_shape_rid,
     // Compose world pose * shape-local alignment pose (e.g. capsule Y->X).
     // Orthonormalize the basis so the PxTransform quaternion is valid even if
     // the input basis carried shear from the scale we just stripped out.
+    // The alignment pose is scale-dependent for heightfields (quantization
+    // lift) and separation rays (forward offset) — same scale as the geometry.
     Transform3D unscaled = p_transform;
     unscaled.basis.orthonormalize();
-    r_pose = PhysXShapedObject3D::to_physx_transform(unscaled) * shape->get_local_pose();
+    r_pose = PhysXShapedObject3D::to_physx_transform(unscaled) * shape->get_local_pose(px_scale);
     return true;
 }
 
@@ -225,7 +238,7 @@ bool PhysXDirectSpaceState3D::intersect_ray(const RayParameters &p_parameters, R
             // hit_from_inside == true: report a synthetic from-inside hit.
             r_result.position = p_parameters.from;
             r_result.normal = Vector3();
-            r_result.face_index = block.faceIndex;
+            r_result.face_index = _resolve_face_index(block);
 
             // Map the PhysX hit back to Godot via the actor/shape userData.
             if (block.actor && block.actor->userData) {
@@ -248,7 +261,9 @@ bool PhysXDirectSpaceState3D::intersect_ray(const RayParameters &p_parameters, R
 
         r_result.position = Vector3(block.position.x, block.position.y, block.position.z);
         r_result.normal = Vector3(block.normal.x, block.normal.y, block.normal.z);
-        r_result.face_index = block.faceIndex;
+        // Backface-cooked concave meshes double every triangle; translate the
+        // raw PhysX face index into the author's index (identity otherwise).
+        r_result.face_index = _resolve_face_index(block);
 
         // Map the PhysX hit back to Godot via the actor/shape userData.
         if (block.actor && block.actor->userData) {
@@ -264,7 +279,7 @@ bool PhysXDirectSpaceState3D::intersect_ray(const RayParameters &p_parameters, R
         if (block.shape && block.shape->userData) {
             r_result.shape = physx_resolve_shape_index(block.actor, block.shape);
         } else {
-            r_result.shape = 0;
+            r_result.shape = -1;
         }
         return true;
     }
@@ -1056,7 +1071,9 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                 const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(body_shape->userData);
                 if (shape_bp && shape_bp->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
                     const PhysXSeparationRayShape3D *sep_ray = static_cast<const PhysXSeparationRayShape3D *>(shape_bp);
-                    const real_t ray_length = sep_ray->get_length();
+                    // The ray length scales with the body (the shape's baked
+                    // geometry does) — cast and measure in scaled units.
+                    const real_t ray_length = sep_ray->get_length() * p_body.get_body_scale().z;
 
                     physx::PxTransform local_pose = body_shape->getLocalPose();
                     physx::PxTransform shape_pose = body_pose * local_pose;
@@ -1067,10 +1084,11 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
                     const physx::PxVec3 px_shape_dir(shape_dir.x, shape_dir.y, shape_dir.z);
 
                     // Adjust the ray origin to the base of the separation-ray shape.
-                    // The PhysX box geometry is centered at the shape's local pose,
-                    // but the ray should start from the shape's base (body origin),
-                    // not its center. Subtract half-length along the body's +Z axis.
-                    shape_pose.p -= px_shape_dir * (ray_length * 0.5f);
+                    // The attached PxShape's local pose carries the forward
+                    // half-length offset (length * body Z scale — see the
+                    // shape's get_local_pose), so walk back the same scaled
+                    // half-length along the body's +Z axis to reach the base.
+                    shape_pose.p -= px_shape_dir * (ray_length * p_body.get_body_scale().z * 0.5f);
 
                     physx::PxRaycastBuffer ray_hit;
                     if (space->get_px_scene()->raycast(shape_pose.p, px_shape_dir, ray_length, ray_hit,
@@ -1430,7 +1448,8 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
             const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(body_shape->userData);
             if (shape_bp && shape_bp->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
                 const PhysXSeparationRayShape3D *sep_ray = static_cast<const PhysXSeparationRayShape3D *>(shape_bp);
-                const real_t ray_length = sep_ray->get_length();
+                // Scaled ray length, as in the recover phase.
+                const real_t ray_length = sep_ray->get_length() * p_body.get_body_scale().z;
 
                 Quaternion q = p_transform.basis.get_rotation_quaternion();
                 physx::PxTransform body_pose(
@@ -1444,11 +1463,10 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
                 const Vector3 shape_dir = p_transform.basis.xform(Vector3(0, 0, 1)).normalized();
                 const physx::PxVec3 px_shape_dir(shape_dir.x, shape_dir.y, shape_dir.z);
 
-                // Adjust the ray origin to the base of the separation-ray shape.
-                // The PhysX box geometry is centered at the shape's local pose,
-                // but the ray should start from the shape's base (body origin),
-                // not its center. Subtract half-length along the body's +Z axis.
-                shape_pose.p -= px_shape_dir * (ray_length * 0.5f);
+                // Adjust the ray origin to the base of the separation-ray shape
+                // (see the recover phase: the local pose carries the forward
+                // scaled half-length offset).
+                shape_pose.p -= px_shape_dir * (ray_length * p_body.get_body_scale().z * 0.5f);
 
                 physx::PxRaycastBuffer ray_hit;
                 if (space->get_px_scene()->raycast(shape_pose.p, px_shape_dir, ray_length, ray_hit, physx::PxHitFlag::ePOSITION | physx::PxHitFlag::eNORMAL, filter_data, &filter_cb)) {

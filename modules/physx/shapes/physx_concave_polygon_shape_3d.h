@@ -13,6 +13,13 @@ public:
 	virtual PhysicsServer3D::ShapeType get_type() const override { return PhysicsServer3D::SHAPE_CONCAVE_POLYGON; }
 	virtual bool is_convex() const override { return false; }
 
+	/// Backface cooking duplicates every triangle (forward + reversed winding):
+	/// raw PhysX face indices address the DOUBLED mesh, Godot consumers expect
+	/// indices into their own faces array.
+	virtual int translate_face_index(int p_face_index) const override {
+		return back_face_collision ? p_face_index / 2 : p_face_index;
+	}
+
 	virtual void set_data(const Variant &p_data) override;
 	virtual Variant get_data() const override;
 

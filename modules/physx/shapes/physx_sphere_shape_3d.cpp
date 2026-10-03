@@ -1,11 +1,16 @@
 #include "physx_sphere_shape_3d.h"
 
 void PhysXSphereShape3D::set_data(const Variant &p_data) {
-	// Godot sends the radius as a simple float for SHAPE_SPHERE
-	radius = p_data;
+	// Godot sends the radius as a simple float for SHAPE_SPHERE. PxSphereGeometry
+	// requires radius > 0 — reject invalid data here instead of failing late at
+	// createShape with a shape-less slot.
+	ERR_FAIL_COND_MSG(p_data.get_type() != Variant::FLOAT && p_data.get_type() != Variant::INT,
+			"PhysX sphere shape data must be a radius (number).");
+	const float r = (float)p_data;
+	ERR_FAIL_COND_MSG(r <= 0.0f || !Math::is_finite(r),
+			"PhysX sphere shape radius must be finite and > 0.");
+	radius = r;
 	_notify_shape_changed();
-	// You might want to trigger a shape update listener here if you have one set up
-    // configure_shape(); 
 }
 
 Variant PhysXSphereShape3D::get_data() const {

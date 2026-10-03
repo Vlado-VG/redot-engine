@@ -1080,7 +1080,8 @@ void PhysXBody3D::set_shape_disabled(int p_shape_idx, bool p_disabled) {
 		const bool sim_allowed = dyn == nullptr ||
 				(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) ||
 				!shapes[p_shape_idx].shareable_shape ||
-				shapes[p_shape_idx].shareable_shape->is_convex();
+				(shapes[p_shape_idx].shareable_shape->is_convex() &&
+				shapes[p_shape_idx].shareable_shape->get_type() != PhysicsServer3D::SHAPE_SEPARATION_RAY);
 		shapes[p_shape_idx].px_shape->setFlag(
 			physx::PxShapeFlag::eSIMULATION_SHAPE, !p_disabled && sim_allowed);
 		shapes[p_shape_idx].px_shape->setFlag(

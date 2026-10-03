@@ -48,6 +48,10 @@ public:
     virtual AABB get_aabb() const override;
 
     virtual bool get_physx_geometry(physx::PxGeometryHolder& holder, const physx::PxVec3& scale) const override;
+
+    /// Keeps the inner shape's margin in sync with the wrapper's (the wrapper
+    /// margin governs the attached PxShape's contact offset).
+    virtual void set_margin(float p_margin) override;
     
     // Backend access to check the exact shape type internally
     StringName get_custom_type() const { return current_type; }

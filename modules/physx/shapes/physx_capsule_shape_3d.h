@@ -29,7 +29,7 @@ public:
 	virtual AABB get_aabb() const override;
 	
 	// Applies the 90-degree rotation
-    virtual physx::PxTransform get_local_pose() const override;
+    virtual physx::PxTransform get_local_pose(const physx::PxVec3 &p_scale = physx::PxVec3(1.0f)) const override;
 
 	// Generates the PxCapsuleGeometry
 	virtual bool get_physx_geometry(physx::PxGeometryHolder &p_geometry_holder, const physx::PxVec3 &p_scale) const override;

@@ -42,10 +42,26 @@ void PhysXCustomShapeType::set_data(const Variant &p_data) {
     }
 
     if (internal_shape) {
+        // Propagate the wrapper's identity/margin policy to the inner shape so
+        // it cannot silently bypass wrapper-level settings (margin drives the
+        // attached PxShape's contact offset via the wrapper's create_shape,
+        // but the inner RID must not be an empty RID for reverse lookups).
+        internal_shape->set_rid(get_rid());
+        internal_shape->set_margin(margin);
         internal_shape->set_data(p_data);
     }
 
     _notify_shape_changed();
+}
+
+void PhysXCustomShapeType::set_margin(float p_margin) {
+    PhysXShape3D::set_margin(p_margin);
+    if (internal_shape) {
+        // Keep the inner shape's margin in sync (the wrapper's margin governs
+        // the attached PxShape; the sync removes the divergence trap if any
+        // inner-shape path ever reads it).
+        internal_shape->set_margin(p_margin);
+    }
 }
 
 Variant PhysXCustomShapeType::get_data() const {

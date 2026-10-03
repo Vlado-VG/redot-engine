@@ -4,12 +4,22 @@
  *
  * PhysX 5.x supports PxCustomGeometry, which delegates collision and query
  * operations to a user-provided callback object (PxCustomGeometryExt::Callbacks).
- * This template provides RAII management of that callback: it lazily creates
- * the callback on first use, applies scale changes, and owns it via unique_ptr.
+ * This template provides RAII management of those callbacks: it creates one
+ * instance per distinct (quantized) scale, and releases every instance once no
+ * owner holds a live PxShape referencing them.
  *
  * Concrete subclasses (e.g. the cylinder shape) specialize this template with
  * their specific callback type and implement _create_callbacks() /
  * _apply_scale_to_callbacks().
+ *
+ * LIFETIME CONTRACT (SHAPE-2): the callbacks are owned exclusively by this
+ * shape; a live PxCustomGeometry embedded in an attached PxShape points at
+ * them. The DESTRUCTOR calls detach_from_owners() from the most-derived
+ * destructor body — where virtual dispatch still reaches this override — so
+ * every owner's PxShape is released while the callbacks are alive. (Calling it
+ * from the BASE destructor cannot work: by then the override is unreachable
+ * and the callbacks are already freed.) After detachment releases all owner
+ * shapes, no PxCustomGeometry references the instances and they are freed.
  *
  * GPU DYNAMICS NOTE (verified — do not re-investigate without cause):
  * PhysX documentation historically described PxCustomGeometry as unsupported
@@ -31,7 +41,6 @@
 #include "physx_shape_3d.h"
 #include "../objects/physx_shaped_object_3d.h"
 #include <extensions/PxCustomGeometryExt.h>
-#include <memory> // For std::unique_ptr
 
 #include "core/templates/local_vector.h"
 
@@ -40,19 +49,21 @@ class PhysXCustomGeometryCallback : public PhysXShape3D {
 
 public:
     PhysXCustomGeometryCallback() : PhysXShape3D() {}
-    
+
     virtual ~PhysXCustomGeometryCallback() override {
+        // Most-derived destructor body: dynamic type is the concrete class, so
+        // detach_from_owners() dispatches to the override below (the base
+        // destructor's virtual call could not). PxShapes are released while
+        // the callbacks are alive; the instances go with _release_geometry().
+        detach_from_owners();
         _release_geometry();
     }
 
     virtual bool get_physx_geometry(physx::PxGeometryHolder& holder, const physx::PxVec3& scale) const override {
-        if (!_ensure_geometry()) {
-            return false;
-        }
-        // One callback instance per distinct scale: the shape blueprint is
-        // shared across bodies, and a single shared callback mutated per
-        // request made two differently-scaled owners fight over its
-        // radius/height (last write won for both). Each PxShape now holds a
+        // One callback instance per distinct (quantized) scale: the shape
+        // blueprint is shared across bodies, and a single shared callback
+        // mutated per request made two differently-scaled owners fight over
+        // its radius/height (last write won for both). Each PxShape holds a
         // PxCustomGeometry bound to its own scale's instance.
         CallbackT* cb = _callback_for_scale(scale);
         if (!cb) {
@@ -63,15 +74,9 @@ public:
     }
 
 protected:
-    // Memory automatically managed!
-    mutable std::unique_ptr<CallbackT> callbacks;
-
-    // Additional per-scale instances (the primary `callbacks` anchors the
-    // geometry-initialized state; these serve owners at other scales).
-    mutable LocalVector<std::pair<physx::PxVec3, CallbackT*>> scaled_instances;
-
-    mutable physx::PxCustomGeometry geometry;
-    mutable bool geometry_initialized = false;
+    // One heap instance per distinct quantized scale, alive while any owner's
+    // attached PxShape references it (released when the last owner detaches).
+    mutable LocalVector<std::pair<physx::PxVec3, CallbackT *>> scaled_instances;
 
     // Subclasses return a dynamically allocated, strongly-typed callback pointer
     virtual CallbackT* _create_callbacks() const = 0;
@@ -79,9 +84,22 @@ protected:
     // Unscaled params (radius/height) from the current data members.
     virtual void _apply_params_to_callbacks(CallbackT& cb) const = 0;
 
+    // Quantize scale components to a 1e-4 grid for the cache key: float-exact
+    // lookup recomputed an instance for every float jitter of an animated
+    // node scale; the quantized key reuses the instance across sub-0.1 um
+    // changes (geometry differences at that grid are far below PhysX
+    // tolerances).
+    static physx::PxVec3 _quantize_scale(const physx::PxVec3 &p_scale) {
+        return physx::PxVec3(
+                Math::round(p_scale.x * 1.0e4f) * 1.0e-4f,
+                Math::round(p_scale.y * 1.0e4f) * 1.0e-4f,
+                Math::round(p_scale.z * 1.0e4f) * 1.0e-4f);
+    }
+
     CallbackT* _callback_for_scale(const physx::PxVec3& scale) const {
+        const physx::PxVec3 key = _quantize_scale(scale);
         for (uint32_t i = 0; i < scaled_instances.size(); i++) {
-            if (scaled_instances[i].first == scale) {
+            if (scaled_instances[i].first == key) {
                 return scaled_instances[i].second;
             }
         }
@@ -89,64 +107,47 @@ protected:
         if (!cb) {
             return nullptr;
         }
-        _apply_scale_to_callbacks(*cb, scale);
-        scaled_instances.push_back({ scale, cb });
+        _apply_scale_to_callbacks(*cb, key);
+        scaled_instances.push_back({ key, cb });
         return cb;
     }
 
     // Re-push the current data (then each instance's own scale) into every
     // live instance -- called by derived set_data() implementations.
     void _refresh_instances() const {
-        if (callbacks) {
-            _apply_params_to_callbacks(*callbacks);
-        }
         for (uint32_t i = 0; i < scaled_instances.size(); i++) {
             _apply_scale_to_callbacks(*scaled_instances[i].second, scaled_instances[i].first);
         }
     }
 
-    bool _ensure_geometry() const {
-        if (geometry_initialized && callbacks) {
-            return true;
-        }
-        _release_geometry();
-
-        CallbackT* new_callbacks = _create_callbacks();
-        if (new_callbacks) {
-            callbacks.reset(new_callbacks); // Take ownership
-            geometry = physx::PxCustomGeometry(*callbacks);
-            geometry_initialized = true;
-            return true;
-        }
-        return false;
-    }
-
     void _release_geometry() const {
-        callbacks.reset(); // Safely deletes the callback, or does nothing if already null
         for (uint32_t i = 0; i < scaled_instances.size(); i++) {
             delete scaled_instances[i].second;
         }
         scaled_instances.clear();
-        geometry_initialized = false;
     }
 
-    // PhysXShape3D interface — detach PxShape from owners before callbacks are destroyed.
-    // The callbacks are destroyed after this method returns (during derived-class
-    // destructor), so the PxShape must be detached and released while the
-    // callback pointer is still valid.
+    // PhysXShape3D interface — detach PxShape from owners before the callbacks
+    // are destroyed (see the lifetime contract in the file header). After the
+    // last owner detaches, no live PxCustomGeometry references the instances
+    // and they are released.
     virtual void detach_from_owners() override {
-        // Ensure geometry is initialized so we have PxShape instances to detach.
-        _ensure_geometry();
-
-        // For each owner, detach the PxShape from the actor and nullify pointers.
-        // The PxShape is released (refcount drops to 0, destroyed) here while
-        // callbacks still exist. After this, the PxCustomGeometry's callback
-        // pointer is no longer accessed, even though it will become dangling
-        // when the PxShape is destroyed.
-        MutexLock lock(owners_mutex);
-        for (KeyValue<PhysXShapedObject3D *, int> &E : owners) {
-            PhysXShapedObject3D *owner = E.key;
+        // Snapshot the owners: detach_shape() calls back into remove_owner(),
+        // which mutates the map being iterated.
+        LocalVector<PhysXShapedObject3D *> snapshot;
+        {
+            MutexLock lock(owners_mutex);
+            for (const KeyValue<PhysXShapedObject3D *, int> &E : owners) {
+                snapshot.push_back(E.key);
+            }
+        }
+        for (PhysXShapedObject3D *owner : snapshot) {
             owner->detach_shape(this);
+        }
+
+        MutexLock lock(owners_mutex);
+        if (owners.is_empty()) {
+            _release_geometry();
         }
     }
 };
