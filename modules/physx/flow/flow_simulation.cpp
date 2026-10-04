@@ -104,9 +104,12 @@ void FlowSimulation::_destroy_grid() {
 void FlowSimulation::configure(const FlowSimGridConfig &p_config) {
 	if (runtime == nullptr) {
 		runtime = FlowRuntime::acquire();
-		if (!runtime->is_available()) {
-			return;
-		}
+	}
+	// FLOW-2: the availability check must run on EVERY entry, not only when
+	// the runtime was first acquired -- a second configure() after a failed
+	// init skipped the guard and invoked createGrid with a null context.
+	if (!runtime->is_available()) {
+		return;
 	}
 	if (grid != nullptr && grid_config.max_blocks == p_config.max_blocks) {
 		return; // nothing structurally new
@@ -207,6 +210,7 @@ void FlowSimulation::step(double p_absolute_time, float p_delta,
 	if (grid == nullptr || runtime == nullptr || !runtime->is_available()) {
 		return; // slots age out via consumed flags; nothing to invalidate
 	}
+	step_entry_time = p_absolute_time; // FLOW-8: readback stamps use THIS step's time
 	NvFlowContextInterface *ci = runtime->context_interface();
 	NvFlowGridInterface *gi = runtime->get_grid_interface();
 	const uint64_t usec0 = Time::get_singleton()->get_ticks_usec();
@@ -466,9 +470,17 @@ void FlowSimulation::step(double p_absolute_time, float p_delta,
 	gi->simulate(runtime->context(), grid, &params_desc, p_force_clear ? NV_FLOW_TRUE : NV_FLOW_FALSE);
 
 	// --- Record readback copies for this frame (alternating slot) ------------
-	ReadbackSlot &slot = slots[record_slot & 1];
-	record_slot++;
-	_record_readback_copies(slot, ci, gi);
+	// FLOW-1 (paused): the uploaded fog texture already holds the last decoded
+	// frame and persists on the GPU -- recording fresh copies while paused
+	// made poll_readback deliver "new" (identical) frames forever, so the
+	// node re-uploaded identical data at physics rate. Skip recording when
+	// paused without the keep-simulating escape hatch.
+	const bool record_readback = !p_paused || p_settings.simulate_when_paused;
+	ReadbackSlot &slot = slots[record_slot & 1]; // the flush tail stamps this slot
+	if (record_readback) {
+		record_slot++;
+		_record_readback_copies(slot, ci, gi);
+	}
 
 	gi->offscreen(runtime->context(), grid, &params_desc);
 
@@ -596,8 +608,12 @@ void FlowSimulation::_record_readback_copies(ReadbackSlot &r_slot, NvFlowContext
 	}
 
 	// Snapshot the sparse layout for the decode (CPU-side copies).
+	// FLOW-8: `sim_time` was still the PREVIOUS step's time here (the caller
+	// assigns the new one after the readback records) -- first frame reported
+	// t=0 and every frame lagged one step. The step() entry time is what this
+	// frame's data belongs to.
 	r_slot.inflight.frame_index = 0; // stamped by step() after flush
-	r_slot.inflight.absolute_sim_time = sim_time;
+	r_slot.inflight.absolute_sim_time = step_entry_time;
 	if (sp.layerCount > 0 && sp.layers != nullptr) {
 		r_slot.inflight.layer = sp.layers[0];
 	}

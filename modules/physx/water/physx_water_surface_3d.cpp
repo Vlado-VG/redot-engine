@@ -612,22 +612,26 @@ void PhysXWaterSurface3D::set_grid_resolution(int p_n) {
 
 void PhysXWaterSurface3D::set_depth(float p_depth) {
 	depth = MAX(p_depth, 0.1f);
-	_rebuild();
+	// WATER-3: depth/damping/water_level/ripple_amplitude are rt_step
+	// ARGUMENTS (uploaded every tick) -- a solver-front settings write makes
+	// them live; _rebuild() here tore down and recreated the entire GPU
+	// solver (13 textures + pipelines) per setter call.
+	solver.set_step_constants(depth, damping, water_level, ripple_amplitude);
 }
 
 void PhysXWaterSurface3D::set_water_level(float p_level) {
 	water_level = p_level;
-	_rebuild();
+	solver.set_step_constants(depth, damping, water_level, ripple_amplitude);
 }
 
 void PhysXWaterSurface3D::set_damping(float p_damping) {
 	damping = p_damping;
-	_rebuild();
+	solver.set_step_constants(depth, damping, water_level, ripple_amplitude);
 }
 
 void PhysXWaterSurface3D::set_ripple_amplitude(float p_amplitude) {
 	ripple_amplitude = MAX(p_amplitude, 0.0f);
-	_rebuild();
+	solver.set_step_constants(depth, damping, water_level, ripple_amplitude);
 }
 
 void PhysXWaterSurface3D::set_ocean_grid_resolution(int p_n) {
@@ -990,9 +994,11 @@ void PhysXWaterSurface3D::_configure_solver() {
 	}
 
 	textures_bound = false; // solver was just rebuilt -- its old texture RIDs (if any) are gone, rebind once available
-	if (caustics_texture.is_valid()) {
-		caustics_texture->set_texture_rd_rid(RID());
-	}
+	// WATER-1: unbind EVERY wrapper, not just caustics -- _rt_build_buffers
+	// frees and recreates all 13 solver textures, and the other 9 wrappers
+	// kept sampling the freed RD image handles for 1-2 frames (validation
+	// errors / garbage frames on every runtime property change).
+	_unbind_all_textures();
 	frames_since_refresh = REFRESH_EVERY_FRAMES; // force an immediate CPU cache refresh on the next _update()
 }
 
@@ -1027,6 +1033,21 @@ void PhysXWaterSurface3D::_update(double p_delta) {
 		frames_since_refresh = 0;
 		_refresh_cpu_cache();
 	}
+}
+
+void PhysXWaterSurface3D::_unbind_all_textures() {
+	// Clear the RD RID on every wrapper so nothing samples a freed texture
+	// between a solver rebuild and the next _bind_textures().
+	if (ripple_height_tex.is_valid()) ripple_height_tex->set_texture_rd_rid(RID());
+	if (ocean_height_tex.is_valid()) ocean_height_tex->set_texture_rd_rid(RID());
+	if (ocean_fade_tex.is_valid()) ocean_fade_tex->set_texture_rd_rid(RID());
+	if (ocean_disp_tex.is_valid()) ocean_disp_tex->set_texture_rd_rid(RID());
+	if (ocean_deriv_tex.is_valid()) ocean_deriv_tex->set_texture_rd_rid(RID());
+	if (ocean_foam_tex.is_valid()) ocean_foam_tex->set_texture_rd_rid(RID());
+	if (shore_foam_tex.is_valid()) shore_foam_tex->set_texture_rd_rid(RID());
+	if (swash_tex.is_valid()) swash_tex->set_texture_rd_rid(RID());
+	if (shore_depth_tex.is_valid()) shore_depth_tex->set_texture_rd_rid(RID());
+	if (caustics_texture.is_valid()) caustics_texture->set_texture_rd_rid(RID());
 }
 
 void PhysXWaterSurface3D::_bind_textures() {

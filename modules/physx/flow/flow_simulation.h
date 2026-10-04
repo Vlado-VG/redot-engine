@@ -253,6 +253,7 @@ private:
 	FlowReadbackFrame last_readback;
 	uint64_t frames_simulated = 0;
 	double sim_time = 0.0;
+	double step_entry_time = 0.0; // FLOW-8: time the CURRENT step started
 	uint32_t diag_flags = DIAG_NONE;
 	TimingStats timing;
 

@@ -469,25 +469,57 @@ void GasSolver::step(double p_delta, const Transform3D &p_xform) {
 	}
 	_upload_params(p_delta);
 
+	// Single-submit step (PART-1): the old path ran every pass through
+	// _dispatch's own submit+sync -- 36 full CPU<->GPU round trips per tick
+	// (curl, step, divergence, 32 Jacobi iterations, project). Record ALL
+	// passes into ONE compute list with barriers between them (same pattern
+	// as the MPM solver) and submit once. Godot RD records buffer commands
+	// into the submission queue in call order, so the grid copy below still
+	// executes after the passes without a second submit.
 	const bool was_a = a_is_current;
+	step_submit_count = 0;
+
+	RD::ComputeListID cl = rd->compute_list_begin();
+
 	RID curl_uset = was_a ? uset_curl_a : uset_curl_b;
-	_dispatch(pipeline_curl, curl_uset, cell_count);
+	rd->compute_list_bind_compute_pipeline(cl, pipeline_curl);
+	rd->compute_list_bind_uniform_set(cl, curl_uset, 0);
+	rd->compute_list_dispatch(cl, groups_for(cell_count), 1, 1);
+	rd->compute_list_add_barrier(cl);
+
 	RID step_uset = was_a ? uset_step_atob : uset_step_btoa;
-	_dispatch(pipeline_step, step_uset, cell_count);
+	rd->compute_list_bind_compute_pipeline(cl, pipeline_step);
+	rd->compute_list_bind_uniform_set(cl, step_uset, 0);
+	rd->compute_list_dispatch(cl, groups_for(cell_count), 1, 1);
+	rd->compute_list_add_barrier(cl);
 
 	RID divergence_uset = was_a ? uset_divergence_b : uset_divergence_a;
-	_dispatch(pipeline_divergence, divergence_uset, cell_count);
+	rd->compute_list_bind_compute_pipeline(cl, pipeline_divergence);
+	rd->compute_list_bind_uniform_set(cl, divergence_uset, 0);
+	rd->compute_list_dispatch(cl, groups_for(cell_count), 1, 1);
+	rd->compute_list_add_barrier(cl);
+
 	for (int it = 0; it < PRESSURE_JACOBI_ITERS; it++) {
 		RID jacobi_uset = (it % 2 == 0) ? uset_jacobi_p5top6 : uset_jacobi_p6top5;
-		_dispatch(pipeline_jacobi, jacobi_uset, cell_count);
+		rd->compute_list_bind_compute_pipeline(cl, pipeline_jacobi);
+		rd->compute_list_bind_uniform_set(cl, jacobi_uset, 0);
+		rd->compute_list_dispatch(cl, groups_for(cell_count), 1, 1);
+		rd->compute_list_add_barrier(cl);
 	}
-	RID project_uset = was_a ? uset_project_b : uset_project_a;
-	_dispatch(pipeline_project, project_uset, cell_count);
 
+	RID project_uset = was_a ? uset_project_b : uset_project_a;
+	rd->compute_list_bind_compute_pipeline(cl, pipeline_project);
+	rd->compute_list_bind_uniform_set(cl, project_uset, 0);
+	rd->compute_list_dispatch(cl, groups_for(cell_count), 1, 1);
+	rd->compute_list_end();
+
+	// Copy scratch -> NEW_STATE, recorded after the passes in the same
+	// submission (ordered on the device timeline), then ONE sync.
 	RID new_state_grid = was_a ? buf_grid_b : buf_grid_a;
 	rd->buffer_copy(buf_grid_scratch, new_state_grid, 0, 0, max_blocks * BCELLS * 4 * sizeof(float));
 	rd->submit();
 	rd->sync();
+	step_submit_count = 1;
 
 	a_is_current = !was_a;
 }
@@ -543,6 +575,11 @@ void GasSolver::get_render_cells(float p_density_threshold, Vector<Vector3> &r_p
 			}
 		}
 	}
+}
+
+int GasSolver::get_domain_cells() const {
+	const Vector3i dims = settings.box_blocks * BLK;
+	return dims.x * dims.y * dims.z;
 }
 
 void GasSolver::get_density_grid(Vector<float> &r_density, Vector3i &r_dims, Vector3 &r_anchor, float &r_cell_size) const {

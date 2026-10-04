@@ -324,6 +324,7 @@ private:
 	Ref<Mesh> _build_extended_plane(Vector2 p_inner, int p_inner_cells, real_t p_extent) const;
 	Ref<Mesh> _build_footprint_mesh(const Vector<Vector2> &p_tris, const Rect2 &p_bounds, int p_cells) const;
 	void _bind_textures();
+	void _unbind_all_textures(); // WATER-1
 	void _refresh_cpu_cache();
 	void _update(double p_delta);
 	float _bilinear_sample(const Vector<float> &p_grid, int p_n, Vector2 p_domain, float p_world_x, float p_world_z) const;

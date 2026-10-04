@@ -367,6 +367,7 @@ public:
 	// shallows leave shore foam (0 = none). p_shore_undertow: steady seaward
 	// drift (m/s) the backwash drags that foam back out with.
 	void set_foam_settings(bool p_enabled, float p_choppiness, float p_threshold, float p_persistence, float p_shore_band, float p_shore_undertow);
+	void set_step_constants(float p_depth, float p_damping, float p_water_level, float p_ripple_amplitude); // WATER-3 live update
 	// R32F shore foam (0..1) on the ripple grid; valid once is_available().
 	RID get_shore_foam_texture_rd_rid() const;
 	// Swash: the highest run-up (m above still water) of the biggest waves,

@@ -90,6 +90,22 @@ PhysXFlowSimulation3D::~PhysXFlowSimulation3D() {
 	}
 }
 
+// FLOW-4: cheap live-vs-cached signature. Type must match; boxes re-cook when
+// their half-extents change; every other type re-cooks only on type mismatch
+// (a full data compare for a 50k-triangle concave each second would cost more
+// than the stale cache).
+bool PhysXFlowSimulation3D::_shape_cache_matches(const RID &p_shape, const CachedShapeMesh &p_cache) const {
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	if (!p_shape.is_valid()) {
+		return false;
+	}
+	const PhysicsServer3D::ShapeType type = ps->shape_get_type(p_shape);
+	if (type == PhysicsServer3D::SHAPE_BOX) {
+		return p_cache.analytic_box && p_cache.box_half_extents.is_equal_approx(ps->shape_get_data(p_shape));
+	}
+	return true;
+}
+
 uint64_t PhysXFlowSimulation3D::_luid_for(ObjectID p_id) {
 	if (uint64_t *existing = node_luids.getptr(p_id)) {
 		return *existing;
@@ -235,6 +251,7 @@ bool PhysXFlowSimulation3D::_build_server_shape_mesh(const RID &p_shape_rid, Cac
 }
 
 void PhysXFlowSimulation3D::_resolve_colliders(LocalVector<FlowColliderData> &r_colliders, double p_delta) {
+	active_collider_ids.clear();
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 
 	for (int i = 0; i < colliders.size(); i++) {
@@ -284,6 +301,7 @@ void PhysXFlowSimulation3D::_resolve_colliders(LocalVector<FlowColliderData> &r_
 				c.is_mesh = true;
 				c.mesh_positions = fc->mesh_positions; // copied into the record's storage
 			}
+			active_collider_ids.insert(fc->get_instance_id());
 			r_colliders.push_back(c);
 			continue;
 		}
@@ -342,6 +360,7 @@ void PhysXFlowSimulation3D::_resolve_colliders(LocalVector<FlowColliderData> &r_
 					c.is_mesh = true;
 					c.mesh_positions = cache->positions;
 				}
+				active_collider_ids.insert(co->get_instance_id());
 				r_colliders.push_back(c);
 			}
 			continue;
@@ -361,6 +380,7 @@ void PhysXFlowSimulation3D::_resolve_colliders(LocalVector<FlowColliderData> &r_
 			c.world_xform = cs->get_global_transform();
 			c.is_mesh = false;
 			c.half_size = Vector3(enclosing, enclosing, enclosing); // bound cube (Shape3D exposes only an enclosing radius here)
+			active_collider_ids.insert(cs->get_instance_id());
 			r_colliders.push_back(c);
 			continue;
 		}
@@ -375,6 +395,7 @@ void PhysXFlowSimulation3D::_resolve_colliders(LocalVector<FlowColliderData> &r_
 		c.world_xform = node->get_global_transform();
 		c.is_mesh = false;
 		c.half_size = Vector3(collider_fallback_size, collider_fallback_size, collider_fallback_size);
+		active_collider_ids.insert(node->get_instance_id());
 		r_colliders.push_back(c);
 	}
 }
@@ -433,12 +454,7 @@ void PhysXFlowSimulation3D::_resolve_transients(double p_delta, LocalVector<Flow
 
 // ---- Step -------------------------------------------------------------------
 
-void PhysXFlowSimulation3D::_step(double p_delta) {
-	_ensure_simulation();
-	if (simulation == nullptr || !simulation->is_available() || !enabled) {
-		return;
-	}
-
+FlowSimSettings PhysXFlowSimulation3D::_build_settings() const {
 	FlowSimSettings settings;
 	settings.cell_size = cell_size;
 	settings.steps_per_second = steps_per_second;
@@ -457,6 +473,16 @@ void PhysXFlowSimulation3D::_step(double p_delta) {
 	settings.combustion_enabled = combustion_enabled;
 	settings.vorticity_force_scale = vorticity;
 	settings.pressure_enabled = pressure_projection;
+	return settings;
+}
+
+void PhysXFlowSimulation3D::_step(double p_delta) {
+	_ensure_simulation();
+	if (simulation == nullptr || !simulation->is_available() || !enabled) {
+		return;
+	}
+
+	const FlowSimSettings settings = _build_settings();
 
 	LocalVector<FlowEmitterData> resolved_emitters;
 	LocalVector<FlowColliderData> resolved_colliders;
@@ -466,17 +492,63 @@ void PhysXFlowSimulation3D::_step(double p_delta) {
 	}
 	_resolve_colliders(resolved_colliders, p_delta);
 
+	// FLOW-4 cache pruning: kinematic last-transforms and luid entries for
+	// nodes that left the collider set are dead weight -- prune them to the
+	// CURRENT collider id set every pass. The shape-mesh cache is
+	// re-validated once a second (every 60 passes): a resized shape re-cooks,
+	// freed shapes drop out.
+	{
+		const HashSet<ObjectID> &current_ids = active_collider_ids;
+		// Godot's HashMap has no erase(iterator): collect doomed keys, erase by key.
+		LocalVector<ObjectID> dead_ids;
+		for (HashMap<ObjectID, Transform3D>::Iterator it = kinematic_last_transforms.begin(); it != kinematic_last_transforms.end(); ++it) {
+			if (!current_ids.has(it->key)) {
+				dead_ids.push_back(it->key);
+			}
+		}
+		for (const ObjectID &dead : dead_ids) {
+			kinematic_last_transforms.erase(dead);
+		}
+		dead_ids.clear();
+		for (HashMap<ObjectID, uint64_t>::Iterator it = node_luids.begin(); it != node_luids.end(); ++it) {
+			if (!current_ids.has(it->key)) {
+				dead_ids.push_back(it->key);
+			}
+		}
+		for (const ObjectID &dead : dead_ids) {
+			node_luids.erase(dead);
+		}
+		cache_validate_countdown--;
+		if (cache_validate_countdown <= 0) {
+			cache_validate_countdown = 60;
+			LocalVector<RID> dead_shapes;
+			for (HashMap<RID, CachedShapeMesh>::Iterator it = shape_mesh_cache.begin(); it != shape_mesh_cache.end(); ++it) {
+				if (!_shape_cache_matches(it->key, it->value)) {
+					dead_shapes.push_back(it->key);
+				}
+			}
+			for (const RID &dead : dead_shapes) {
+				shape_mesh_cache.erase(dead);
+			}
+		}
+	}
+
 	sim_time_accum += p_delta; // monotonic sim clock owned by this node
 	simulation->step(sim_time_accum, (float)p_delta,
 			resolved_emitters.ptr(), resolved_emitters.size(),
 			resolved_colliders.ptr(), resolved_colliders.size(),
 			settings, false, paused);
 
-	// Consume any completed readback (typically 1-2 frames behind).
+	// Consume any completed readback (typically 1-2 frames behind). A NEW
+	// frame marks the fog texture dirty; _update_volumetric_render (below in
+	// the same tick) is the only consumer.
 	FlowReadbackFrame frame;
 	if (simulation->poll_readback(frame)) {
 		last_frame = frame;
+		texture_dirty = true;
+		texture_update_count++;
 	}
+	frame_count++;
 	if (debug_stats) {
 		simulation->set_diag_flags(FlowSimulation::DIAG_SPARSE_LAYOUT | FlowSimulation::DIAG_READBACK_STATS);
 	} else {
@@ -511,9 +583,19 @@ void PhysXFlowSimulation3D::_ensure_fog_volume() {
 }
 
 void PhysXFlowSimulation3D::_update_volumetric_render() {
+	// FLOW-1: only re-encode + re-upload the fog texture when poll_readback
+	// actually delivered a NEW decoded frame. The old path re-ran whenever
+	// last_frame.valid -- after the first decode it stayed true forever, so
+	// up to ~32 MB of slices were copied/re-imaged/re-uploaded at physics
+	// rate even when zero new frames arrived (paused, stalled, or
+	// slow-decoding).
 	if (!last_frame.valid || last_frame.dims.x <= 0) {
 		return;
 	}
+	if (!texture_dirty) {
+		return;
+	}
+	texture_dirty = false; // consumed
 	const Vector3i dims = last_frame.dims;
 
 	// One Image slice per Z layer; voxels are already RGBA half (4x16-bit).
@@ -553,6 +635,15 @@ void PhysXFlowSimulation3D::_update_render() {
 void PhysXFlowSimulation3D::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_ENTER_WORLD: {
+			// FLOW-9 editor guard (matches the water node's post-crash hard
+			// guard): opening a scene used to load nvflow, create a Vulkan
+			// device, and run a full GPU sim per tick INSIDE the editor. The
+			// own-device architecture mitigated but did not eliminate that
+			// risk; editor preview is not worth it. Simulation runs in game
+			// only.
+			if (Engine::get_singleton()->is_editor_hint()) {
+				break;
+			}
 			_ensure_simulation();
 			set_physics_process_internal(true);
 		} break;
@@ -590,9 +681,40 @@ void PhysXFlowSimulation3D::step_once() {
 	if (!paused) {
 		return; // already stepping every tick
 	}
+	// FLOW-12: advance ONE live step while paused. The old path delegated to
+	// _step, which force-disables the core sim + emitters in exactly this
+	// configuration -- a guaranteed no-op. Bypass the pause flags for this
+	// single call (the node-level "single step while paused" contract).
 	const double dt = 1.0 / 60.0;
-	_step(dt);
+	if (simulation != nullptr && simulation->is_available()) {
+		const FlowSimSettings settings = _build_settings();
+		LocalVector<FlowEmitterData> resolved_emitters;
+		LocalVector<FlowColliderData> resolved_colliders;
+		_resolve_emitters(resolved_emitters);
+		_resolve_transients(dt, resolved_emitters);
+		_resolve_colliders(resolved_colliders, dt);
+		sim_time_accum += dt;
+		simulation->step(sim_time_accum, (float)dt,
+				resolved_emitters.ptr(), resolved_emitters.size(),
+				resolved_colliders.ptr(), resolved_colliders.size(),
+				settings, false, /*paused=*/false);
+		FlowReadbackFrame frame;
+		if (simulation->poll_readback(frame)) {
+			last_frame = frame;
+			texture_dirty = true;
+			texture_update_count++;
+		}
+		frame_count++;
+	}
 	_update_render();
+}
+
+int PhysXFlowSimulation3D::get_frame_count() const {
+	return (int)frame_count;
+}
+
+int PhysXFlowSimulation3D::get_texture_update_count() const {
+	return (int)texture_update_count;
 }
 
 bool PhysXFlowSimulation3D::is_flow_available() const {
@@ -723,6 +845,8 @@ void PhysXFlowSimulation3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_paused"), &PhysXFlowSimulation3D::get_paused);
 	ClassDB::bind_method(D_METHOD("reset_simulation"), &PhysXFlowSimulation3D::reset_simulation);
 	ClassDB::bind_method(D_METHOD("step_once"), &PhysXFlowSimulation3D::step_once);
+	ClassDB::bind_method(D_METHOD("get_frame_count"), &PhysXFlowSimulation3D::get_frame_count);
+	ClassDB::bind_method(D_METHOD("get_texture_update_count"), &PhysXFlowSimulation3D::get_texture_update_count);
 	ClassDB::bind_method(D_METHOD("add_transient_emitter", "world_position", "radius", "smoke", "temperature", "fuel", "velocity", "lifetime"),
 			&PhysXFlowSimulation3D::add_transient_emitter, DEFVAL(1.5));
 	ClassDB::bind_method(D_METHOD("is_flow_available"), &PhysXFlowSimulation3D::is_flow_available);

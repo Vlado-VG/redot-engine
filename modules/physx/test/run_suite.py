@@ -43,6 +43,7 @@ VEHICLE_SCRIPTS = [
     "res://gdscript/vehicle_direction_test.gd",
 ]
 ASYNC_SCRIPT = "res://gdscript/async_stress_test.gd"
+RUNTIME_SCRIPT = "res://gdscript/runtime_cost_test.gd"
 FLOW_SCRIPT = "res://gdscript/flow_smoke_test.gd"
 GPU_SCRIPT = "res://gdscript/gpu_smoke_test.gd"
 
@@ -50,7 +51,7 @@ GPU_SCRIPT = "res://gdscript/gpu_smoke_test.gd"
 # deterministic, CPU-only, and headless-safe. "flow" and "gpu" are opt-in —
 # they need a usable CUDA/Vulkan runtime on the machine running them — and
 # the CI job runs them as a separate, non-blocking step.
-DEFAULT_SUITES = ["csharp", "gdscript", "smoke", "blast", "vehicle", "async"]
+DEFAULT_SUITES = ["csharp", "gdscript", "smoke", "blast", "vehicle", "async", "runtime"]
 SUITES = {
     "csharp": [CSHARP_SCRIPT],
     "gdscript": [GDSCRIPT_SCRIPT],
@@ -58,6 +59,7 @@ SUITES = {
     "blast": [BLAST_SCRIPT],
     "vehicle": VEHICLE_SCRIPTS,
     "async": [ASYNC_SCRIPT],
+    "runtime": [RUNTIME_SCRIPT],
     "flow": [FLOW_SCRIPT],
     "gpu": [GPU_SCRIPT],
 }

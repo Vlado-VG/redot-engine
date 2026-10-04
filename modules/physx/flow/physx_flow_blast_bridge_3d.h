@@ -62,6 +62,8 @@ class PhysXFlowBlastBridge3D : public Node3D {
 	float lifetime = 1.5f;
 
 	bool connected = false;
+	ObjectID connected_id; // the destructible the signal is actually wired to
+	void _disconnect_destructible();
 
 	void _on_fractured(const Vector3 &p_world_position, int p_pieces, float p_damage);
 	PhysXFlowSimulation3D *_resolve_simulation() const;

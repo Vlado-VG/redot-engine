@@ -221,6 +221,13 @@ bool FlowRuntime::_init() {
 			device = nullptr;
 			device_interface.destroyDeviceManager(device_manager);
 			device_manager = nullptr;
+			// FLOW-5: this branch (and getContext below) used to leak the
+			// thread pool created above -- destroy it like the earlier
+			// failure branches do.
+			if (thread_pool != nullptr && tp_interface != nullptr) {
+				tp_interface->destroy(thread_pool);
+				thread_pool_storage = nullptr;
+			}
 			continue;
 		}
 
@@ -235,6 +242,11 @@ bool FlowRuntime::_init() {
 			device = nullptr;
 			device_interface.destroyDeviceManager(device_manager);
 			device_manager = nullptr;
+			// FLOW-5: same thread-pool leak as the getDeviceQueue branch.
+			if (thread_pool != nullptr && tp_interface != nullptr) {
+				tp_interface->destroy(thread_pool);
+				thread_pool_storage = nullptr;
+			}
 			continue;
 		}
 		context_opt = context_opt_interface.create(backend_ctx_interface, backend_ctx);

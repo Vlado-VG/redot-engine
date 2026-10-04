@@ -43,21 +43,34 @@ void PhysXFlowBlastBridge3D::_notification(int p_what) {
 			if (PhysXDestructible3D *d = _resolve_destructible()) {
 				if (!connected) {
 					d->connect(SNAME("chunks_fractured"), callable_mp(this, &PhysXFlowBlastBridge3D::_on_fractured));
+					connected_id = d->get_instance_id(); // remember WHO we connected to
 					connected = true;
 				}
 			}
 		} break;
 		case NOTIFICATION_EXIT_TREE: {
-			if (connected) {
-				if (PhysXDestructible3D *d = _resolve_destructible()) {
-					d->disconnect(SNAME("chunks_fractured"), callable_mp(this, &PhysXFlowBlastBridge3D::_on_fractured));
-				}
-				connected = false;
-			}
+			_disconnect_destructible();
 		} break;
 		default:
 			break;
 	}
+}
+
+void PhysXFlowBlastBridge3D::_disconnect_destructible() {
+	if (!connected) {
+		return;
+	}
+	// FLOW-3: disconnect the node we ACTUALLY connected to (by cached
+	// ObjectID), not whatever destructible_path currently resolves to -- the
+	// old re-wire resolved the NEW path for the disconnect, targeting a node
+	// that was never connected while the old one stayed wired forever.
+	if (Object *obj = ObjectDB::get_instance(connected_id)) {
+		if (PhysXDestructible3D *d = Object::cast_to<PhysXDestructible3D>(obj)) {
+			d->disconnect(SNAME("chunks_fractured"), callable_mp(this, &PhysXFlowBlastBridge3D::_on_fractured));
+		}
+	}
+	connected_id = ObjectID();
+	connected = false;
 }
 
 PhysXDestructible3D *PhysXFlowBlastBridge3D::_resolve_destructible() const {
@@ -115,14 +128,10 @@ void PhysXFlowBlastBridge3D::set_destructible_path(const NodePath &p_path) {
 	destructible_path = p_path;
 	// Re-wire when the target changes while inside the tree.
 	if (is_inside_tree()) {
-		if (connected) {
-			if (PhysXDestructible3D *d = _resolve_destructible()) {
-				d->disconnect(SNAME("chunks_fractured"), callable_mp(this, &PhysXFlowBlastBridge3D::_on_fractured));
-			}
-			connected = false;
-		}
+		_disconnect_destructible();
 		if (PhysXDestructible3D *d = _resolve_destructible()) {
 			d->connect(SNAME("chunks_fractured"), callable_mp(this, &PhysXFlowBlastBridge3D::_on_fractured));
+			connected_id = d->get_instance_id();
 			connected = true;
 		}
 	}

@@ -30,6 +30,10 @@
 
 #include "physx_gas_3d.h"
 
+// PART-2: density readback + texture upload throttle (per physics tick).
+// Volumetric fog reads fine at 30 Hz; the readback is the dominant cost.
+static constexpr int GAS_DENSITY_READBACK_EVERY = 2;
+
 #include "../particles/gas_solver.h"
 #include "physx_gas_emitter_3d.h"
 
@@ -225,6 +229,18 @@ void PhysXGas3D::_ensure_fire_material() {
 	if (density_texture.is_valid()) {
 		fire_material->set_shader_parameter("density_tex", density_texture);
 	}
+}
+
+void PhysXGas3D::set_debug_diagnostics(bool p_enabled) {
+	debug_diagnostics = p_enabled;
+}
+
+bool PhysXGas3D::get_debug_diagnostics() const {
+	return debug_diagnostics;
+}
+
+int PhysXGas3D::get_solver_step_submits() const {
+	return solver != nullptr ? solver->get_last_step_submits() : 0;
 }
 
 void PhysXGas3D::set_debug_point_cloud(bool p_enabled) {
@@ -435,6 +451,15 @@ void PhysXGas3D::_ensure_fog_volume() {
 }
 
 void PhysXGas3D::_update_volumetric_render() {
+	// PART-2 readback throttle: the density readback (whole current domain,
+	// several MB) runs at half the physics rate -- volumetric fog visuals do
+	// not read at 60 Hz, and the readback is the dominant CPU cost of this
+	// path. last_max_density and the texture simply lag one extra tick.
+	density_readback_tick++;
+	if (density_readback_tick % GAS_DENSITY_READBACK_EVERY != 0) {
+		return;
+	}
+
 	Vector<float> density;
 	Vector3i dims;
 	Vector3 anchor;
@@ -444,6 +469,8 @@ void PhysXGas3D::_update_volumetric_render() {
 		return;
 	}
 
+	// NaN diagnostics are opt-in (debug_diagnostics): an unconditional
+	// print_line here spammed the console EVERY TICK once a NaN appeared.
 	last_max_density = 0.0f;
 	int nan_count = 0;
 	for (int i = 0; i < density.size(); i++) {
@@ -453,32 +480,42 @@ void PhysXGas3D::_update_volumetric_render() {
 		}
 		last_max_density = MAX(last_max_density, density[i]);
 	}
-	if (nan_count > 0) {
-		print_line(vformat("[gas-diag] %d/%d cells are NaN/Inf!", nan_count, density.size()));
+	if (nan_count > 0 && debug_diagnostics) {
+		WARN_PRINT_ONCE(vformat("[gas-diag] %d/%d cells are NaN/Inf!", nan_count, density.size()));
 	}
 
 	// One Image slice per Z layer (dims.x * dims.y each) -- ImageTexture3D's
-	// native layout.
-	Vector<Ref<Image>> slices;
-	slices.resize(dims.z);
+	// native layout. The slice Images are PERSISTENT (rebuilt only when the
+	// dims change): allocating dims.z Images + byte vectors every tick was
+	// pure per-frame churn.
+	if (slice_images.size() != dims.z || slice_dims != dims) {
+		slice_images.clear();
+		slice_images.resize(dims.z);
+		slice_dims = dims;
+	}
 	const int slice_floats = dims.x * dims.y;
 	for (int z = 0; z < dims.z; z++) {
-		Vector<uint8_t> bytes;
-		bytes.resize(slice_floats * (int)sizeof(float));
-		memcpy(bytes.ptrw(), density.ptr() + z * slice_floats, bytes.size());
-		slices.write[z] = Image::create_from_data(dims.x, dims.y, false, Image::FORMAT_RF, bytes);
+		const uint8_t *src = (const uint8_t *)(density.ptr() + z * slice_floats);
+		if (slice_images.write[z].is_null() || slice_images[z]->get_data().size() != slice_floats * (int)sizeof(float)) {
+			Vector<uint8_t> bytes;
+			bytes.resize(slice_floats * (int)sizeof(float));
+			memcpy(bytes.ptrw(), src, bytes.size());
+			slice_images.write[z] = Image::create_from_data(dims.x, dims.y, false, Image::FORMAT_RF, bytes);
+		} else {
+			memcpy(slice_images.write[z]->get_data().ptrw(), src, slice_floats * sizeof(float));
+		}
 	}
 
 	if (density_texture.is_null() || density_texture_dims != dims) {
 		density_texture.instantiate();
-		density_texture->create(Image::FORMAT_RF, dims.x, dims.y, dims.z, false, slices);
+		density_texture->create(Image::FORMAT_RF, dims.x, dims.y, dims.z, false, slice_images);
 		density_texture_dims = dims;
 		fog_material->set_density_texture(density_texture);
 		if (fire_material.is_valid()) {
 			fire_material->set_shader_parameter("density_tex", density_texture);
 		}
 	} else {
-		density_texture->update(slices);
+		density_texture->update(slice_images);
 	}
 
 	const Vector3 world_size = Vector3(dims) * grid_cell_size;
@@ -502,12 +539,17 @@ void PhysXGas3D::_ensure_point_cloud() {
 	cell_mesh = box;
 
 	RenderingServer *rs = RenderingServer::get_singleton();
-	// Sized for the largest domain a 96-block box at 4 cells/block could
-	// hold; get_render_cells() clamps to whatever is actually allocated,
-	// this just bounds the MultiMesh instance buffer.
-	const int cap = 128 * 128 * 128;
+	// Sized to the ACTUAL configured domain (PART-3): the old fixed 128^3 =
+	// 2,097,152-instance cap allocated ~134 MB of instance buffer for a debug
+	// view regardless of the real domain (a 6x10x6-block box needs ~14k
+	// instances). Grows if the domain's vertical growth pass expands it.
+	int cap = 1 << 16; // fallback when the solver is unreachable
+	if (solver != nullptr) {
+		cap = MAX(solver->get_domain_cells(), 1);
+	}
 	multimesh = rs->multimesh_create();
 	rs->multimesh_allocate_data(multimesh, cap, RS::MULTIMESH_TRANSFORM_3D, true);
+	multimesh_cap = cap;
 	rs->multimesh_set_mesh(multimesh, cell_mesh->get_rid());
 	rs->multimesh_set_visible_instances(multimesh, 0);
 
@@ -528,15 +570,34 @@ void PhysXGas3D::_update_point_cloud_render() {
 	solver->get_render_cells(render_threshold, positions, density);
 
 	RenderingServer *rs = RenderingServer::get_singleton();
-	const int n = MIN(positions.size(), rs->multimesh_get_instance_count(multimesh));
+	// Grow the instance buffer if the domain grew (vertical growth pass).
+	const int domain_cells = solver != nullptr ? MAX(solver->get_domain_cells(), 1) : 0;
+	if (domain_cells > multimesh_cap) {
+		rs->multimesh_allocate_data(multimesh, domain_cells, RS::MULTIMESH_TRANSFORM_3D, true);
+		multimesh_cap = domain_cells;
+	}
+	const int n = MIN((int)positions.size(), multimesh_cap);
+	// Packed buffer upload (PART-3): one multimesh_set_buffer call instead of
+	// 2 RS calls PER CELL per tick. Layout for MULTIMESH_TRANSFORM_3D + color:
+	// 12 floats basis+origin, then 4 floats color.
+	PackedFloat32Array buffer;
+	buffer.resize(n * 16);
+	float *w = buffer.ptrw();
 	for (int i = 0; i < n; i++) {
-		rs->multimesh_instance_set_transform(multimesh, i, Transform3D(Basis(), positions[i]));
+		float *t = w + i * 16;
+		t[0] = 1; t[1] = 0; t[2] = 0;
+		t[3] = 0; t[4] = 1; t[5] = 0;
+		t[6] = 0; t[7] = 0; t[8] = 1;
+		t[9] = positions[i].x; t[10] = positions[i].y; t[11] = positions[i].z;
 		const float a = CLAMP(density[i], 0.0f, 1.0f);
 		// Dim-blue -> white heat-ish ramp so the density gradient actually
-		// reads, instead of every cell above the threshold looking equally
-		// opaque (the prototype's first pass, before this ramp).
-		rs->multimesh_instance_set_color(multimesh, i, Color(0.5f + 0.5f * a, 0.6f + 0.4f * a, 1.0f, CLAMP(a * 1.4f, 0.0f, 1.0f)));
+		// reads (kept from the per-instance version).
+		t[12] = 0.5f + 0.5f * a;
+		t[13] = 0.6f + 0.4f * a;
+		t[14] = 1.0f;
+		t[15] = CLAMP(a * 1.4f, 0.0f, 1.0f);
 	}
+	rs->multimesh_set_buffer(multimesh, buffer);
 	rs->multimesh_set_visible_instances(multimesh, n);
 }
 
@@ -657,6 +718,9 @@ void PhysXGas3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_fire_emission_strength"), &PhysXGas3D::get_fire_emission_strength);
 	ClassDB::bind_method(D_METHOD("set_debug_point_cloud", "enabled"), &PhysXGas3D::set_debug_point_cloud);
 	ClassDB::bind_method(D_METHOD("get_debug_point_cloud"), &PhysXGas3D::get_debug_point_cloud);
+	ClassDB::bind_method(D_METHOD("set_debug_diagnostics", "enabled"), &PhysXGas3D::set_debug_diagnostics);
+	ClassDB::bind_method(D_METHOD("get_debug_diagnostics"), &PhysXGas3D::get_debug_diagnostics);
+	ClassDB::bind_method(D_METHOD("get_solver_step_submits"), &PhysXGas3D::get_solver_step_submits);
 	ClassDB::bind_method(D_METHOD("set_render_threshold", "threshold"), &PhysXGas3D::set_render_threshold);
 	ClassDB::bind_method(D_METHOD("get_render_threshold"), &PhysXGas3D::get_render_threshold);
 
@@ -685,5 +749,6 @@ void PhysXGas3D::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "fire_color_ramp", PROPERTY_HINT_RESOURCE_TYPE, "Gradient"), "set_fire_color_ramp", "get_fire_color_ramp");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "fire_emission_strength", PROPERTY_HINT_RANGE, "0.0,20.0,0.1"), "set_fire_emission_strength", "get_fire_emission_strength");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_point_cloud"), "set_debug_point_cloud", "get_debug_point_cloud");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_diagnostics"), "set_debug_diagnostics", "get_debug_diagnostics");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "render_threshold", PROPERTY_HINT_RANGE, "0.0,1.0,0.005"), "set_render_threshold", "get_render_threshold");
 }

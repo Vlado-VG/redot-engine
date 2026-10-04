@@ -114,6 +114,10 @@ class PhysXGas3D : public Node3D {
 	FogVolume *fog_volume = nullptr;
 	Ref<FogMaterial> fog_material;
 	Ref<ImageTexture3D> density_texture;
+	Vector<Ref<Image>> slice_images; // persistent per-Z slices (PART-2)
+	Vector3i slice_dims;
+	uint64_t density_readback_tick = 0;
+	int multimesh_cap = 0; // debug cloud instance cap (PART-3)
 	Vector3i density_texture_dims; // last size the texture was created at; a growth-driven resize needs a fresh create(), not just update()
 
 	// Fire look: swaps the FogVolume's material for a custom shader that maps
@@ -145,6 +149,7 @@ class PhysXGas3D : public Node3D {
 	// exists; still useful to sanity-check the raw grid against the shaded
 	// volumetric result.
 	bool debug_point_cloud = false;
+	bool debug_diagnostics = false; // opt-in NaN/rate diagnostics (PART-2)
 	float render_threshold = 0.01f;
 	Ref<Mesh> cell_mesh;
 	RID multimesh;
@@ -242,6 +247,11 @@ public:
 	float get_fire_emission_strength() const { return fire_emission_strength; }
 
 	void set_debug_point_cloud(bool p_enabled);
+	void set_debug_diagnostics(bool p_enabled);
+	bool get_debug_diagnostics() const;
+	// Diagnostics: GPU submits the gas solver issued on its last step
+	// (PART-1 validation; 1 = single-submit). 0 without a device.
+	int get_solver_step_submits() const;
 	bool get_debug_point_cloud() const { return debug_point_cloud; }
 	void set_render_threshold(float p_t) { render_threshold = MAX(p_t, 0.0f); }
 	float get_render_threshold() const { return render_threshold; }

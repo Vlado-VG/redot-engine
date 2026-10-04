@@ -1153,9 +1153,14 @@ WaterSolver::~WaterSolver() {
 			memdelete(gpu->rd); // we own the local device
 			gpu->rd = nullptr;
 		} else {
+			// WATER-2: mirror the constructor's RS null check -- a Ref held by
+			// a script can outlive RenderingServer finalization, and this used
+			// to be a null deref instead of a graceful no-op.
 			RenderingServer *rs = RenderingServer::get_singleton();
-			rs->call_on_render_thread(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_free).bind(gpu));
-			rs->sync(); // wait for the render thread to run rt_free before we drop our Ref
+			if (rs != nullptr) {
+				rs->call_on_render_thread(callable_mp(gpu.ptr(), &WaterSolverGPU::rt_free).bind(gpu));
+				rs->sync(); // wait for the render thread to run rt_free before we drop our Ref
+			}
 		}
 	}
 	gpu.unref();
@@ -1296,6 +1301,16 @@ RID WaterSolver::get_ocean_foam_texture_rd_rid() const {
 		return RID();
 	}
 	return gpu->tex_ocean_foam;
+}
+
+// WATER-3: live step-constant update — these four are rt_step ARGUMENTS
+// (uploaded every tick from these very fields), so a CPU settings write makes
+// them take effect on the next step without tearing down the GPU solver.
+void WaterSolver::set_step_constants(float p_depth, float p_damping, float p_water_level, float p_ripple_amplitude) {
+	settings.depth = p_depth;
+	settings.damping = p_damping;
+	settings.water_level = p_water_level;
+	settings.ripple_amplitude = p_ripple_amplitude;
 }
 
 void WaterSolver::set_foam_settings(bool p_enabled, float p_choppiness, float p_threshold, float p_persistence, float p_shore_band, float p_shore_undertow) {

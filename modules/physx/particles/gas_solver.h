@@ -261,4 +261,16 @@ private:
 	void _read_slot_blocks();
 	RID _make_uniform_set(RID p_shader, RID p_grid5, RID p_grid6, RID p_press5, RID p_press6) const;
 	void _dispatch(RID p_pipeline, RID p_uset, int p_thread_count) const;
+
+	// Diagnostics (PART-1 validation): submits issued by the last step().
+	// The single-submit step sets this to exactly 1.
+	int step_submit_count = 0;
+
+public:
+	int get_last_step_submits() const { return step_submit_count; }
+
+	// Total CELLS in the currently configured domain (PART-3): bounds the
+	// debug point cloud's MultiMesh to the real domain instead of a fixed
+	// worst-case pool.
+	int get_domain_cells() const;
 };

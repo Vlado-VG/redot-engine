@@ -130,6 +130,11 @@ class PhysXFlowSimulation3D : public Node3D {
 		Vector3 box_half_extents;
 	};
 	HashMap<RID, CachedShapeMesh> shape_mesh_cache;
+	HashSet<ObjectID> active_collider_ids; // current-pass collider nodes (FLOW-4 pruning)
+	int cache_validate_countdown = 60; // 1/sec at 60 Hz
+	bool texture_dirty = false; // FLOW-1: a decoded frame awaits texture upload
+	uint64_t texture_update_count = 0; // FLOW-1 diagnostics
+	uint64_t frame_count = 0;
 
 	// Body transforms of kinematic bodies that report no velocity, for
 	// finite-difference estimates (keyed by node instance id).
@@ -155,6 +160,8 @@ class PhysXFlowSimulation3D : public Node3D {
 
 	void _ensure_simulation();
 	void _step(double p_delta);
+	FlowSimSettings _build_settings() const;
+	bool _shape_cache_matches(const RID &p_shape, const CachedShapeMesh &p_cache) const;
 	void _resolve_emitters(LocalVector<FlowEmitterData> &r_emitters);
 	void _resolve_transients(double p_delta, LocalVector<FlowEmitterData> &r_emitters);
 	void _resolve_colliders(LocalVector<FlowColliderData> &r_colliders, double p_delta);
@@ -191,6 +198,8 @@ public:
 
 	// Diagnostics (all cheap; some return stale values until the first step).
 	bool is_flow_available() const;
+	int get_frame_count() const;
+	int get_texture_update_count() const;
 	Dictionary get_diagnostics() const;
 	int get_active_block_count() const;
 	Vector3 get_active_bounds_min() const { return last_frame.world_min; }
