@@ -81,9 +81,14 @@ Vector3 PhysXDirectBodyState3D::get_inverse_inertia() const {
 Basis PhysXDirectBodyState3D::get_inverse_inertia_tensor() const {
 	if (const physx::PxRigidDynamic *dyn = _dyn(body)) {
 		physx::PxVec3 inv = dyn->getMassSpaceInvInertiaTensor();
-		// Transform the mass-space diagonal into world space using the actor's rotation.
-		// World-space tensor = R * diag(inv) * Rᵀ where R is the body's rotation.
-		physx::PxQuat px_rot = dyn->getGlobalPose().q;
+		// Transform the mass-space diagonal into world space through the COM
+		// frame: the mass-space tensor lives in the principal-axes frame whose
+		// rotation relative to the actor is getCMassLocalPose().q (the same
+		// value get_principal_inertia_axes() reports). World rotation of that
+		// frame = actor rotation ∘ COM-frame rotation — using the actor
+		// rotation alone is wrong for every asymmetric body (OBJ-2).
+		// World-space tensor = R * diag(inv) * Rᵀ.
+		const physx::PxQuat px_rot = dyn->getGlobalPose().q * dyn->getCMassLocalPose().q;
 		Basis R(Quaternion(px_rot.x, px_rot.y, px_rot.z, px_rot.w));
 		Basis diag(Vector3(inv.x, 0, 0), Vector3(0, inv.y, 0), Vector3(0, 0, inv.z));
 		return R * diag * R.transposed();

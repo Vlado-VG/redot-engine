@@ -468,10 +468,16 @@ Variant PhysXBody3D::get_state(PhysicsServer3D::BodyState p_state) const {
 			Transform3D t;
 			t.origin = Vector3(pose.p.x, pose.p.y, pose.p.z);
 			Quaternion q(pose.q.x, pose.q.y, pose.q.z, pose.q.w);
-			// The set path strips node scale into body_scale (baked into shape
-			// geometry); re-apply it so the state round-trips what was set.
-			t.basis = t.basis.scaled(body_scale);
-			t.basis.set_quaternion(q);
+			// The set path decomposes the node basis via get_scale() (per-axis
+			// lengths, stored as body_scale and baked into shape geometry) and
+			// get_rotation_quaternion() (the actor pose). Rebuild with a LOCAL
+			// scale composition — Basis(q) * diag(body_scale) — so the axis
+			// lengths and rotation both round-trip: this is the fixed point of
+			// that decomposition pair (native scaled() is a GLOBAL-axis scale
+			// and does not reproduce get_scale()). The previous form composed
+			// the scale and then overwrote the whole basis with
+			// set_quaternion — the scale was silently dropped (OBJ-1).
+			t.basis = Basis(q).scaled_local(body_scale);
 			return t;
 		}
 		case PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY: {
@@ -514,6 +520,43 @@ Variant PhysXBody3D::get_state(PhysicsServer3D::BodyState p_state) const {
 // ---------------------------------------------------------------------------
 
 void PhysXBody3D::set_param(PhysicsServer3D::BodyParameter p_param, const Variant &p_value) {
+	// No-op writes are skipped entirely (OBJ-6): the apply path below runs
+	// _apply_sleep_policy() and rewrites the actor's material/damping/flags —
+	// re-assigning the same value (RigidBody3D setter churn, inspector, scene
+	// reload) must not dirty the actor for nothing.
+	switch (p_param) {
+		case PhysicsServer3D::BODY_PARAM_BOUNCE:
+			if ((real_t)p_value == bounce) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_FRICTION:
+			if ((real_t)p_value == friction) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_MASS:
+			if ((real_t)p_value == mass) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE:
+			if ((real_t)p_value == gravity_scale) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP:
+			if ((real_t)p_value == linear_damp) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP:
+			if ((real_t)p_value == angular_damp) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_INERTIA:
+			if (inertia_set && Vector3(p_value) == inertia_override) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS:
+			if (center_of_mass_set && Vector3(p_value) == center_of_mass_override) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP_MODE:
+			if ((PhysicsServer3D::BodyDampMode)(int)p_value == linear_damp_mode) return;
+			break;
+		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP_MODE:
+			if ((PhysicsServer3D::BodyDampMode)(int)p_value == angular_damp_mode) return;
+			break;
+		default: break;
+	}
 	switch (p_param) {
 		case PhysicsServer3D::BODY_PARAM_BOUNCE: bounce = p_value; break;
 		case PhysicsServer3D::BODY_PARAM_FRICTION: friction = p_value; break;
@@ -588,6 +631,10 @@ Variant PhysXBody3D::get_param(PhysicsServer3D::BodyParameter p_param) const {
 			}
 			return center_of_mass_set ? Variant(center_of_mass_override) : Variant();
 		}
+		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP_MODE:
+			return linear_damp_mode;
+		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP_MODE:
+			return angular_damp_mode;
 		default: return Variant();
 	}
 }
@@ -670,9 +717,17 @@ void PhysXBody3D::_apply_sleep_policy(physx::PxRigidDynamic *p_dyn) {
 	if (space && mode != PhysicsServer3D::BODY_MODE_KINEMATIC) {
 		// Godot's velocity thresholds (m/s, rad/s) mapped onto PhysX's
 		// mass-normalized kinetic-energy threshold, and time-before-sleep
-		// onto the wake counter.
+		// onto the wake counter. The wake counter is only (re-)armed while
+		// the body can actually be sleeping: a positive counter on a sleeping
+		// body wakes it, and a policy re-apply (param writes, space param
+		// changes) must never wake anything (OBJ-6). isSleeping() itself is
+		// only meaningful for scene actors — sleep state is maintained by the
+		// simulation — so bodies outside a scene always arm the counter, like
+		// before.
 		p_dyn->setSleepThreshold((float)space->get_sleep_energy_threshold());
-		p_dyn->setWakeCounter((float)space->get_time_before_sleep());
+		if (!body_added_to_scene || !p_dyn->isSleeping()) {
+			p_dyn->setWakeCounter((float)space->get_time_before_sleep());
+		}
 	}
 }
 
@@ -1315,7 +1370,13 @@ void PhysXBody3D::on_pre_step(float p_step) {
 	cached_total_linear_damp = total_linear_damp;
 	cached_total_angular_damp = total_angular_damp;
 
-	if (force_integration_callback.is_valid()) {
+	// OBJ-3: Godot runs _integrate_forces only for bodies that integrate —
+	// a sleeping body gets no callback. The cadence matches godot_physics
+	// without a synthesized extra call: the last invocation fires on the last
+	// awake step (isSleeping() still reads false at that pre-step; PhysX puts
+	// the body to sleep during the solve that follows). Kinematic bodies
+	// never sleep in PhysX, so the gate leaves their callbacks untouched.
+	if (force_integration_callback.is_valid() && !dyn->isSleeping()) {
 		Variant state_variant = get_direct_state();
 		const Variant *vp[2] = { &state_variant, &force_integration_userdata };
 		Callable::CallError ce;

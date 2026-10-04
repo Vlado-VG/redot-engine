@@ -84,6 +84,13 @@ internal static class BodyTests {
         s.Add("PHYSX-BODY-061", "mirrored body scale flips asymmetric convex collision", MirroredConvexCollision);
         s.Add("PHYSX-BODY-062", "scaled area covers the scaled volume (gravity override)", ScaledAreaGravityOverride);
         s.Add("PHYSX-BODY-063", "sleeping body emits no state-sync callbacks until woken", SleepGatesStateSync);
+        // --- Phase 3: body-state fidelity (OBJ-1/2/3/6/9) ---
+        s.Add("PHYSX-BODY-064", "scaled BODY_STATE_TRANSFORM round-trips rotation and scale", ScaledTransformRoundTrip);
+        s.Add("PHYSX-BODY-065", "world inverse inertia tensor matches analytic R·diag·Rᵀ through the COM frame", InverseInertiaTensorWorldFrame);
+        s.Add("PHYSX-BODY-066", "force integration callback stops while asleep, resumes on wake", FiCallbackSleepCadence);
+        s.Add("PHYSX-BODY-067", "param writes on a sleeping body do not wake it", ParamSetKeepsSleeping);
+        s.Add("PHYSX-BODY-068", "damp-mode params round-trip", DampModeParamRoundTrip);
+        s.Add("PHYSX-BODY-069", "tilted scaled body with custom COM keeps COM world position and round-trips", ScaledCustomComTiltRoundTrip);
     }
 
     // ------------------------------------------------------------------ modes
@@ -982,5 +989,154 @@ internal static class BodyTests {
         PhysicsServer3D.BodyApplyCentralImpulse(b, new Vector3(0.3f, 0, 0));
         yield return Wait.Frames(5);
         Assert.Expect(syncs > 0, "waking body resumes state syncs");
+    }
+
+    // ------------------------------------------------- Phase 3: state fidelity
+
+    // OBJ-1: body_get_state(TRANSFORM) must round-trip the set-path
+    // decomposition — get_scale() (per-axis lengths baked into the shapes) and
+    // get_rotation_quaternion(). The old code composed the scale and then
+    // overwrote the basis with set_quaternion, silently returning a pure
+    // rotation.
+    static IEnumerator ScaledTransformRoundTrip() {
+        using var w = new PhysxWorld(false);
+        var b = w.MakeBody(w.Box(0.5f), new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.GravityScale, 0f); // hold the pose
+        var basis = new Basis(new Vector3(0, 1, 0), Mathf.DegToRad(30f)).Scaled(new Vector3(2, 3, 4));
+        var xf = new Transform3D(basis, new Vector3(1, 6, -2));
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform, xf);
+        yield return Wait.Frames(2);
+        var back = w.Pos(b);
+        Assert.ExpectVecNear(back.Origin, xf.Origin, 1e-3f, "origin round-trips");
+        Assert.ExpectVecNear(back.Basis.Scale, xf.Basis.Scale, 1e-3f, "axis scale round-trips (get_scale)");
+        Assert.Expect(back.Basis.GetRotationQuaternion().AngleTo(xf.Basis.GetRotationQuaternion()) < 1e-3f,
+            "rotation round-trips (get_rotation_quaternion)");
+        Assert.Expect(back.Basis.Scale.Length() > 1.01f, "returned basis actually carries scale (not a pure rotation)");
+        // Fixed point: setting the read-back transform again must be stable.
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform, back);
+        yield return Wait.Frames(2);
+        var back2 = w.Pos(b);
+        Assert.ExpectVecNear(back2.Basis.Scale, back.Basis.Scale, 1e-4f, "second round-trip is a fixed point (scale)");
+        Assert.Expect(back2.Basis.GetRotationQuaternion().AngleTo(back.Basis.GetRotationQuaternion()) < 1e-4f,
+            "second round-trip is a fixed point (rotation)");
+    }
+
+    // OBJ-2: the mass-space diagonal lives in the principal-axes (COM) frame,
+    // whose rotation relative to the actor is getCMassLocalPose().q. World
+    // inverse inertia = (R_actor·R_com)·diag·(R_actor·R_com)ᵀ. A rotated box
+    // shape gives the actor a rotated principal frame, so using only the
+    // actor rotation (the old code) misses by the shape's 30°.
+    static IEnumerator InverseInertiaTensorWorldFrame() {
+        using var w = new PhysxWorld(false);
+        var shapeRot = new Basis(new Vector3(0, 0, 1), Mathf.DegToRad(30f));
+        var b = w.MakeBody(w.Box(0.5f, 1.0f, 1.5f), new Vector3(3, 5, 0), mass: 2f,
+            shapeXf: new Transform3D(shapeRot, Vector3.Zero));
+        var bodyRot = new Basis(new Vector3(0, 1, 0), Mathf.DegToRad(40f));
+        w.Teleport(b, new Vector3(3, 5, 0), bodyRot);
+        yield return Wait.Frames(2);
+        var st = w.Direct(b);
+        // Box full extents (1, 2, 3), m = 2: I = m/12·(sum of squared other extents).
+        var diag = new Basis(
+            new Vector3(6f / 13f, 0, 0),   // 1/Ix, Ix = 2/12·(4+9)
+            new Vector3(0, 3f / 5f, 0),    // 1/Iy, Iy = 2/12·(1+9)
+            new Vector3(0, 0, 6f / 5f));   // 1/Iz, Iz = 2/12·(1+4)
+        var R = bodyRot * shapeRot;
+        var expected = R * diag * R.Transposed();
+        var inv = st.InverseInertiaTensor;
+        for (int i = 0; i < 3; i++) {
+            Assert.ExpectVecNear(inv[i], expected[i], 2e-3f, $"world inverse inertia column {i} matches analytic");
+        }
+        // Principal axes reported by the state must align with the shape
+        // frame (order-insensitive: each shape axis matches some principal
+        // axis; sign flips from the eigen-decomposition are fine).
+        var pia = st.PrincipalInertiaAxes;
+        for (int i = 0; i < 3; i++) {
+            bool aligned = false;
+            for (int j = 0; j < 3; j++) {
+                if (Mathf.Abs(pia[j].Normalized().Dot(shapeRot[i].Normalized())) > 0.999f) {
+                    aligned = true;
+                    break;
+                }
+            }
+            Assert.Expect(aligned, $"shape axis {i} aligns with a principal inertia axis");
+        }
+    }
+
+    // OBJ-3: Godot stops _integrate_forces while a body sleeps. The last call
+    // fires on the last awake step (sleep happens during the solve that
+    // follows its pre-step), then the callback must go silent until wake.
+    static IEnumerator FiCallbackSleepCadence() {
+        using var w = new PhysxWorld();
+        var b = w.MakeBody(w.Sphere(0.25f), new Vector3(0, 3, 0));
+        int calls = 0;
+        PhysicsServer3D.BodySetForceIntegrationCallback(b,
+            Callable.From<PhysicsDirectBodyState3D>(st => calls++));
+        yield return Wait.UntilOrFail(() => w.Sleeping(b), 600, "body falls asleep");
+        yield return Wait.Frames(5);
+        int atSleep = calls;
+        Assert.Expect(atSleep > 0, "callback fired while the body was awake");
+        yield return Wait.Frames(60);
+        Assert.Expect(calls == atSleep, $"no FI callbacks while asleep (got {calls - atSleep} in 60 frames)");
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Sleeping, false);
+        yield return Wait.Frames(10);
+        Assert.Expect(calls > atSleep, "waking resumes FI callbacks");
+    }
+
+    // OBJ-6: re-assigning the same param (inspector/scene-reload churn) and
+    // damping changes must not re-arm the wake counter of a sleeping body.
+    static IEnumerator ParamSetKeepsSleeping() {
+        using var w = new PhysxWorld();
+        var b = w.MakeBody(w.Sphere(0.25f), new Vector3(0, 3, 0));
+        yield return Wait.UntilOrFail(() => w.Sleeping(b), 600, "body falls asleep");
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.LinearDamp, 0f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.AngularDamp, 0f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Bounce, 0f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.Friction, 1f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.GravityScale, 1f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.LinearDampMode, (int)PhysicsServer3D.BodyDampMode.Combine);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.AngularDampMode, (int)PhysicsServer3D.BodyDampMode.Combine);
+        yield return Wait.Frames(30);
+        Assert.Expect(w.Sleeping(b), "no-op param writes leave the body asleep");
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.LinearDamp, 0.5f);
+        yield return Wait.Frames(30);
+        Assert.Expect(w.Sleeping(b), "a damping change does not wake a sleeping body either");
+    }
+
+    // OBJ-9: LINEAR/ANGULAR_DAMP_MODE must round-trip through get_param.
+    static IEnumerator DampModeParamRoundTrip() {
+        using var w = new PhysxWorld(false);
+        var b = w.MakeBody(w.Box(0.4f), new Vector3(0, 5, 0));
+        Assert.Expect((int)PhysicsServer3D.BodyGetParam(b, PhysicsServer3D.BodyParameter.LinearDampMode)
+            == (int)PhysicsServer3D.BodyDampMode.Combine, "linear damp mode defaults to COMBINE");
+        Assert.Expect((int)PhysicsServer3D.BodyGetParam(b, PhysicsServer3D.BodyParameter.AngularDampMode)
+            == (int)PhysicsServer3D.BodyDampMode.Combine, "angular damp mode defaults to COMBINE");
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.LinearDampMode, (int)PhysicsServer3D.BodyDampMode.Replace);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.AngularDampMode, (int)PhysicsServer3D.BodyDampMode.Replace);
+        Assert.Expect((int)PhysicsServer3D.BodyGetParam(b, PhysicsServer3D.BodyParameter.LinearDampMode)
+            == (int)PhysicsServer3D.BodyDampMode.Replace, "linear damp mode round-trips");
+        Assert.Expect((int)PhysicsServer3D.BodyGetParam(b, PhysicsServer3D.BodyParameter.AngularDampMode)
+            == (int)PhysicsServer3D.BodyDampMode.Replace, "angular damp mode round-trips");
+        yield break;
+    }
+
+    // Completion-criteria scenario: a tilted, scaled body with a custom COM
+    // keeps the COM world position under rotation and round-trips scale.
+    static IEnumerator ScaledCustomComTiltRoundTrip() {
+        using var w = new PhysxWorld(false);
+        var b = w.MakeBody(w.Box(0.5f), new Vector3(0, 5, 0), mass: 1f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.GravityScale, 0f); // hold the pose
+        var com = new Vector3(0.25f, -0.1f, 0.05f);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.CenterOfMass, com);
+        var basis = new Basis(new Vector3(1, 0, 0), Mathf.DegToRad(90f)).Scaled(new Vector3(2, 1, 1));
+        var xf = new Transform3D(basis, new Vector3(0, 5, 0));
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform, xf);
+        yield return Wait.Frames(2);
+        var st = w.Direct(b);
+        var R = new Basis(basis.GetRotationQuaternion());
+        Assert.ExpectVecNear(st.CenterOfMass, xf.Origin + R * com, 1e-3f,
+            "custom COM world position follows the tilted frame");
+        var back = w.Pos(b);
+        Assert.ExpectVecNear(back.Basis.Scale, xf.Basis.Scale, 1e-3f, "scale survives the tilt round-trip (get_scale)");
+        Assert.Expect(back.Basis.GetRotationQuaternion().AngleTo(xf.Basis.GetRotationQuaternion()) < 1e-3f, "tilt orientation round-trips");
     }
 }
