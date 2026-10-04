@@ -259,6 +259,12 @@ struct ColliderSource {
 	uint64_t chunk_id = 0; // stable emitter-side id (survives chunk recycles)
 };
 
+// PART-5: stable identity for a chunk collider across frames (emitter instance
+// id mixed with the emitter-side chunk id).
+static uint64_t _collider_id_for_chunk(const PhysXChunkEmitter3D *p_emitter, uint64_t p_chunk_id) {
+	return (uint64_t)(uintptr_t)p_emitter ^ (p_chunk_id * 0x9E3779B97F4A7C15ull);
+}
+
 void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 	if (mpm == nullptr || !mpm->is_available() || multimesh.is_null()) {
 		return;
@@ -426,31 +432,70 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 		return;
 	}
 
-	LocalVector<Vector3> impulses;
+	LocalVector<MPMFluidSolver::ImpulseHit> impulses;
 	// Granular runs async (visuals a frame late, GPU overlapped); fluid syncs so
 	// its coupling reaction stays in phase with the rigid bodies.
 	mpm->step(p_delta, cols, &impulses, want_surface, _is_granular());
 
+	// PART-5 routing: async reaps return the PREVIOUS frame's impulses, tagged
+	// with the collider id that earned them AT SUBMIT TIME. The old code
+	// applied impulses[i] to col_src[i] -- this frame's list -- so a reshuffled
+	// or resized collider set misrouted reactions between bodies and chunks.
+	// Route by id through a source registry that remembers the last two
+	// generations of colliders (async lag = 1 frame; two covers the swap).
+	// Registry pruning: entries not refreshed within 64 frames drop.
+	for (const KeyValue<uint64_t, MPMSourceEntry> &E : _mpm_source_registry) {
+		if (_mpm_frame - E.value.last_seen > 64) {
+			_mpm_source_registry.erase(E.key);
+		}
+	}
+	for (uint32_t i = 0; i < (uint32_t)col_src.size(); i++) {
+		uint64_t id;
+		if (col_src[i].chunk_emitter != nullptr) {
+			id = _collider_id_for_chunk(col_src[i].chunk_emitter, col_src[i].chunk_id);
+		} else if (col_src[i].node != nullptr) {
+			id = col_src[i].node->get_instance_id();
+		} else {
+			continue;
+		}
+		MPMSourceEntry *entry_ptr = _mpm_source_registry.getptr(id);
+		if (entry_ptr == nullptr) {
+			_mpm_source_registry.insert(id, MPMSourceEntry());
+			entry_ptr = _mpm_source_registry.getptr(id);
+		}
+		MPMSourceEntry &entry = *entry_ptr;
+		entry.node = col_src[i].node;
+		entry.chunk_emitter = col_src[i].chunk_emitter;
+		entry.chunk_id = col_src[i].chunk_id;
+		entry.extents = cols[i].extents;
+		entry.last_seen = _mpm_frame;
+	}
+	_mpm_frame++;
+
 	// Reaction: push the coupled bodies back with the fluid's impulse. Clamp to a
 	// sane per-frame velocity change so a solver blow-up can't launch anything
 	// across the level.
-	for (uint32_t i = 0; i < impulses.size() && i < col_src.size(); i++) {
-		const ColliderSource &src = col_src[i];
-		if (src.chunk_emitter != nullptr) {
-			Vector3 imp = impulses[i];
-			const float m = MAX(cols[i].extents.x * cols[i].extents.y * cols[i].extents.z * 8.0f * 1200.0f, 0.001f);
+	for (uint32_t i = 0; i < impulses.size(); i++) {
+		const MPMFluidSolver::ImpulseHit &hit = impulses[i];
+		MPMSourceEntry *src = _mpm_source_registry.getptr(hit.collider_id);
+		if (src == nullptr) {
+			continue; // collider left the registry before its (lagged) impulse arrived
+		}
+		if (src->chunk_emitter != nullptr) {
+			Vector3 imp = hit.impulse;
+			const float m = MAX(src->extents.x * src->extents.y * src->extents.z * 8.0f * 1200.0f, 0.001f);
 			const float cap = m * 20.0f;
 			if (imp.length() > cap) {
 				imp = imp.normalized() * cap;
 			}
-			src.chunk_emitter->apply_chunk_impulse(src.chunk_id, imp);
+			src->chunk_emitter->apply_chunk_impulse(src->chunk_id, imp);
 			continue;
 		}
-		RigidBody3D *rb = Object::cast_to<RigidBody3D>(src.node);
+		RigidBody3D *rb = Object::cast_to<RigidBody3D>(src->node);
 		if (rb == nullptr || rb->is_freeze_enabled()) {
 			continue;
 		}
-		Vector3 imp = impulses[i];
+		Vector3 imp = hit.impulse;
 		// A liquid splash can legitimately shove a body hard; a granular bed can
 		// only *support* one. Cap the granular reaction at a few g of holding
 		// force (dt-scaled) so a body resting in sand is held up, not launched --
@@ -522,7 +567,9 @@ void PhysXParticleFluid3D::_mpm_step(double p_delta) {
 	// The solver packs world-space transforms; the MultiMesh is in node-local
 	// space, so shift each instance origin by the node inverse. (Basis stays
 	// identity -- the solver ignores domain rotation.)
-	PackedFloat32Array buffer = mpm->get_multimesh_buffer();
+	// PART-7: write through the solver's own cache (no copy-on-write detach --
+	// the old by-value return copied ~2.9 MB per frame just to shift origins).
+	PackedFloat32Array &buffer = mpm->get_multimesh_buffer_mut();
 	const int n = mpm->get_particle_count();
 	const int cap = mpm->get_capacity();
 	if (buffer.size() < cap * 12) {
@@ -555,12 +602,14 @@ void PhysXParticleFluid3D::_update_mpm_foam() {
 		rs->multimesh_set_visible_instances(foam_multimesh, 0);
 		return;
 	}
-	PackedFloat32Array foam = mpm->get_foam_data();
+	const PackedFloat32Array &foam = mpm->get_foam_data();
 	const int fn = MIN(foam.size() / 4, foam_particle_count);
 	if (foam_buffer_scratch.size() != foam_particle_count * 12) {
 		foam_buffer_scratch.resize(foam_particle_count * 12);
 	}
-	PackedFloat32Array foam_buffer = foam_buffer_scratch;
+	// PART-7: fill the scratch IN PLACE -- the old by-value copy detached
+	// foam_particle_count * 12 floats every tick.
+	PackedFloat32Array &foam_buffer = foam_buffer_scratch;
 	float *fb = foam_buffer.ptrw();
 	const float *fp = foam.ptr();
 	static const float kind_scale[3] = { 0.6f, 1.0f, 1.4f };
@@ -987,10 +1036,20 @@ void PhysXParticleFluid3D::_mpm_emit_step(double p_delta) {
 	mpm->emit(batch);
 }
 
+bool PhysXParticleFluid3D::is_mpm_available() const {
+	return mpm != nullptr && mpm->is_available();
+}
+
 void PhysXParticleFluid3D::clear() {
 	if (_mpm_path()) {
 		if (multimesh.is_valid()) {
 			RenderingServer::get_singleton()->multimesh_set_visible_instances(multimesh, 0);
+		}
+		if (foam_multimesh.is_valid()) {
+			// PART-8: the MPM foam layer kept rendering its last frame after a
+			// clear -- _update_mpm_foam stops running once spawned=false, so
+			// nothing ever hid it.
+			RenderingServer::get_singleton()->multimesh_set_visible_instances(foam_multimesh, 0);
 		}
 		spawned = false;
 		_mpm_configured = false; // next spawn()/emit rebuilds the buffer
@@ -1686,6 +1745,18 @@ void PhysXParticleFluid3D::set_foam_particle_count(int p_count) {
 		_make_fluid();
 		spawned = false;
 	}
+	if (!Engine::get_singleton()->is_editor_hint() && _mpm_path() && foam_multimesh.is_valid()) {
+		// PART-9: on the MPM path the foam MultiMesh must be REALLOCATED to the
+		// new count -- _update_mpm_foam sizes its upload from
+		// foam_particle_count, so the old allocation mismatched every frame
+		// (RS "buffer size != instances*stride" errors) until the next
+		// configure.
+		RenderingServer::get_singleton()->multimesh_allocate_data(foam_multimesh, foam_particle_count, RenderingServer::MULTIMESH_TRANSFORM_3D);
+		if (foam_mesh.is_valid()) {
+			RenderingServer::get_singleton()->multimesh_set_mesh(foam_multimesh, foam_mesh->get_rid());
+		}
+		RenderingServer::get_singleton()->multimesh_set_visible_instances(foam_multimesh, 0);
+	}
 }
 
 void PhysXParticleFluid3D::set_foam_lifetime(float p_v) {
@@ -1785,6 +1856,7 @@ void PhysXParticleFluid3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_submersion", "world_aabb"), &PhysXParticleFluid3D::get_submersion);
 
 	ClassDB::bind_method(D_METHOD("set_solver", "solver"), &PhysXParticleFluid3D::set_solver);
+	ClassDB::bind_method(D_METHOD("is_mpm_available"), &PhysXParticleFluid3D::is_mpm_available);
 	ClassDB::bind_method(D_METHOD("get_solver"), &PhysXParticleFluid3D::get_solver);
 	ClassDB::bind_method(D_METHOD("set_mpm_domain_size", "size"), &PhysXParticleFluid3D::set_mpm_domain_size);
 	ClassDB::bind_method(D_METHOD("get_mpm_domain_size"), &PhysXParticleFluid3D::get_mpm_domain_size);

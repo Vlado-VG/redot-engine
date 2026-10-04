@@ -422,26 +422,8 @@ bool MPMFluidSolver::_rebuild_uniform_sets() {
 		}
 	}
 
-	// The march pass also binds set 1: the mesh output buffers.
-	if (uset_mesh.is_valid()) {
-		rd->free(uset_mesh);
-		uset_mesh = RID();
-	}
-	if (buf_mverts.is_valid()) {
-		Vector<RD::Uniform> m;
-		const RID mesh_bufs[3] = { buf_mverts, buf_mnorms, buf_mcount };
-		for (int b = 0; b < 3; b++) {
-			RD::Uniform u;
-			u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
-			u.binding = b;
-			u.append_id(mesh_bufs[b]);
-			m.push_back(u);
-		}
-		uset_mesh = rd->uniform_set_create(m, shader[PASS_MARCH], 1);
-		if (uset_mesh.is_null()) {
-			return false;
-		}
-	}
+	// The march pass's set 1 (mesh output buffers) is bound lazily by
+	// _ensure_mesh_buffers() on the first want_surface step (PART-4).
 	return true;
 }
 
@@ -499,16 +481,9 @@ void MPMFluidSolver::configure(const Settings &p_settings, const Transform3D &p_
 	}
 	buf_surf = rd->storage_buffer_create(node_count * sizeof(float));
 
-	// Isosurface mesh output (set 1 of the march pass).
-	buf_mverts = rd->storage_buffer_create(TRI_BUDGET * 3 * 4 * sizeof(float)); // vec4 / vertex
-	buf_mnorms = rd->storage_buffer_create(TRI_BUDGET * 3 * 4 * sizeof(float));
-	{
-		PackedByteArray mc;
-		mc.resize(2 * sizeof(uint32_t));
-		encode_uint32(0, mc.ptrw()); // tri_count
-		encode_uint32(TRI_BUDGET, mc.ptrw() + 4); // tri_budget
-		buf_mcount = rd->storage_buffer_create(mc.size(), mc);
-	}
+	// PART-4: the isosurface mesh output (2 x 9.6 MB + counter) is allocated
+	// LAZILY on the first want_surface step -- fluids without a surface mesh
+	// (and every granular bed) never pay for it. See _ensure_mesh_buffers().
 
 	// Vulkan diffuse (foam/spray) layer. Slots always exist so the shared
 	// uniform-set bindings stay valid; the passes only dispatch when enabled.
@@ -581,7 +556,39 @@ void MPMFluidSolver::set_domain_transform(const Transform3D &p_xform) {
 	domain_xform = p_xform;
 }
 
-void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_colliders, LocalVector<Vector3> *r_impulses, bool p_want_surface, bool p_async) {
+// PART-4: create the isosurface mesh output buffers + the march pass's set 1
+// on first use. 2 x TRI_BUDGET * 3 * vec4 = ~19 MB that fluids without a
+// surface mesh (and every granular bed) used to allocate unconditionally.
+void MPMFluidSolver::_ensure_mesh_buffers() {
+	if (_mesh_buffers_ready) {
+		return;
+	}
+	_mesh_buffers_ready = true;
+	buf_mverts = rd->storage_buffer_create(TRI_BUDGET * 3 * 4 * sizeof(float)); // vec4 / vertex
+	buf_mnorms = rd->storage_buffer_create(TRI_BUDGET * 3 * 4 * sizeof(float));
+	{
+		PackedByteArray mc;
+		mc.resize(2 * sizeof(uint32_t));
+		encode_uint32(0, mc.ptrw()); // tri_count
+		encode_uint32(TRI_BUDGET, mc.ptrw() + 4); // tri_budget
+		buf_mcount = rd->storage_buffer_create(mc.size(), mc);
+	}
+	Vector<RD::Uniform> m;
+	const RID mesh_bufs[3] = { buf_mverts, buf_mnorms, buf_mcount };
+	for (int b = 0; b < 3; b++) {
+		RD::Uniform u;
+		u.uniform_type = RD::UNIFORM_TYPE_STORAGE_BUFFER;
+		u.binding = b;
+		u.append_id(mesh_bufs[b]);
+		m.push_back(u);
+	}
+	uset_mesh = rd->uniform_set_create(m, shader[PASS_MARCH], 1);
+	if (uset_mesh.is_null()) {
+		ERR_PRINT("MPMFluidSolver: isosurface mesh uniform set failed; surface disabled.");
+	}
+}
+
+void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_colliders, LocalVector<ImpulseHit> *r_impulses, bool p_want_surface, bool p_async) {
 	if (!is_available() || pcount == 0 || p_delta <= 0.0) {
 		return;
 	}
@@ -619,8 +626,13 @@ void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_c
 		rd->buffer_clear(buf_foam_meta, sizeof(uint32_t), sizeof(uint32_t));
 	}
 	if (p_want_surface) {
-		rd->buffer_clear(buf_mcount, 0, sizeof(uint32_t)); // reset tri_count, keep tri_budget
-		rd->buffer_clear(buf_surf, 0, node_count * sizeof(int32_t)); // reset the density scatter
+		_ensure_mesh_buffers();
+		if (uset_mesh.is_null()) {
+			p_want_surface = false; // lazy alloc failed: drop the surface this frame
+		} else {
+			rd->buffer_clear(buf_mcount, 0, sizeof(uint32_t)); // reset tri_count, keep tri_budget
+			rd->buffer_clear(buf_surf, 0, node_count * sizeof(int32_t)); // reset the density scatter
+		}
 	}
 
 	const uint32_t ng = groups_for(node_count);
@@ -738,10 +750,19 @@ void MPMFluidSolver::step(double p_delta, const LocalVector<SphereCollider> &p_c
 		_reap_submitted();
 	}
 
-	// Hand back the reaped impulses -- this step's (sync) or the previous step's
-	// (async, still in flight).
+	// Hand back the reaped impulses -- this step's (sync) or the previous
+	// step's (async, still in flight) per-collider reaction, each tagged with
+	// the collider id that earned it (PART-5).
 	if (r_impulses != nullptr) {
 		*r_impulses = _imp_cache;
+	}
+}
+
+// Zero a range of a PackedFloat32Array (helper for the prefix-readback pad).
+static void zeroffset(PackedFloat32Array &r_arr, int p_from_float, int p_to_float) {
+	const int n = MIN(p_to_float, (int)r_arr.size());
+	if (p_from_float < n) {
+		memset(r_arr.ptrw() + p_from_float, 0, (n - p_from_float) * sizeof(float));
 	}
 }
 
@@ -756,16 +777,34 @@ void MPMFluidSolver::_reap_submitted() const {
 	last_step_usec = OS::get_singleton()->get_ticks_usec() - t0; // GPU wait for the last step's compute
 	_submitted = false;
 
-	Vector<uint8_t> mm = rd->buffer_get_data(buf_mm);
+	// PART-7: only the first pcount rows are live (PASS_RENDER dispatches
+	// groups_for(pcount)) -- read back the LIVE PREFIX, not the full-capacity
+	// buffer (a 2.9 MB PCIe transfer at 60k capacity vs. the live row count),
+	// then zero-pad the cache on the CPU so get_multimesh_buffer() still
+	// hands RS a full-capacity buffer. The old readback shipped
+	// (capacity - pcount) dead rows across the bus every frame.
+	const int live_rows = MIN(pcount, capacity);
+	Vector<uint8_t> mm;
+	if (live_rows > 0) {
+		mm = rd->buffer_get_data(buf_mm, 0, live_rows * 12 * sizeof(float));
+	}
 	_mm_cache.resize(capacity * 12);
-	memcpy(_mm_cache.ptrw(), mm.ptr(), MIN((int)mm.size(), (int)(capacity * 12 * sizeof(float))));
+	if (live_rows > 0) {
+		memcpy(_mm_cache.ptrw(), mm.ptr(), MIN((int)mm.size(), (int)(live_rows * 12 * sizeof(float))));
+	}
+	if (live_rows < capacity) {
+		zeroffset(_mm_cache, live_rows * 12, capacity * 12);
+	}
 
 	_imp_cache.clear();
 	if (_submitted_ncol > 0) {
 		Vector<uint8_t> raw = rd->buffer_get_data(buf_cimp, 0, _submitted_ncol * 4 * sizeof(int32_t));
 		const int32_t *ci = (const int32_t *)raw.ptr();
 		for (int i = 0; i < _submitted_ncol; i++) {
-			_imp_cache.push_back(Vector3(ci[i * 4 + 0], ci[i * 4 + 1], ci[i * 4 + 2]) / IMP_FIXED);
+			ImpulseHit hit;
+			hit.collider_id = i < (int)_submitted_ids.size() ? _submitted_ids[i] : 0;
+			hit.impulse = Vector3(ci[i * 4 + 0], ci[i * 4 + 1], ci[i * 4 + 2]) / IMP_FIXED;
+			_imp_cache.push_back(hit);
 		}
 	}
 

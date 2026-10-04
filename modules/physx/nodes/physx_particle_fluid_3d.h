@@ -37,6 +37,7 @@
 #include "scene/resources/mesh.h"
 
 class MPMFluidSolver;
+class PhysXChunkEmitter3D;
 
 // A GPU fluid volume. Two backends:
 //   * PBD  -- PhysX 5 PxPBDParticleSystem, GPU (CUDA) only. Foam and a GPU
@@ -74,6 +75,18 @@ private:
 
 	SolverBackend solver = SOLVER_AUTO;
 	MPMFluidSolver *mpm = nullptr;
+	// PART-5: impulse routing registry -- maps collider ids to the sources
+	// that submitted them; async-reaped impulses (one frame late) route
+	// through here so a reshuffled collider list cannot misroute reactions.
+	struct MPMSourceEntry {
+		Node3D *node = nullptr;
+		PhysXChunkEmitter3D *chunk_emitter = nullptr;
+		uint64_t chunk_id = 0;
+		Vector3 extents;
+		uint64_t last_seen = 0;
+	};
+	HashMap<uint64_t, MPMSourceEntry> _mpm_source_registry;
+	uint64_t _mpm_frame = 0;
 
 	// MPM-only tuning (ignored on the PBD path).
 	Vector3 mpm_domain_size = Vector3(3, 3, 3);
@@ -254,6 +267,7 @@ public:
 	// Fill the region (centered on this node) with a jittered grid of particles.
 	void spawn();
 	// Remove all particles.
+	bool is_mpm_available() const;
 	void clear();
 	int get_live_particle_count() const;
 	// GPU cost of the last MPM solver step (submit+sync), ms. 0 on the PBD path.

@@ -108,8 +108,20 @@ public:
 		Vector3 extents; // sphere: x=radius | box: half-extents | plane: unit normal | capsule: (radius, half-height, -)
 		Quaternion rotation; // box / capsule orientation
 		Vector3 velocity;
+		// PART-5: caller-defined stable identity. Async reaps return impulses
+		// one frame late, tagged with the id of the collider slot that earned
+		// them AT SUBMIT TIME -- the node routes them by this, not by slot
+		// index, so a reshuffled collider list between frames can't misroute.
+		uint64_t id = 0;
 	};
 	using SphereCollider = Collider; // transitional alias
+
+	// PART-5: an async-reaped reaction impulse tagged with the collider id
+	// that earned it (see Collider::id).
+	struct ImpulseHit {
+		uint64_t collider_id = 0;
+		Vector3 impulse;
+	};
 
 	MPMFluidSolver();
 	~MPMFluidSolver();
@@ -159,7 +171,10 @@ public:
 	// `p_async`: submit the compute work and return, reaping it next step (visuals
 	// + reaction one frame late, GPU overlapped). Set false to sync before
 	// returning -- the fluid coupling needs the reaction impulse in phase.
-	void step(double p_delta, const LocalVector<SphereCollider> &p_colliders, LocalVector<Vector3> *r_impulses, bool p_want_surface = false, bool p_async = true);
+	void step(double p_delta, const LocalVector<SphereCollider> &p_colliders, LocalVector<ImpulseHit> *r_impulses, bool p_want_surface = false, bool p_async = true);
+	// In-place mutable access to the reaped MultiMesh cache (PART-7): the node
+	// rewrites origins without a copy-on-write detach.
+	PackedFloat32Array &get_multimesh_buffer_mut() { return _mm_cache; }
 
 	int get_particle_count() const { return pcount; } // live particles
 	int get_capacity() const { return capacity; } // buffer / MultiMesh size
@@ -226,13 +241,16 @@ private:
 	mutable bool _submitted = false;
 	mutable int _submitted_ncol = 0;
 	mutable PackedFloat32Array _mm_cache;
-	mutable LocalVector<Vector3> _imp_cache;
+	mutable LocalVector<ImpulseHit> _imp_cache;
+	mutable LocalVector<uint64_t> _submitted_ids; // collider id per submitted slot (PART-5)
+	mutable bool _mesh_buffers_ready = false; // PART-4: lazy isosurface buffers
 	// Foam readback, same async reap as the render buffer above: 4 floats per
 	// alive particle (xyz + kind).
 	mutable PackedFloat32Array _foam_cache;
 	mutable int _foam_alive = 0;
 	int foam_capacity_resolved = 1; // actual foam slot count (>= 1 keeps the buffer bindings valid)
 	void _reap_submitted() const;
+	void _ensure_mesh_buffers(); // PART-4: lazy isosurface buffer creation
 	int pcount = 0; // live particles (== capacity when prefilled)
 	int capacity = 0; // particle-buffer slots
 	int write_head = 0; // next slot emit() overwrites once full

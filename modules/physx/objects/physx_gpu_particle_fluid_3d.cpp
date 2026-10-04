@@ -54,6 +54,10 @@ static constexpr float FLUID_DENSITY = 1000.0f;
 // marching-cubes a triangle mesh, all on the GPU
 // via a particle-system callback. The result is read to host arrays each solve
 // for the node to render as an ArrayMesh.
+// RD-8: the full-host outlier-clamp round trip is throttled to every Nth
+// extraction (reference solver's CLAMP_EVERY=4).
+static constexpr uint32_t PBD_CLAMP_EVERY = 4;
+
 struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 	PhysXGPUParticleFluid3D *owner = nullptr;
 	PxCudaContextManager *cuda = nullptr;
@@ -241,7 +245,19 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 	// to infinity. Clamp every particle to within clamp_reach meters of the
 	// mean before feeding the extractor. Returns the mean (the foam kicker's
 	// reference point). Shared by the inline and deferred extraction paths.
+	// RD-8: the full-host round trip is throttled to every CLAMP_EVERY
+	// extractions (reference solver's CLAMP_EVERY=4) -- skipped cycles run
+	// with no sync at all, reusing the last clamped center. Escaped-particle
+	// sprawl develops over many frames; a 4-frame throttle bounds it.
+	uint32_t clamp_clock = 0;
+	PxVec3 last_center = PxVec3(0.0f);
+
 	PxVec3 clamp_outliers(PxU32 n) {
+		clamp_clock++;
+		if (clamp_clock % PBD_CLAMP_EVERY != 1 && !last_center.isZero()) {
+			// Throttled cycle: reuse the last center, no device round trip.
+			return last_center;
+		}
 		Ext::PxCudaHelpersExt::copyDToH(*cuda, host_positions.ptr(), dev_smoothed, n);
 		PxVec3 center(0.0f);
 		for (uint32_t i = 0; i < n; i++) {
@@ -263,6 +279,7 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		if (clamped_any) {
 			Ext::PxCudaHelpersExt::copyHToD(*cuda, dev_smoothed, host_positions.ptr(), n);
 		}
+		last_center = center;
 		return center;
 	}
 
