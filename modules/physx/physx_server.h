@@ -26,6 +26,7 @@
 
 #include <PxPhysicsAPI.h>
 #include <core/templates/rid_owner.h>
+#include "core/templates/local_vector.h"
 #include "core/os/mutex.h"
 
 class PhysXShape3D;
@@ -108,6 +109,12 @@ private:
 	RID _make_shape();
 
 	static void _bind_methods();
+
+	/// Live list of space RIDs, maintained on space create/free. The per-frame
+	/// server loops (step/sync/flush_queries/process info) used to call
+	/// space_owner.get_owned_list(), which returns a LocalVector by value —
+	/// one heap copy per call, several per frame.
+	LocalVector<RID> _space_list;
 
 	/// One-shot warning: module extension APIs (vehicles, GPU fluids/cloths,
 	/// articulations, water/flow probes) assume single-threaded physics —

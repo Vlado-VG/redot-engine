@@ -60,8 +60,22 @@ private:
     mutable LocalVector<RecoverContact> _recover_scratch;
     mutable LocalVector<PhysicsServer3D::MotionCollision> _collide_scratch;
 
-    bool _body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, Vector3 &r_recovery) const;
-    bool _body_motion_cast(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, bool p_collide_separation_ray, float p_rest_slack, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal, real_t &r_hit_depth, int &r_hit_local_shape, const physx::PxRigidActor *&r_hit_actor, const physx::PxShape *&r_hit_shape) const;
-    bool _body_motion_collide(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, int p_max_collisions, float p_min_allowed_depth, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, PhysicsServer3D::MotionResult *r_result) const;
+    // One body_test_motion call's view of the mover's attached shapes, filled
+    // once per call and shared by the recover/cast/collide phases. Each phase
+    // used to heap-fetch the actor's shape list and re-derive the body
+    // rotation quaternion per shape per iteration.
+    struct MotionShapeRef {
+        physx::PxShape *px_shape = nullptr;
+        PhysXShape3D *blueprint = nullptr; // shape->userData; null for raw shapes
+        physx::PxTransform local_pose;     // attached local pose (constant per call)
+        int body_index = -1;               // index in the body's shape list (-1 if foreign)
+    };
+    mutable LocalVector<MotionShapeRef> _motion_shape_scratch;
+    mutable LocalVector<physx::PxShape *> _motion_shape_ptr_scratch;
+    void _motion_shapes_fill(const PhysXBody3D &p_body) const;
+
+    bool _body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin, const LocalVector<MotionShapeRef> &p_shapes, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, Vector3 &r_recovery) const;
+    bool _body_motion_cast(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, bool p_collide_separation_ray, float p_rest_slack, const LocalVector<MotionShapeRef> &p_shapes, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal, real_t &r_hit_depth, int &r_hit_local_shape, const physx::PxRigidActor *&r_hit_actor, const physx::PxShape *&r_hit_shape) const;
+    bool _body_motion_collide(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion, int p_max_collisions, float p_min_allowed_depth, const LocalVector<MotionShapeRef> &p_shapes, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, PhysicsServer3D::MotionResult *r_result) const;
 };
 #endif // PHYSX_DIRECT_SPACE_STATE_3D_H

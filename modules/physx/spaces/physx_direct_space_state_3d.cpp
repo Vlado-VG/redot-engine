@@ -880,7 +880,8 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
 
     // RECOVER (Depenetrate initial overlaps)
     Vector3 recovery;
-    bool recovered = _body_motion_recover(p_body, transform, margin, self_and_excluded, p_parameters.exclude_objects, recovery);
+    _motion_shapes_fill(p_body);
+    bool recovered = _body_motion_recover(p_body, transform, margin, _motion_shape_scratch, self_and_excluded, p_parameters.exclude_objects, recovery);
     // Godot always lifts the working pose by the recovery (godot_space_3d
     // test_body_motion: body_transform.origin += recover_motion) — the cast
     // and contact gather must run from the depenetrated position in both
@@ -905,7 +906,7 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
     const physx::PxRigidActor *hit_actor = nullptr;
     const physx::PxShape *hit_shape = nullptr;
 
-    bool hit = _body_motion_cast(p_body, transform, motion, p_parameters.collide_separation_ray, min_contact_depth, self_and_excluded, p_parameters.exclude_objects, safe_fraction, unsafe_fraction, hit_position, hit_normal, hit_depth, hit_local_shape, hit_actor, hit_shape);
+    bool hit = _body_motion_cast(p_body, transform, motion, p_parameters.collide_separation_ray, min_contact_depth, _motion_shape_scratch, self_and_excluded, p_parameters.exclude_objects, safe_fraction, unsafe_fraction, hit_position, hit_normal, hit_depth, hit_local_shape, hit_actor, hit_shape);
 
     if (r_result) {
         // The collision/contact gather runs at the unsafe pose (Godot: ugt =
@@ -916,7 +917,7 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 // Cast hit: collide at the unsafe position and combine with recovery.
                 Transform3D hit_transform = transform;
                 hit_transform.origin += motion * unsafe_fraction;
-                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, self_and_excluded, p_parameters.exclude_objects, r_result);
+                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, _motion_shape_scratch, self_and_excluded, p_parameters.exclude_objects, r_result);
                 _fill_collision_from_sweep(r_result, hit_position, hit_normal, hit_depth, hit_local_shape, hit_actor, hit_shape);
 
                 r_result->travel = motion * safe_fraction + recovery;
@@ -931,7 +932,7 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 // slide collisions with no contacts).
                 Transform3D hit_transform = transform;
                 hit_transform.origin += motion * unsafe_fraction;
-                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, self_and_excluded, p_parameters.exclude_objects, r_result);
+                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, _motion_shape_scratch, self_and_excluded, p_parameters.exclude_objects, r_result);
                 r_result->travel = motion + recovery;
                 r_result->remainder = Vector3();
                 r_result->collision_safe_fraction = 1.0;
@@ -950,7 +951,7 @@ bool PhysXDirectSpaceState3D::body_test_motion(const PhysXBody3D &p_body, const 
                 // COLLIDE (Generate detailed manifold at the hit location)
                 Transform3D hit_transform = transform;
                 hit_transform.origin += motion * unsafe_fraction;
-                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, self_and_excluded, p_parameters.exclude_objects, r_result);
+                _body_motion_collide(p_body, hit_transform, motion, p_parameters.max_collisions, min_allowed_depth, _motion_shape_scratch, self_and_excluded, p_parameters.exclude_objects, r_result);
 
                 // The collide phase overlaps the shape at the contact pose; at
                 // exact touch there is no penetration, so it can come back
@@ -999,29 +1000,44 @@ static real_t _collision_priority_of(const physx::PxRigidActor *p_actor) {
     return 1.0;
 }
 
+// Fills the shared per-call shape cache for the body_test_motion phases: one
+// getShapes() fetch, one userData read, one getLocalPose() and one
+// find_shape_index() per shape for the entire call (the phases previously
+// repeated all of these per phase, and the rotation quaternion per shape per
+// recovery iteration).
+void PhysXDirectSpaceState3D::_motion_shapes_fill(const PhysXBody3D &p_body) const {
+    _motion_shape_scratch.clear();
+    physx::PxRigidActor *actor = p_body.get_px_actor();
+    if (!actor) {
+        return;
+    }
+    const physx::PxU32 nb_shapes = actor->getNbShapes();
+    if (nb_shapes == 0) {
+        return;
+    }
+    _motion_shape_ptr_scratch.clear();
+    _motion_shape_ptr_scratch.resize(nb_shapes);
+    actor->getShapes(_motion_shape_ptr_scratch.ptr(), nb_shapes);
+    _motion_shape_scratch.resize(nb_shapes);
+    for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
+        MotionShapeRef &ref = _motion_shape_scratch[s];
+        ref.px_shape = _motion_shape_ptr_scratch[s];
+        ref.blueprint = ref.px_shape->userData ? static_cast<PhysXShape3D *>(ref.px_shape->userData) : nullptr;
+        ref.local_pose = ref.px_shape->getLocalPose();
+        ref.body_index = p_body.find_shape_index(ref.px_shape);
+    }
+}
+
 bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, const Transform3D &p_transform, float p_margin,
-    const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, Vector3 &r_recovery) const {
+    const LocalVector<MotionShapeRef> &p_shapes, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects, Vector3 &r_recovery) const {
 
     r_recovery = Vector3();
 
-    if (!space || !space->get_px_scene()) {
+    if (!space || !space->get_px_scene() || p_shapes.is_empty()) {
         return false;
     }
 
-    physx::PxRigidActor *actor = p_body.get_px_actor();
-    if (!actor) {
-        return false;
-    }
-
-    const physx::PxU32 nb_shapes = actor->getNbShapes();
-    if (nb_shapes == 0) {
-        return false;
-    }
-
-    // Heap-allocate the body's shape pointer list.
-    LocalVector<physx::PxShape *> shapes;
-    shapes.resize(nb_shapes);
-    actor->getShapes(shapes.ptr(), nb_shapes);
+    const physx::PxU32 nb_shapes = p_shapes.size();
 
     constexpr int MAX_RECOVER_ITERATIONS = 4;
     constexpr float MIN_PENETRATION_THRESHOLD = 1e-5f;
@@ -1049,6 +1065,11 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
     physx::PxQueryFilterData filter_data;
     filter_data.flags = physx::PxQueryFlag::eDYNAMIC | physx::PxQueryFlag::eSTATIC | physx::PxQueryFlag::ePREFILTER;
 
+    // Rotation is invariant across recovery iterations (only the origin
+    // moves) — derive it once for the whole phase.
+    const Quaternion body_q_gd = p_transform.basis.get_rotation_quaternion();
+    const physx::PxQuat body_q(body_q_gd.x, body_q_gd.y, body_q_gd.z, body_q_gd.w);
+
     for (int iter = 0; iter < MAX_RECOVER_ITERATIONS; ++iter) {
         Transform3D current_transform = p_transform;
         current_transform.origin += total_recovery;
@@ -1056,27 +1077,26 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
         _recover_scratch.clear();
         bool penetrating_in_this_iter = false;
 
-        for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
-            physx::PxShape *body_shape = shapes[s];
+        // The pose is shared by every shape in this iteration.
+        const physx::PxTransform body_pose(
+            physx::PxVec3(current_transform.origin.x, current_transform.origin.y, current_transform.origin.z),
+            body_q
+        );
 
-            // Build body pose for this iteration
-            Quaternion q = current_transform.basis.get_rotation_quaternion();
-            physx::PxTransform body_pose(
-                physx::PxVec3(current_transform.origin.x, current_transform.origin.y, current_transform.origin.z),
-                physx::PxQuat(q.x, q.y, q.z, q.w)
-            );
+        for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
+            const MotionShapeRef &ref = p_shapes[s];
+            physx::PxShape *body_shape = ref.px_shape;
 
             // Handle separation-ray shapes as raycasts against the floor.
-            if (body_shape->userData) {
-                const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(body_shape->userData);
+            if (ref.blueprint) {
+                const PhysXShape3D *shape_bp = ref.blueprint;
                 if (shape_bp && shape_bp->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
                     const PhysXSeparationRayShape3D *sep_ray = static_cast<const PhysXSeparationRayShape3D *>(shape_bp);
                     // The ray length scales with the body (the shape's baked
                     // geometry does) — cast and measure in scaled units.
                     const real_t ray_length = sep_ray->get_length() * p_body.get_body_scale().z;
 
-                    physx::PxTransform local_pose = body_shape->getLocalPose();
-                    physx::PxTransform shape_pose = body_pose * local_pose;
+                    physx::PxTransform shape_pose = body_pose * ref.local_pose;
 
                     // Ray direction = the body-transformed local +Z axis. Don't
                     // hand-roll quaternion basis extraction — xform() is exact.
@@ -1122,7 +1142,7 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
 
             // Regular shapes: overlap-based recovery
             physx::PxGeometryHolder body_geom = body_shape->getGeometry();
-            physx::PxTransform global_shape_pose = body_pose * body_shape->getLocalPose();
+            physx::PxTransform global_shape_pose = body_pose * ref.local_pose;
 
             constexpr int MAX_OVERLAPS = 32;
             physx::PxOverlapHit hit_buffer[MAX_OVERLAPS];
@@ -1202,7 +1222,8 @@ bool PhysXDirectSpaceState3D::_body_motion_recover(const PhysXBody3D &p_body, co
 }
 
 bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const Transform3D &p_transform,
-    const Vector3 &p_motion, bool p_collide_separation_ray, float p_rest_slack, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
+    const Vector3 &p_motion, bool p_collide_separation_ray, float p_rest_slack, const LocalVector<MotionShapeRef> &p_shapes,
+    const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
     real_t &r_safe_fraction, real_t &r_unsafe_fraction, Vector3 &r_hit_position, Vector3 &r_hit_normal, real_t &r_hit_depth, int &r_hit_local_shape,
     const physx::PxRigidActor *&r_hit_actor, const physx::PxShape *&r_hit_shape) const {
 
@@ -1211,24 +1232,11 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
     r_hit_depth = 0.0;
     r_hit_local_shape = -1;
 
-    if (!space || !space->get_px_scene()) {
+    if (!space || !space->get_px_scene() || p_shapes.is_empty()) {
         return false;
     }
 
-    physx::PxRigidActor *actor = p_body.get_px_actor();
-    if (!actor) {
-        return false;
-    }
-
-    const physx::PxU32 nb_shapes = actor->getNbShapes();
-    if (nb_shapes == 0) {
-        return false;
-    }
-
-    // Heap-allocate the body's shape pointer list.
-    LocalVector<physx::PxShape *> shapes;
-    shapes.resize(nb_shapes);
-    actor->getShapes(shapes.ptr(), nb_shapes);
+    const physx::PxU32 nb_shapes = p_shapes.size();
 
     Vector3 dir = p_motion;
     real_t motion_length = dir.length();
@@ -1275,15 +1283,16 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
     const physx::PxSweepHit *stuck_hit = nullptr;
     int stuck_shape = -1;
 
-    for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
-        physx::PxShape *shape = shapes[s];
+    // The pose is constant through the cast phase (transform + quaternion).
+    const Quaternion cast_q = p_transform.basis.get_rotation_quaternion();
+    const physx::PxTransform body_pose(
+        physx::PxVec3(p_transform.origin.x, p_transform.origin.y, p_transform.origin.z),
+        physx::PxQuat(cast_q.x, cast_q.y, cast_q.z, cast_q.w)
+    );
 
-        // Calculate body pose once per shape iteration
-        Quaternion q = p_transform.basis.get_rotation_quaternion();
-        physx::PxTransform body_pose(
-            physx::PxVec3(p_transform.origin.x, p_transform.origin.y, p_transform.origin.z),
-            physx::PxQuat(q.x, q.y, q.z, q.w)
-        );
+    for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
+        const MotionShapeRef &shape_ref = p_shapes[s];
+        physx::PxShape *shape = shape_ref.px_shape;
 
         // Separation rays are not swept as a volume in the cast phase — they
         // participate only in recover/collide. Godot's contract
@@ -1294,8 +1303,8 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
         // ray's thin-box representation, because a downward raycast distance
         // is not comparable to a horizontal sweep distance and would
         // incorrectly clamp horizontal motion.
-        if (shape->userData) {
-            const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(shape->userData);
+        if (shape_ref.blueprint) {
+            const PhysXShape3D *shape_bp = shape_ref.blueprint;
             if (shape_bp && shape_bp->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
                 const PhysXSeparationRayShape3D *sep_ray = static_cast<const PhysXSeparationRayShape3D *>(shape_bp);
                 if (!p_collide_separation_ray && !sep_ray->get_slide_on_slope()) {
@@ -1308,7 +1317,7 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
         // Regular shapes: touch-capable sweep (see cast_motion for why a
         // single closest-block sweep cannot express the Godot contract).
         physx::PxGeometryHolder geom = shape->getGeometry();
-        physx::PxTransform shape_pose = body_pose * shape->getLocalPose();
+        physx::PxTransform shape_pose = body_pose * shape_ref.local_pose;
 
         const physx::PxU32 touch_max = PHYSX_QUERY_MAX_RESULTS;
         if (_sweep_touch_scratch.size() < touch_max) {
@@ -1396,27 +1405,15 @@ bool PhysXDirectSpaceState3D::_body_motion_cast(const PhysXBody3D &p_body, const
 }
 
 bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, const Transform3D &p_transform, const Vector3 &p_motion,
-    int p_max_collisions, float p_min_allowed_depth, const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
+    int p_max_collisions, float p_min_allowed_depth, const LocalVector<MotionShapeRef> &p_shapes,
+    const HashSet<RID> &p_self_and_excluded, const HashSet<ObjectID> &p_excluded_objects,
     PhysicsServer3D::MotionResult *r_result) const {
 
-    if (!r_result || !space || !space->get_px_scene() || p_max_collisions <= 0) {
+    if (!r_result || !space || !space->get_px_scene() || p_max_collisions <= 0 || p_shapes.is_empty()) {
         return false;
     }
 
-    physx::PxRigidActor *actor = p_body.get_px_actor();
-    if (!actor) {
-        return false;
-    }
-
-    const physx::PxU32 nb_shapes = actor->getNbShapes();
-    if (nb_shapes == 0) {
-        return false;
-    }
-
-    // Heap-allocate the body's shape pointer list.
-    LocalVector<physx::PxShape *> shapes;
-    shapes.resize(nb_shapes);
-    actor->getShapes(shapes.ptr(), nb_shapes);
+    const physx::PxU32 nb_shapes = p_shapes.size();
 
     // Filter setup
     PhysXQueryFilterCallback filter_cb;
@@ -1440,24 +1437,26 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
 
     const int max_cols = MIN(p_max_collisions, PhysicsServer3D::MotionResult::MAX_COLLISIONS);
 
+    // The pose is constant through the collide phase (transform + quaternion).
+    const Quaternion collide_q = p_transform.basis.get_rotation_quaternion();
+    const physx::PxTransform body_pose(
+        physx::PxVec3(p_transform.origin.x, p_transform.origin.y, p_transform.origin.z),
+        physx::PxQuat(collide_q.x, collide_q.y, collide_q.z, collide_q.w)
+    );
+
     for (physx::PxU32 s = 0; s < nb_shapes; ++s) {
-        physx::PxShape *body_shape = shapes[s];
+        const MotionShapeRef &shape_ref = p_shapes[s];
+        physx::PxShape *body_shape = shape_ref.px_shape;
 
         // Handle separation-ray shapes in collide phase (when collide_separation_ray is true)
-        if (body_shape->userData) {
-            const PhysXShape3D *shape_bp = static_cast<const PhysXShape3D *>(body_shape->userData);
+        if (shape_ref.blueprint) {
+            const PhysXShape3D *shape_bp = shape_ref.blueprint;
             if (shape_bp && shape_bp->get_type() == PhysicsServer3D::SHAPE_SEPARATION_RAY) {
                 const PhysXSeparationRayShape3D *sep_ray = static_cast<const PhysXSeparationRayShape3D *>(shape_bp);
                 // Scaled ray length, as in the recover phase.
                 const real_t ray_length = sep_ray->get_length() * p_body.get_body_scale().z;
 
-                Quaternion q = p_transform.basis.get_rotation_quaternion();
-                physx::PxTransform body_pose(
-                    physx::PxVec3(p_transform.origin.x, p_transform.origin.y, p_transform.origin.z),
-                    physx::PxQuat(q.x, q.y, q.z, q.w)
-                );
-                physx::PxTransform local_pose = body_shape->getLocalPose();
-                physx::PxTransform shape_pose = body_pose * local_pose;
+                physx::PxTransform shape_pose = body_pose * shape_ref.local_pose;
 
                 // Ray direction = body-transformed local +Z axis (see recover phase).
                 const Vector3 shape_dir = p_transform.basis.xform(Vector3(0, 0, 1)).normalized();
@@ -1521,12 +1520,7 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
         // Regular shapes: overlap-based collide
         physx::PxGeometryHolder body_geom = body_shape->getGeometry();
 
-        Quaternion q = p_transform.basis.get_rotation_quaternion();
-        physx::PxTransform body_pose(
-            physx::PxVec3(p_transform.origin.x, p_transform.origin.y, p_transform.origin.z),
-            physx::PxQuat(q.x, q.y, q.z, q.w)
-        );
-        physx::PxTransform global_shape_pose = body_pose * body_shape->getLocalPose();
+        physx::PxTransform global_shape_pose = body_pose * shape_ref.local_pose;
 
         constexpr int MAX_OVERLAPS = 16;
         physx::PxOverlapHit hit_buffer[MAX_OVERLAPS];
@@ -1575,7 +1569,9 @@ bool PhysXDirectSpaceState3D::_body_motion_collide(const PhysXBody3D &p_body, co
                         col.collider_shape = 0;
                     }
 
-                    const int local_idx = p_body.find_shape_index(body_shape);
+                    // Cached per call in the shape refs (find_shape_index is a
+                    // linear scan; it ran per contact before).
+                    const int local_idx = shape_ref.body_index;
                     col.local_shape = local_idx >= 0 ? local_idx : (int)s;
 
                     if (overlap.actor->is<physx::PxRigidDynamic>()) {

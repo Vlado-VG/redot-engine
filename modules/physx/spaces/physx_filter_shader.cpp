@@ -196,7 +196,16 @@ physx::PxFilterFlags physx_simulation_filter_shader(
 		pairFlags |= physx::PxPairFlag::eNOTIFY_CONTACT_POINTS;
 	}
 
-	// Return eNOTIFY so the filter callback gets invoked — it checks
-	// collision exceptions between bodies (which the shader cannot do).
-	return physx::PxFilterFlag::eNOTIFY;
+	// eNOTIFY routes the pair through PhysXPairFilterCallback::pairFound, the
+	// CPU-side defense net for collision exceptions (which the stateless
+	// shader cannot check via userData). pairFound can only kill pairs whose
+	// participants carry an exception slot (word2) — the server allocates a
+	// slot on every exception participant when an exception is added — so
+	// request the callback only for those pairs. Scenes without exceptions
+	// skip pairFound entirely; the registry check above still kills exception
+	// pairs on both the CPU and GPU paths.
+	if (filterData0.word2 != 0 || filterData1.word2 != 0) {
+		return physx::PxFilterFlag::eNOTIFY;
+	}
+	return physx::PxFilterFlags();
 }

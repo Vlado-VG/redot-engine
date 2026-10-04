@@ -20,6 +20,7 @@
 #define PHYSX_SPACE_3D_H
 #include "servers/physics_3d/physics_server_3d.h"
 #include "core/templates/local_vector.h"
+#include "core/templates/hash_set.h"
 #include "core/math/math_funcs.h"
 #include "core/os/thread.h"
 // Forward declarations of PhysX types to keep the header clean
@@ -78,6 +79,8 @@ public:
     float get_last_step() const { return last_step; }
     /// Active-actor count of the last completed solve (INFO_ACTIVE_OBJECTS).
     int get_active_objects() const { return active_objects; }
+    /// World gravity the PxScene was created with (zero until initialized).
+    Vector3 get_scene_gravity() const { return scene_gravity; }
 
     RID get_rid() const { return rid; }
     void set_rid(const RID &p_rid) { rid = p_rid; }
@@ -333,6 +336,12 @@ private:
     // Provides world-default gravity/damp
     PhysXArea3D *default_area = nullptr;
 
+    // World gravity the PxScene was initialized with (project settings; the
+    // module never mutates scene gravity after creation). Serves the per-step
+    // consumers (body pre-step delta, CPU soft-body step) without a virtual
+    // PxScene::getGravity() round-trip per body per step.
+    Vector3 scene_gravity;
+
     // Object registration
     LocalVector<PhysXBody3D *> bodies;
     LocalVector<PhysXArea3D *> areas;
@@ -351,6 +360,13 @@ private:
     // one final sync. Tracking the *active* set (not the synced set) is what
     // makes the final sync happen exactly once. Cleaned in unregister_body().
     LocalVector<PhysXBody3D *> prev_active_bodies;
+
+    // Reused per-step buffers for the post-step sync set (built in
+    // _finish_step). Members instead of locals so a steady-state step does
+    // not allocate.
+    LocalVector<PhysXBody3D *> _finish_sync_bodies;
+    HashSet<PhysXBody3D *> _finish_sync_set;
+    LocalVector<PhysXBody3D *> _finish_now_active;
 
     // Debug-contact buffer for the "Visible Collision Shapes" overlay.
     // Reset (count = 0) at the start of each step; filled by onContact.

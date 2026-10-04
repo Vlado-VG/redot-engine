@@ -1158,8 +1158,11 @@ void PhysXBody3D::on_pre_step(float p_step) {
 
 	// --- Resolve area overrides in priority order (highest first) ---
 	// Sort a lightweight index list ascending by priority; iterate descending.
+	// The index buffer is a member (cleared per call) so a steady-state step
+	// does not allocate per body.
 	const int n = (int)overlapping_areas.size();
-	LocalVector<int> order;
+	_area_order_scratch.clear();
+	LocalVector<int> &order = _area_order_scratch;
 	if (n > 0) {
 		order.resize(n);
 		for (int i = 0; i < n; i++) order[i] = i;
@@ -1189,16 +1192,18 @@ void PhysXBody3D::on_pre_step(float p_step) {
 	for (int idx = n - 1; idx >= 0 && !(gravity_done && linear_done && angular_done); idx--) {
 		const PhysXArea3D *area = overlapping_areas[order[idx]];
 		if (!gravity_done) {
-			Vector3 g = physx_area_gravity_at(*area, body_pos);
-			gravity_done = physx_apply_area_override(total_gravity, area->get_gravity_override_mode(), [&]{ return g; });
+			// Computed inside the getter so DISABLED-mode areas (and the
+			// point-gravity math) are skipped entirely.
+			gravity_done = physx_apply_area_override(total_gravity, area->get_gravity_override_mode(),
+					[&]{ return physx_area_gravity_at(*area, body_pos); });
 		}
 		if (!linear_done) {
-			real_t d = area->get_linear_damp();
-			linear_done = physx_apply_area_override(total_linear_damp, area->get_linear_damp_override_mode(), [&]{ return d; });
+			linear_done = physx_apply_area_override(total_linear_damp, area->get_linear_damp_override_mode(),
+					[&]{ return area->get_linear_damp(); });
 		}
 		if (!angular_done) {
-			real_t d = area->get_angular_damp();
-			angular_done = physx_apply_area_override(total_angular_damp, area->get_angular_damp_override_mode(), [&]{ return d; });
+			angular_done = physx_apply_area_override(total_angular_damp, area->get_angular_damp_override_mode(),
+					[&]{ return area->get_angular_damp(); });
 		}
 	}
 
@@ -1265,11 +1270,10 @@ void PhysXBody3D::on_pre_step(float p_step) {
 			// plan R3). Zero in the default case, so no addForce and bodies can
 			// sleep.
 			if (use_native) {
-				Vector3 scene_gravity(0, 0, 0);
-				if (space && space->get_px_scene()) {
-					const physx::PxVec3 sg = space->get_px_scene()->getGravity();
-					scene_gravity = Vector3(sg.x, sg.y, sg.z);
-				}
+				// Cached on the space at scene creation (gravity is never
+				// mutated afterward); was a PxScene::getGravity() virtual per
+				// awake body per step.
+				const Vector3 scene_gravity = space ? space->get_scene_gravity() : Vector3();
 				const Vector3 delta = (total_gravity * (float)gravity_scale) - scene_gravity;
 				if (!delta.is_zero_approx()) {
 					dyn->addForce(physx::PxVec3((float)delta.x, (float)delta.y, (float)delta.z),

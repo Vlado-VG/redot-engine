@@ -352,6 +352,7 @@ RID PhysXServer3D::space_create() {
     PhysXSpace3D *space = memnew(PhysXSpace3D);
     RID rid = space_owner.make_rid(space);
     space->set_rid(rid);
+    _space_list.push_back(rid);
 
     // Create the space's default area (priority -1). It provides the
     // world-default gravity/damp and is the additive fallback for any
@@ -2549,6 +2550,12 @@ void PhysXServer3D::free(RID p_rid) {
 
 		space_owner.free(p_rid);
 		memdelete(sp);
+		for (uint32_t i = 0; i < _space_list.size(); i++) {
+			if (_space_list[i] == p_rid) {
+				_space_list.remove_at(i);
+				break;
+			}
+		}
 		return;
 	}
 	// joint_owner —joints are freed here.
@@ -2734,6 +2741,7 @@ void PhysXServer3D::finish() {
 	for (const RID &r : cloth_owner.get_owned_list()) free(r);
 	for (const RID &r : shape_owner.get_owned_list()) free(r);
 	for (const RID &r : space_owner.get_owned_list()) free(r);
+	_space_list.clear(); // each free() above already removed its entry
 
 	if (px_default_material) {
 		px_default_material->release();
@@ -2811,7 +2819,7 @@ void PhysXServer3D::step(real_t p_step) {
 	// per-call string hashing; the setting itself stays live by design.
 	static const StringName async_step_sn("physics/physx_3d/simulation/async_step");
 	async_stepping = GLOBAL_GET(async_step_sn);
-	for (const RID &rid : space_owner.get_owned_list()) {
+	for (const RID &rid : _space_list) {
 		PhysXSpace3D *space = space_owner.get_or_null(rid);
 		if (space && space->is_active()) {
 			space->step((float)p_step);
@@ -2824,13 +2832,13 @@ void PhysXServer3D::sync() {
 	// The engine calls sync() at the start of every physics tick, before
 	// scripts. In async stepping mode this fetches the solve that step()
 	// kicked last tick (per-space no-op when nothing is in flight); with the
-	// flag off the fetch already happened inline in step() and this is a no-op.
-	for (const RID &rid : space_owner.get_owned_list()) {
-		PhysXSpace3D *space = space_owner.get_or_null(rid);
-		if (space) {
-			space->sync();
+		// flag off the fetch already happened inline in step() and this is a no-op.
+		for (const RID &rid : _space_list) {
+			PhysXSpace3D *space = space_owner.get_or_null(rid);
+			if (space) {
+				space->sync();
+			}
 		}
-	}
 }
 
 void PhysXServer3D::end_sync() {
@@ -2846,7 +2854,7 @@ void PhysXServer3D::flush_queries() {
 	if (!active) {
 		return;
 	}
-	for (const RID &rid : space_owner.get_owned_list()) {
+	for (const RID &rid : _space_list) {
 		PhysXSpace3D *space = space_owner.get_or_null(rid);
 		if (space) {
 			space->flush_pending_callbacks();
@@ -2884,7 +2892,7 @@ void PhysXServer3D::invalidate_vehicles_surface_pairs(PhysXBody3D *p_body) const
 }
 
 bool PhysXServer3D::is_flushing_queries() const {
-	for (const RID &rid : space_owner.get_owned_list()) {
+	for (const RID &rid : _space_list) {
 		const PhysXSpace3D *space = space_owner.get_or_null(rid);
 		if (space && space->is_flushing_callbacks()) {
 			return true;
@@ -2899,7 +2907,7 @@ int PhysXServer3D::get_process_info(PhysicsServer3D::ProcessInfo p_process_info)
 			// Sum the per-space counts from the last completed solve (each
 			// space counts in its _finish_step, right after fetchResults).
 			int total = 0;
-			for (const RID &rid : space_owner.get_owned_list()) {
+			for (const RID &rid : _space_list) {
 				const PhysXSpace3D *space = space_owner.get_or_null(rid);
 				if (space) {
 					total += space->get_active_objects();
@@ -2915,7 +2923,7 @@ int PhysXServer3D::get_process_info(PhysicsServer3D::ProcessInfo p_process_info)
 			// INFO_ACTIVE_OBJECTS). Cost is one stats-struct copy per active
 			// scene per poll, so no caching layer is warranted.
 			int pairs = 0;
-			for (const RID &rid : space_owner.get_owned_list()) {
+			for (const RID &rid : _space_list) {
 				const PhysXSpace3D *space = space_owner.get_or_null(rid);
 				if (space && space->is_active() && space->get_px_scene()) {
 					physx::PxSimulationStatistics stats;

@@ -323,6 +323,9 @@ private:
 
     /// Areas overlapping this body, maintained by onTrigger().
     LocalVector<PhysXArea3D *> overlapping_areas;
+    /// Reused priority-order index buffer for the area-override resolution in
+    /// on_pre_step (was a fresh LocalVector per body per step).
+    LocalVector<int> _area_order_scratch;
 
     /// Joints connected to this body (they register on make and unlink on
     /// release/destruction). Notified so the PxJoint can be rebuilt when this

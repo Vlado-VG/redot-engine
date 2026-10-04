@@ -105,10 +105,13 @@ void PhysXSpace3D::_initialize_scene() {
     // the area-override delta on top of it — zero in the default case).
     const real_t g = GLOBAL_GET("physics/3d/default_gravity");
     const Vector3 g_dir = GLOBAL_GET("physics/3d/default_gravity_vector");
+    // Cached for the per-step consumers (PhysXBody3D::on_pre_step delta,
+    // CPU soft-body step) — scene gravity is never mutated after creation.
+    scene_gravity = Vector3(g_dir.x * g, g_dir.y * g, g_dir.z * g);
     scene_desc.gravity = physx::PxVec3(
-            (float)(g_dir.x * g),
-            (float)(g_dir.y * g),
-            (float)(g_dir.z * g));
+            (float)scene_gravity.x,
+            (float)scene_gravity.y,
+            (float)scene_gravity.z);
 
     scene_desc.cpuDispatcher = px_dispatcher;
 
@@ -361,11 +364,7 @@ void PhysXSpace3D::_finish_step() {
     // rigid poses.
     for (PhysXSoftBody3D *sb : soft_bodies) {
         sb->read_back();
-        Vector3 gravity;
-        if (px_scene) {
-            const physx::PxVec3 g = px_scene->getGravity();
-            gravity = Vector3(g.x, g.y, g.z);
-        }
+        Vector3 gravity = scene_gravity;
         if (!sb->is_gpu()) {
             // Reference parity (GodotSoftBody3D::predict_motion): CPU soft
             // bodies resolve area gravity overrides. GPU deformables keep the
@@ -383,16 +382,20 @@ void PhysXSpace3D::_finish_step() {
     // bodies synced last step that are no longer active (they just fell
     // asleep; one final sync delivers the resting pose to the node).
     // Continuously sleeping bodies cost zero callbacks -- a RigidBody3D's
-    // node sync only resumes when the body wakes.
-    LocalVector<PhysXBody3D *> sync_bodies;
-    HashSet<PhysXBody3D *> sync_set;
+    // node sync only resumes when the body wakes. The three buffers are
+    // members (cleared here) so a steady-state step does not allocate.
+    _finish_sync_bodies.clear();
+    _finish_sync_set.clear();
+    _finish_now_active.clear();
+    LocalVector<PhysXBody3D *> &sync_bodies = _finish_sync_bodies;
+    HashSet<PhysXBody3D *> &sync_set = _finish_sync_set;
     auto push_sync = [&](PhysXBody3D *body) {
         if (body && !sync_set.has(body)) {
             sync_set.insert(body);
             sync_bodies.push_back(body);
         }
     };
-    LocalVector<PhysXBody3D *> now_active;
+    LocalVector<PhysXBody3D *> &now_active = _finish_now_active;
     if (px_scene) {
         physx::PxU32 nb_active = 0;
         physx::PxActor **active_actors = px_scene->getActiveActors(nb_active);
