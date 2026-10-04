@@ -136,6 +136,7 @@ void PhysXChunkEmitter3D::_sync_transforms() {
 	}
 
 	const Transform3D to_local = get_global_transform().affine_inverse();
+	const double now = Time::get_singleton()->get_ticks_msec() / 1000.0;
 	AABB aabb;
 	bool first = true;
 	for (uint32_t i = 0; i < chunks.size(); i++) {
@@ -147,7 +148,19 @@ void PhysXChunkEmitter3D::_sync_transforms() {
 		} else {
 			aabb.expand_to(xform.origin);
 		}
-		xform.basis.scale(Vector3(chunks[i].size, chunks[i].size, chunks[i].size));
+		// Shrink toward zero over the last shrink_time seconds of natural
+		// lifetime, instead of popping when the chunk is recycled. Only the
+		// render scale changes — the collision shape stays full size, so a
+		// mid-shrink chunk is still solid (fine at the sizes/speeds this is
+		// meant for; not worth a per-frame shape resize).
+		float scale = chunks[i].size;
+		if (shrink_time > 0.0f) {
+			const double remain = (double)lifetime - (now - chunks[i].spawn_time);
+			if (remain < (double)shrink_time) {
+				scale *= (float)CLAMP(remain / (double)shrink_time, 0.0, 1.0);
+			}
+		}
+		xform.basis.scale(Vector3(scale, scale, scale));
 		rs->multimesh_instance_set_transform(multimesh, i, xform);
 	}
 	aabb.grow_by(0.5);
@@ -183,6 +196,10 @@ void PhysXChunkEmitter3D::_spawn_one(const Vector3 &p_world_pos, const Vector3 &
 
 	const real_t mass = MAX(density * volume, (real_t)0.001);
 	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_MASS, mass);
+	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_FRICTION, friction);
+	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_BOUNCE, bounce);
+	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_LINEAR_DAMP, linear_damp);
+	ps->body_set_param(body, PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP, angular_damp);
 	ps->body_set_state(body, PhysicsServer3D::BODY_STATE_TRANSFORM, Transform3D(rand_basis, p_world_pos));
 	ps->body_set_state(body, PhysicsServer3D::BODY_STATE_LINEAR_VELOCITY, p_dir * speed);
 	Vector3 spin = Vector3(Math::random(-1.0f, 1.0f), Math::random(-1.0f, 1.0f), Math::random(-1.0f, 1.0f)) * spin_impulse;
@@ -339,6 +356,21 @@ void PhysXChunkEmitter3D::set_collision_mask(uint32_t p_v) {
 void PhysXChunkEmitter3D::set_density(real_t p_v) {
 	density = MAX(p_v, 1.0);
 }
+void PhysXChunkEmitter3D::set_shrink_time(float p_v) {
+	shrink_time = MAX(p_v, 0.0f);
+}
+void PhysXChunkEmitter3D::set_friction(real_t p_v) {
+	friction = MAX(p_v, 0.0);
+}
+void PhysXChunkEmitter3D::set_bounce(real_t p_v) {
+	bounce = CLAMP(p_v, 0.0, 1.0);
+}
+void PhysXChunkEmitter3D::set_linear_damp(real_t p_v) {
+	linear_damp = MAX(p_v, 0.0);
+}
+void PhysXChunkEmitter3D::set_angular_damp(real_t p_v) {
+	angular_damp = MAX(p_v, 0.0);
+}
 void PhysXChunkEmitter3D::set_emitting(bool p_v) {
 	emitting = p_v;
 }
@@ -376,6 +408,16 @@ void PhysXChunkEmitter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_spin_impulse"), &PhysXChunkEmitter3D::get_spin_impulse);
 	ClassDB::bind_method(D_METHOD("set_lifetime", "seconds"), &PhysXChunkEmitter3D::set_lifetime);
 	ClassDB::bind_method(D_METHOD("get_lifetime"), &PhysXChunkEmitter3D::get_lifetime);
+	ClassDB::bind_method(D_METHOD("set_shrink_time", "seconds"), &PhysXChunkEmitter3D::set_shrink_time);
+	ClassDB::bind_method(D_METHOD("get_shrink_time"), &PhysXChunkEmitter3D::get_shrink_time);
+	ClassDB::bind_method(D_METHOD("set_friction", "value"), &PhysXChunkEmitter3D::set_friction);
+	ClassDB::bind_method(D_METHOD("get_friction"), &PhysXChunkEmitter3D::get_friction);
+	ClassDB::bind_method(D_METHOD("set_bounce", "value"), &PhysXChunkEmitter3D::set_bounce);
+	ClassDB::bind_method(D_METHOD("get_bounce"), &PhysXChunkEmitter3D::get_bounce);
+	ClassDB::bind_method(D_METHOD("set_linear_damp", "value"), &PhysXChunkEmitter3D::set_linear_damp);
+	ClassDB::bind_method(D_METHOD("get_linear_damp"), &PhysXChunkEmitter3D::get_linear_damp);
+	ClassDB::bind_method(D_METHOD("set_angular_damp", "value"), &PhysXChunkEmitter3D::set_angular_damp);
+	ClassDB::bind_method(D_METHOD("get_angular_damp"), &PhysXChunkEmitter3D::get_angular_damp);
 	ClassDB::bind_method(D_METHOD("set_max_active", "count"), &PhysXChunkEmitter3D::set_max_active);
 	ClassDB::bind_method(D_METHOD("get_max_active"), &PhysXChunkEmitter3D::get_max_active);
 	ClassDB::bind_method(D_METHOD("set_collision_layer", "layer"), &PhysXChunkEmitter3D::set_collision_layer);
@@ -409,7 +451,14 @@ void PhysXChunkEmitter3D::_bind_methods() {
 
 	ADD_GROUP("Budget", "");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "lifetime", PROPERTY_HINT_RANGE, "0.1,30,0.1,suffix:s"), "set_lifetime", "get_lifetime");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "shrink_time", PROPERTY_HINT_RANGE, "0,5,0.05,suffix:s"), "set_shrink_time", "get_shrink_time");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_active", PROPERTY_HINT_RANGE, "1,2000,1"), "set_max_active", "get_max_active");
+
+	ADD_GROUP("Chunk Body", "");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "friction", PROPERTY_HINT_RANGE, "0,2,0.01"), "set_friction", "get_friction");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "bounce", PROPERTY_HINT_RANGE, "0,1,0.01"), "set_bounce", "get_bounce");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "linear_damp", PROPERTY_HINT_RANGE, "0,10,0.01"), "set_linear_damp", "get_linear_damp");
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "angular_damp", PROPERTY_HINT_RANGE, "0,10,0.01"), "set_angular_damp", "get_angular_damp");
 
 	ADD_GROUP("Continuous Emission", "emission_");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "emitting"), "set_emitting", "is_emitting");

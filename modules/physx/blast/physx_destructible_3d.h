@@ -12,6 +12,7 @@
 
 #include "physx_blast_asset.h"
 
+#include "core/templates/hash_map.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/node_3d.h"
 #include "scene/resources/material.h"
@@ -291,6 +292,11 @@ public:
 	// override either, same reason as get_aabb() above.
 	Ref<TriangleMesh> generate_triangle_mesh() const;
 
+	/// True once the Blast asset parsed, a family was created and the first
+	/// actor exists. False after a failed load (e.g. corrupt/truncated asset
+	/// bytes) — the node then renders nothing and cannot be damaged.
+	bool is_loaded() const { return loaded; }
+
 	PhysXDestructible3D();
 	~PhysXDestructible3D();
 
@@ -347,8 +353,21 @@ private:
 		RID shape;
 		RID mesh;
 		RID instance;
+		uint32_t chunk_index = 0; // which authored chunk this piece renders/simulates
 	};
 	LocalVector<ChunkVisual> pieces;
+	// Pieces currently spawned per live NvBlast actor (by chunk index). When
+	// an actor splits, its recorded pieces are retired before the successor
+	// actors re-spawn their own visible chunks — otherwise an interior/support
+	// chunk that stays visible across the split gets a second, duplicate
+	// piece (BLAST-1; reachable with multi-depth assets).
+	HashMap<NvBlastActor *, LocalVector<uint32_t>> actor_pieces;
+
+	// generate_triangle_mesh() cooks chunk 0's triangle soup into a
+	// TriangleMesh; the destructible gizmo registers it for click-to-select
+	// on every editor redraw. Cook once per load instead of per redraw
+	// (EDIT-3); invalidated wherever chunk_points changes.
+	mutable Ref<TriangleMesh> cached_collision_mesh;
 
 	bool loaded = false;
 	bool fractured = false;
@@ -369,6 +388,13 @@ private:
 
 	bool _load();
 	bool _load_asset_bytes(const PackedByteArray &p_bytes);
+	// Frees the native Blast state (family, actors, asset block) and all
+	// pieces. Shared by the destructor, _reload() and the failure paths of
+	// _load_asset_bytes() — a failed load must leave nothing behind, or a
+	// retry (world re-entry) accumulates (BLAST-2).
+	void _unload_native_state();
+	// Retires every piece recorded for p_actor (see actor_pieces).
+	void _free_pieces_of_actor(NvBlastActor *p_actor);
 	void _compute_chunk_volumes();
 	// mass distributed proportional to p_chunk_index's share of
 	// total_leaf_volume (floored so a sliver never gets a near-zero mass),

@@ -64,6 +64,7 @@ void PhysXDestructible3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_chunks_path"), &PhysXDestructible3D::get_chunks_path);
 	ClassDB::bind_method(D_METHOD("set_blast_asset", "asset"), &PhysXDestructible3D::set_blast_asset);
 	ClassDB::bind_method(D_METHOD("get_blast_asset"), &PhysXDestructible3D::get_blast_asset);
+	ClassDB::bind_method(D_METHOD("is_loaded"), &PhysXDestructible3D::is_loaded);
 	ClassDB::bind_method(D_METHOD("set_material_override", "material"), &PhysXDestructible3D::set_material_override);
 	ClassDB::bind_method(D_METHOD("get_material_override"), &PhysXDestructible3D::get_material_override);
 	ClassDB::bind_method(D_METHOD("set_gi_mode", "mode"), &PhysXDestructible3D::set_gi_mode);
@@ -199,13 +200,24 @@ void PhysXDestructible3D::_validate_property(PropertyInfo &p_property) const {
 }
 
 PhysXDestructible3D::~PhysXDestructible3D() {
+	_unload_native_state();
+}
+
+void PhysXDestructible3D::_unload_native_state() {
 	_free_all_pieces();
+	live_actors.clear();
 	if (family_mem) {
 		aligned_free_16(family_mem);
+		family_mem = nullptr;
 	}
+	family = nullptr;
 	if (asset_mem) {
 		aligned_free_16(asset_mem);
+		asset_mem = nullptr;
 	}
+	asset_chunk_count = 0;
+	asset_bond_count = 0;
+	loaded = false;
 }
 
 void PhysXDestructible3D::set_asset_path(const String &p_path) {
@@ -399,6 +411,14 @@ AABB PhysXDestructible3D::get_aabb() const {
 }
 
 Ref<TriangleMesh> PhysXDestructible3D::generate_triangle_mesh() const {
+	// Cooked lazily once and cached: the destructible gizmo calls this on
+	// every editor redraw to register per-triangle click-to-select geometry
+	// (EDIT-3) — cooking chunk 0's whole triangle soup each time was a
+	// measurable editor cost. Cache follows chunk_points, which only changes
+	// in _load().
+	if (cached_collision_mesh.is_valid()) {
+		return cached_collision_mesh;
+	}
 	if (chunk_points.is_empty() || chunk_points[0].is_empty()) {
 		return Ref<TriangleMesh>();
 	}
@@ -411,6 +431,7 @@ Ref<TriangleMesh> PhysXDestructible3D::generate_triangle_mesh() const {
 	Ref<TriangleMesh> tm;
 	tm.instantiate();
 	tm->create(faces);
+	cached_collision_mesh = tm;
 	return tm;
 }
 
@@ -504,20 +525,57 @@ void PhysXDestructible3D::_notification(int p_what) {
 }
 
 bool PhysXDestructible3D::_load_asset_bytes(const PackedByteArray &p_bytes) {
-	ERR_FAIL_COND_V_MSG(p_bytes.is_empty(), false, "PhysXDestructible3D: empty asset bytes.");
+	// BLAST-4: the block is handed to NvBlast as an opaque NvBlastAsset —
+	// validate the cheapest structural facts here so truncated/garbage bytes
+	// fail cleanly instead of as undefined behavior inside the SDK. Every
+	// serialized asset starts with a 16-byte NvBlastID and is far larger
+	// than this floor even for a single-chunk asset.
+	if (p_bytes.size() < 64 || (p_bytes.size() % 4) != 0) {
+		ERR_FAIL_V_MSG(false, vformat("PhysXDestructible3D: asset bytes are not a valid NvBlast asset block (%d bytes).", p_bytes.size()));
+	}
+	// BLAST-2: a previous failed attempt (or a world re-entry retry after
+	// one) must not accumulate partial allocations — start from clean state.
+	_unload_native_state();
+
 	asset_mem = aligned_alloc_16((size_t)p_bytes.size());
 	ERR_FAIL_NULL_V(asset_mem, false);
 	memcpy(asset_mem, p_bytes.ptr(), p_bytes.size());
 
 	NvBlastAsset *asset = reinterpret_cast<NvBlastAsset *>(asset_mem);
+	// BLAST-4 (continued): the serialized block declares its own size — a
+	// truncated/corrupt file (the realistic corruption: an interrupted write,
+	// a bad download) declares more than it carries, and letting NvBlast
+	// read past the buffer is undefined behavior. Anything declaring more
+	// than we actually have, or nothing at all, is not an asset.
+	{
+		const size_t declared_size = NvBlastAssetGetSize(asset, blast_log);
+		if (declared_size == 0 || declared_size > (size_t)p_bytes.size()) {
+			ERR_FAIL_V_MSG(false, vformat("PhysXDestructible3D: asset block size mismatch (declares %d bytes, have %d) — corrupt or truncated asset.",
+					(uint64_t)declared_size, p_bytes.size()));
+		}
+	}
 	asset_chunk_count = NvBlastAssetGetChunkCount(asset, blast_log);
 	asset_bond_count = NvBlastAssetGetBondCount(asset, blast_log);
+	if (asset_chunk_count == 0) {
+		// A block that survives the size checks but carries no chunks is not
+		// something we can build a family from (and usually means the bytes
+		// are not an asset at all — the SDK logged the specifics above).
+		ERR_PRINT("PhysXDestructible3D: asset block declares zero chunks.");
+		_unload_native_state();
+		return false;
+	}
 
 	const size_t family_size = NvBlastAssetGetFamilyMemorySize(asset, blast_log);
 	family_mem = aligned_alloc_16(family_size);
-	ERR_FAIL_NULL_V(family_mem, false);
+	if (!family_mem) {
+		ERR_PRINT("PhysXDestructible3D: out of memory for the Blast family.");
+		_unload_native_state();
+		return false;
+	}
 	family = NvBlastAssetCreateFamily(family_mem, asset, blast_log);
-	ERR_FAIL_NULL_V_MSG(family, false, "PhysXDestructible3D: NvBlastAssetCreateFamily failed.");
+	if (!family) {
+		ERR_FAIL_V_MSG(false, "PhysXDestructible3D: NvBlastAssetCreateFamily failed.");
+	}
 
 	NvBlastActorDesc actor_desc;
 	actor_desc.uniformInitialBondHealth = health;
@@ -529,12 +587,15 @@ bool PhysXDestructible3D::_load_asset_bytes(const PackedByteArray &p_bytes) {
 	LocalVector<uint8_t> scratch;
 	scratch.resize((uint32_t)scratch_size);
 	NvBlastActor *first_actor = NvBlastFamilyCreateFirstActor(family, &actor_desc, scratch.ptr(), blast_log);
-	ERR_FAIL_NULL_V_MSG(first_actor, false, "PhysXDestructible3D: NvBlastFamilyCreateFirstActor failed.");
+	if (!first_actor) {
+		ERR_FAIL_V_MSG(false, "PhysXDestructible3D: NvBlastFamilyCreateFirstActor failed.");
+	}
 	live_actors.push_back(first_actor);
 	return true;
 }
 
 bool PhysXDestructible3D::_load() {
+	cached_collision_mesh.unref(); // chunk_points change below (EDIT-3 cache)
 	if (blast_asset.is_valid()) {
 		if (!_load_asset_bytes(blast_asset->get_asset_bytes())) {
 			return false;
@@ -789,6 +850,7 @@ void PhysXDestructible3D::_spawn_piece(uint32_t p_chunk_index, const Transform3D
 	piece.shape = shape;
 	piece.mesh = mesh;
 	piece.instance = instance;
+	piece.chunk_index = p_chunk_index;
 	pieces.push_back(piece);
 }
 
@@ -822,6 +884,38 @@ void PhysXDestructible3D::_free_all_pieces() {
 		rs->free(piece.mesh);
 	}
 	pieces.clear();
+	actor_pieces.clear();
+}
+
+void PhysXDestructible3D::_free_pieces_of_actor(NvBlastActor *p_actor) {
+	HashMap<NvBlastActor *, LocalVector<uint32_t>>::Iterator it = actor_pieces.find(p_actor);
+	if (!it) {
+		return;
+	}
+	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
+	RenderingServer *rs = RenderingServer::get_singleton();
+	// One piece per visible chunk per live actor (a chunk is visible in
+	// exactly one actor at a time — a Blast invariant), so matching by chunk
+	// index is unambiguous even though the pieces array is compacted with
+	// swap-removal as we go.
+	for (uint32_t chunk_index : it->value) {
+		for (int64_t i = (int64_t)pieces.size() - 1; i >= 0; i--) {
+			if (pieces[i].chunk_index != chunk_index) {
+				continue;
+			}
+			if (pieces[i].body.is_valid()) {
+				ps->free(pieces[i].body);
+			}
+			if (pieces[i].shape.is_valid()) {
+				ps->free(pieces[i].shape);
+			}
+			rs->free(pieces[i].instance);
+			rs->free(pieces[i].mesh);
+			pieces.remove_at_unordered((uint32_t)i);
+			break;
+		}
+	}
+	actor_pieces.erase(p_actor);
 }
 
 void PhysXDestructible3D::_sync_transforms() {
@@ -960,9 +1054,17 @@ int PhysXDestructible3D::apply_radial_damage(const Vector3 &p_world_position, fl
 			continue;
 		}
 
+		// BLAST-1: this actor's previously-spawned pieces belong to chunks
+		// whose visibility the split just re-assigned — retire them before
+		// the successors spawn their own, or any chunk that stays visible
+		// (interior/support) ends up with two live pieces. No-op for the
+		// intact placeholder (never recorded; it's retired explicitly below).
+		_free_pieces_of_actor(actor);
+
 		for (uint32_t i = 0; i < new_count; i++) {
 			NvBlastActor *new_actor = new_actors[i];
 			live_actors.push_back(new_actor);
+			LocalVector<uint32_t> &new_actor_pieces = actor_pieces.insert(new_actor, LocalVector<uint32_t>())->value;
 
 			const uint32_t visible_count = NvBlastActorGetVisibleChunkCount(new_actor, blast_log);
 			LocalVector<uint32_t> visible;
@@ -982,7 +1084,11 @@ int PhysXDestructible3D::apply_radial_damage(const Vector3 &p_world_position, fl
 				const Vector3 dir = dist > 0.001 ? (offset / dist) : Vector3(0, 1, 0);
 				const real_t falloff = CLAMP(1.0 - dist / (real_t)p_max_radius, 0.0, 1.0);
 				const Vector3 piece_velocity = (dir + Vector3(0, 0.3, 0)).normalized() * shatter_speed * falloff;
+				const uint32_t before = (uint32_t)pieces.size();
 				_spawn_piece(visible[v], get_global_transform(), piece_velocity);
+				if ((uint32_t)pieces.size() > before) {
+					new_actor_pieces.push_back(visible[v]);
+				}
 				spawned++;
 			}
 		}

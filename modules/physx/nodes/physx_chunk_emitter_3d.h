@@ -87,6 +87,16 @@ private:
 	float spread_degrees = 55.0; // cone half-angle around the burst direction; 180 = omnidirectional
 	float spin_impulse = 6.0; // max random angular velocity, rad/s
 	float lifetime = 5.0; // seconds before a chunk is recycled even under budget
+	// Seconds before end-of-lifetime a chunk scales to 0 instead of popping;
+	// 0 = pop (default). Render scale only — the collision shape stays full
+	// size, so a mid-shrink chunk is still solid.
+	float shrink_time = 0.0;
+	// Surface/simulation params applied to every spawned chunk body. Crank
+	// friction/damp up for something that should pile and stop.
+	real_t friction = 0.5;
+	real_t bounce = 0.0;
+	real_t linear_damp = 0.0;
+	real_t angular_damp = 0.0;
 	int max_active = 200; // hard cap; oldest chunks are freed to make room
 	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
@@ -136,6 +146,16 @@ public:
 	float get_spin_impulse() const { return spin_impulse; }
 	void set_lifetime(float p_v);
 	float get_lifetime() const { return lifetime; }
+	void set_shrink_time(float p_v);
+	float get_shrink_time() const { return shrink_time; }
+	void set_friction(real_t p_v);
+	real_t get_friction() const { return friction; }
+	void set_bounce(real_t p_v);
+	real_t get_bounce() const { return bounce; }
+	void set_linear_damp(real_t p_v);
+	real_t get_linear_damp() const { return linear_damp; }
+	void set_angular_damp(real_t p_v);
+	real_t get_angular_damp() const { return angular_damp; }
 	void set_max_active(int p_v);
 	int get_max_active() const { return max_active; }
 	void set_collision_layer(uint32_t p_v);

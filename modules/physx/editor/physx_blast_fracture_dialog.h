@@ -47,7 +47,11 @@ class PhysXBlastFractureDialog : public ConfirmationDialog {
 	};
 
 	Mode mode = MODE_NONE;
-	Node *target_node = nullptr; // MODE_SCENE_NODE only, not owned by this dialog.
+	// MODE_SCENE_NODE only, not owned by this dialog. Stored as an ObjectID
+	// and re-validated on confirm (EDIT-1): the target can be deleted (or the
+	// scene closed) while the dialog sits open, and a raw Node* would then be
+	// a dangling pointer used by _on_confirmed().
+	ObjectID target_node_id;
 	String target_mesh_path; // MODE_MESH_RESOURCE only.
 	Ref<Mesh> source_mesh;
 

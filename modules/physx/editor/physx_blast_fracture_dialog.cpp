@@ -22,6 +22,7 @@
 #include "core/object/callable_method_pointer.h"
 #include "editor/editor_node.h"
 #include "editor/editor_string_names.h"
+#include "core/object/object.h"
 #include "editor/editor_undo_redo_manager.h"
 #include "editor/file_system/editor_file_system.h"
 #include "editor/inspector/editor_resource_picker.h"
@@ -99,6 +100,11 @@ void PhysXBlastFractureDialog::_on_confirmed() {
 		return;
 	}
 
+	// Re-validate the (possibly long-dead) target on every use (EDIT-1): the
+	// dialog can stay open across node deletion, scene switches, or undo
+	// history — a raw Node* captured at open time would dangle by now.
+	Node3D *target_node = Object::cast_to<Node3D>(ObjectDB::get_instance(target_node_id));
+
 	String save_dir;
 	String base_name;
 	if (mode == MODE_SCENE_NODE && target_node) {
@@ -110,6 +116,19 @@ void PhysXBlastFractureDialog::_on_confirmed() {
 		save_dir = target_mesh_path.get_base_dir();
 		base_name = target_mesh_path.get_file().get_basename();
 	} else {
+		if (mode == MODE_SCENE_NODE) {
+			// The scene node the dialog was opened for is gone; nothing left
+			// to replace — still save the asset so the authoring work isn't
+			// lost, then bail out of the node-swap stage.
+			ERR_PRINT("PhysXBlastFractureDialog: target node was deleted while the dialog was open; saving the asset only.");
+			const Error err = ResourceSaver::save(authored_asset, "res://fractured_blast.tres");
+			if (err != OK) {
+				ERR_PRINT(vformat("PhysXBlastFractureDialog: failed to save fallback asset (error %d).", (int)err));
+			} else {
+				authored_asset->set_path("res://fractured_blast.tres", true);
+				EditorFileSystem::get_singleton()->update_file("res://fractured_blast.tres");
+			}
+		}
 		return;
 	}
 
@@ -123,8 +142,8 @@ void PhysXBlastFractureDialog::_on_confirmed() {
 	EditorFileSystem::get_singleton()->update_file(asset_path);
 
 	if (mode == MODE_SCENE_NODE && target_node) {
-		Node3D *old_node = Object::cast_to<Node3D>(target_node);
-		if (!old_node || !old_node->get_parent()) {
+		Node3D *old_node = target_node;
+		if (!old_node->get_parent()) {
 			return;
 		}
 
@@ -149,7 +168,7 @@ void PhysXBlastFractureDialog::open_for_node(Node *p_mesh_instance) {
 		return;
 	}
 	mode = MODE_SCENE_NODE;
-	target_node = p_mesh_instance;
+	target_node_id = p_mesh_instance->get_instance_id();
 	target_mesh_path = String();
 	_start(mi->get_mesh());
 }
@@ -160,7 +179,7 @@ void PhysXBlastFractureDialog::open_for_mesh_resource(const String &p_mesh_path)
 		return;
 	}
 	mode = MODE_MESH_RESOURCE;
-	target_node = nullptr;
+	target_node_id = ObjectID();
 	target_mesh_path = p_mesh_path;
 	_start(mesh);
 }

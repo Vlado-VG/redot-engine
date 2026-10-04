@@ -31,7 +31,10 @@
 #include "physx_editor_plugin.h"
 
 #include "../nodes/physx_cloth_3d.h"
+#include "../nodes/physx_gas_3d.h"
+#include "../nodes/physx_gas_emitter_3d.h"
 #include "../nodes/physx_particle_fluid_3d.h"
+#include "../vehicles/physx_vehicle_wheel_3d.h"
 
 #ifdef GODOT_PHYSX_BLAST
 #include "../blast/physx_destructible_3d.h"
@@ -360,6 +363,212 @@ PhysXDestructible3DGizmoPlugin::PhysXDestructible3DGizmoPlugin() {
 }
 #endif
 
+// ---------------------------------------------------------------------------
+// Gas / gas-emitter / vehicle-wheel gizmos (ported from the reference module's
+// editor plugin). Read-only wireframes: enough to see and select the otherwise
+// invisible simulation volumes before Play.
+// ---------------------------------------------------------------------------
+
+static void physx_ed_add_box_wireframe(EditorNode3DGizmo *p_gizmo, const Vector3 &p_size, const Ref<Material> &p_material) {
+	AABB aabb;
+	aabb.size = p_size;
+	aabb.position = p_size * -0.5;
+	Vector<Vector3> lines;
+	for (int i = 0; i < 12; i++) {
+		Vector3 a, b;
+		aabb.get_edge(i, a, b);
+		lines.push_back(a);
+		lines.push_back(b);
+	}
+	p_gizmo->add_lines(lines, p_material);
+	p_gizmo->add_collision_segments(lines);
+}
+
+static void physx_ed_add_sphere_wireframe(EditorNode3DGizmo *p_gizmo, float p_radius, const Ref<Material> &p_material) {
+	const int segs = 24;
+	Vector<Vector3> lines;
+	const Vector3 axes[3][2] = {
+		{ Vector3(1, 0, 0), Vector3(0, 1, 0) },
+		{ Vector3(1, 0, 0), Vector3(0, 0, 1) },
+		{ Vector3(0, 1, 0), Vector3(0, 0, 1) },
+	};
+	for (int ring = 0; ring < 3; ring++) {
+		for (int i = 0; i < segs; i++) {
+			const float a0 = Math::TAU * i / segs;
+			const float a1 = Math::TAU * (i + 1) / segs;
+			lines.push_back((axes[ring][0] * Math::cos(a0) + axes[ring][1] * Math::sin(a0)) * p_radius);
+			lines.push_back((axes[ring][0] * Math::cos(a1) + axes[ring][1] * Math::sin(a1)) * p_radius);
+		}
+	}
+	p_gizmo->add_lines(lines, p_material);
+	p_gizmo->add_collision_segments(lines);
+}
+
+// A simple arrow (shaft + small head) along p_dir, scaled by its own length —
+// a quick visual read of the injected-velocity direction/speed.
+static void physx_ed_add_velocity_arrow(EditorNode3DGizmo *p_gizmo, const Vector3 &p_local_velocity, const Ref<Material> &p_material) {
+	if (p_local_velocity.is_zero_approx()) {
+		return;
+	}
+	const Vector3 dir = p_local_velocity.normalized();
+	const float len = CLAMP(p_local_velocity.length() * 0.3f, 0.1f, 2.0f);
+	Vector3 ortho_a = dir.cross(Vector3(0, 1, 0));
+	if (ortho_a.is_zero_approx()) {
+		ortho_a = dir.cross(Vector3(1, 0, 0));
+	}
+	ortho_a.normalize();
+	const Vector3 tip = dir * len;
+	Vector<Vector3> lines;
+	lines.push_back(Vector3());
+	lines.push_back(tip);
+	lines.push_back(tip);
+	lines.push_back(tip - dir * (len * 0.25f) + ortho_a * (len * 0.12f));
+	lines.push_back(tip);
+	lines.push_back(tip - dir * (len * 0.25f) - ortho_a * (len * 0.12f));
+	p_gizmo->add_lines(lines, p_material);
+}
+
+PhysXGas3DGizmoPlugin::PhysXGas3DGizmoPlugin() {
+	create_material("domain", Color(0.5, 0.8, 1.0));
+}
+
+bool PhysXGas3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
+	return Object::cast_to<PhysXGas3D>(p_spatial) != nullptr;
+}
+
+String PhysXGas3DGizmoPlugin::get_gizmo_name() const {
+	return "PhysXGas3D";
+}
+
+int PhysXGas3DGizmoPlugin::get_priority() const {
+	return -1;
+}
+
+bool PhysXGas3DGizmoPlugin::is_selectable_when_hidden() const {
+	return true;
+}
+
+// Box wireframe drawn from WORLD-space corners, transformed into the node's
+// local space by p_node_global_inv — renders at a fixed world position once
+// the gas domain has actually configured (the domain freezes in world space
+// at that point and stops tracking the node, see GasSolver::configure).
+static void physx_ed_add_world_aabb_wireframe(EditorNode3DGizmo *p_gizmo, const Transform3D &p_node_global_inv, const Vector3 &p_world_anchor, const Vector3 &p_world_size, const Ref<Material> &p_material) {
+	AABB aabb(p_world_anchor, p_world_size);
+	Vector<Vector3> lines;
+	for (int i = 0; i < 12; i++) {
+		Vector3 a, b;
+		aabb.get_edge(i, a, b);
+		lines.push_back(p_node_global_inv.xform(a));
+		lines.push_back(p_node_global_inv.xform(b));
+	}
+	p_gizmo->add_lines(lines, p_material);
+	p_gizmo->add_collision_segments(lines);
+}
+
+void PhysXGas3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
+	PhysXGas3D *gas = Object::cast_to<PhysXGas3D>(p_gizmo->get_node_3d());
+	p_gizmo->clear();
+	if (gas->is_domain_configured()) {
+		physx_ed_add_world_aabb_wireframe(p_gizmo, gas->get_global_transform().affine_inverse(),
+				gas->get_configured_domain_anchor(), gas->get_configured_domain_size(),
+				get_material("domain", p_gizmo));
+	} else {
+		// Not configured yet (before the scene has ever run, or right after a
+		// domain_size/cell_size change forces a reconfigure) — the node's
+		// current transform IS where it'll end up, so follow it.
+		physx_ed_add_box_wireframe(p_gizmo, gas->get_domain_size(), get_material("domain", p_gizmo));
+	}
+}
+
+PhysXGasEmitter3DGizmoPlugin::PhysXGasEmitter3DGizmoPlugin() {
+	create_material("emitter", Color(1.0, 0.7, 0.3));
+	create_material("velocity", Color(1.0, 0.9, 0.5));
+}
+
+bool PhysXGasEmitter3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
+	return Object::cast_to<PhysXGasEmitter3D>(p_spatial) != nullptr;
+}
+
+String PhysXGasEmitter3DGizmoPlugin::get_gizmo_name() const {
+	return "PhysXGasEmitter3D";
+}
+
+int PhysXGasEmitter3DGizmoPlugin::get_priority() const {
+	return -1;
+}
+
+bool PhysXGasEmitter3DGizmoPlugin::is_selectable_when_hidden() const {
+	return true;
+}
+
+void PhysXGasEmitter3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
+	PhysXGasEmitter3D *emitter = Object::cast_to<PhysXGasEmitter3D>(p_gizmo->get_node_3d());
+	p_gizmo->clear();
+	const Ref<Material> emitter_material = get_material("emitter", p_gizmo);
+	if (emitter->get_shape() == PhysXGasEmitter3D::SHAPE_BOX) {
+		physx_ed_add_box_wireframe(p_gizmo, emitter->get_size(), emitter_material);
+	} else {
+		physx_ed_add_sphere_wireframe(p_gizmo, emitter->get_radius(), emitter_material);
+	}
+	physx_ed_add_velocity_arrow(p_gizmo, emitter->get_velocity(), get_material("velocity", p_gizmo));
+}
+
+// A wireframe disc in the Y-Z plane at p_center_y along local Y — the wheel's
+// axle runs along local X, so its tire silhouette lies in Y-Z.
+static void physx_ed_add_wheel_disc_wireframe(EditorNode3DGizmo *p_gizmo, float p_radius, float p_center_y, const Ref<Material> &p_material) {
+	const int segs = 24;
+	Vector<Vector3> lines;
+	for (int i = 0; i < segs; i++) {
+		const float a0 = Math::TAU * i / segs;
+		const float a1 = Math::TAU * (i + 1) / segs;
+		lines.push_back(Vector3(0.0f, p_center_y + Math::sin(a0) * p_radius, Math::cos(a0) * p_radius));
+		lines.push_back(Vector3(0.0f, p_center_y + Math::sin(a1) * p_radius, Math::cos(a1) * p_radius));
+	}
+	p_gizmo->add_lines(lines, p_material);
+}
+
+PhysXVehicleWheel3DGizmoPlugin::PhysXVehicleWheel3DGizmoPlugin() {
+	// Green: the wheel's own silhouette (radius) at its authored resting
+	// position — the node's origin IS where the wheel sits at rest (authored
+	// wheel transforms feed the vehicle setup directly), so this is exact.
+	create_material("rest_estimate", Color(0.3, 1.0, 0.4));
+}
+
+bool PhysXVehicleWheel3DGizmoPlugin::has_gizmo(Node3D *p_spatial) {
+	return Object::cast_to<PhysXVehicleWheel3D>(p_spatial) != nullptr;
+}
+
+String PhysXVehicleWheel3DGizmoPlugin::get_gizmo_name() const {
+	return "PhysXVehicleWheel3D";
+}
+
+int PhysXVehicleWheel3DGizmoPlugin::get_priority() const {
+	return -1;
+}
+
+bool PhysXVehicleWheel3DGizmoPlugin::is_selectable_when_hidden() const {
+	return true;
+}
+
+void PhysXVehicleWheel3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
+	PhysXVehicleWheel3D *wheel = Object::cast_to<PhysXVehicleWheel3D>(p_gizmo->get_node_3d());
+	p_gizmo->clear();
+	physx_ed_add_wheel_disc_wireframe(p_gizmo, (float)wheel->get_radius(), 0.0f, get_material("rest_estimate", p_gizmo));
+
+	// Forward arrow from the ground-contact point (bottom of the tire,
+	// y = -radius), pointing toward the vehicle's nose (+Z).
+	Vector<Vector3> fwd_arrow;
+	const float len = (float)wheel->get_radius() * 1.5f;
+	const float contact_y = -(float)wheel->get_radius();
+	fwd_arrow.push_back(Vector3(0, contact_y, 0));
+	fwd_arrow.push_back(Vector3(0, contact_y, len));
+	fwd_arrow.push_back(Vector3(0, contact_y, len));
+	fwd_arrow.push_back(Vector3(0.08f * len / 1.5f, contact_y, len * 0.8f));
+	fwd_arrow.push_back(Vector3(0, contact_y, len));
+	fwd_arrow.push_back(Vector3(-0.08f * len / 1.5f, contact_y, len * 0.8f));
+	p_gizmo->add_lines(fwd_arrow, get_material("rest_estimate", p_gizmo));
+}
+
 PhysXEditorPlugin::PhysXEditorPlugin() {
 	Ref<PhysXParticleFluid3DGizmoPlugin> fluid_gizmo;
 	fluid_gizmo.instantiate();
@@ -368,6 +577,18 @@ PhysXEditorPlugin::PhysXEditorPlugin() {
 	Ref<PhysXCloth3DGizmoPlugin> cloth_gizmo;
 	cloth_gizmo.instantiate();
 	Node3DEditor::get_singleton()->add_gizmo_plugin(cloth_gizmo);
+
+	Ref<PhysXGas3DGizmoPlugin> gas_gizmo;
+	gas_gizmo.instantiate();
+	Node3DEditor::get_singleton()->add_gizmo_plugin(gas_gizmo);
+
+	Ref<PhysXGasEmitter3DGizmoPlugin> gas_emitter_gizmo;
+	gas_emitter_gizmo.instantiate();
+	Node3DEditor::get_singleton()->add_gizmo_plugin(gas_emitter_gizmo);
+
+	Ref<PhysXVehicleWheel3DGizmoPlugin> vehicle_wheel_gizmo;
+	vehicle_wheel_gizmo.instantiate();
+	Node3DEditor::get_singleton()->add_gizmo_plugin(vehicle_wheel_gizmo);
 
 #ifdef GODOT_PHYSX_BLAST
 	Ref<PhysXDestructible3DGizmoPlugin> destructible_gizmo;
