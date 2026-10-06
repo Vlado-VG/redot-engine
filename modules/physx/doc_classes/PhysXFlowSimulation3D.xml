@@ -6,7 +6,7 @@
 	<description>
 		Runs NVIDIA Flow (the realtime sparse-voxel combustion solver that ships alongside PhysX, loaded at runtime from [code]nvflow.dll[/code]/[code]nvflowext.dll[/code]) on its own GPU device -- Flow is architecturally a sibling of PhysX and Blast, not a physics subsystem; this node simply steps it from the scene tree's physics tick.
 		Unlike a fixed-domain volume, a Flow grid is [b]sparse and unbounded[/b]: blocks allocate anywhere emitters touch, bounded only by [member max_blocks]. Author with [PhysXFlowEmitter3D] nodes (list their paths in [member emitters]) and colliders in [member colliders]: explicit [PhysXFlowCollider3D] nodes, or any physics body (StaticBody3D / RigidBody3D / kinematic bodies -- their server-side transform, velocity and shape data are consumed directly, with triangle-mesh collision for concave shapes and moving-body velocity coupling).
-		Combustion is real: emitters inject [member temperature]/fuel/smoke channels; fuel above the ignition temperature burns, raising temperature further (rising fireball), generating smoke and cooling over time. Pure smoke emitters set temperature/fuel to 0.
+		Combustion is real: emitters inject temperature/fuel/smoke channels; fuel above the ignition temperature burns, raising temperature further (rising fireball), generating smoke and cooling over time. Pure smoke emitters set temperature/fuel to 0.
 		Renders through a stock FogVolume fed by a readback of the sparse volume (smoke density shades as fog; the solver's colorized fire channels add emission). Requires the Forward+ renderer for visuals; the simulation itself runs regardless (headless included). Flow runs on its own GPU backend selected by [code]physics/physx_3d/flow/device_api[/code]; without a usable device every node reports unavailable and stays inert -- scenes load and run, only without Flow effects.
 		[b]Known v1 limits:[/b] collision meshes rebuild when a body's shape changes are not yet diffed (a changed shape resource gets a fresh cache entry automatically, since meshes are cached per shape RID); the CPU-side readback decode costs roughly 0.5-8 ms per step depending on plume size (measured), which large scenes may want to reduce by raising [member cell_size].
 	</description>
@@ -152,7 +152,7 @@
 			Half-extent used for [member colliders] entries that resolve to a plain Node3D.
 		</member>
 		<member name="volumetric_render" type="bool" setter="set_volumetric_render" getter="get_volumetric_render" default="true">
-			Renders the readback volume through a child FogVolume (Forward+ only -- see [method get_configuration_warnings]).
+			Renders the readback volume through a child FogVolume (Forward+ only -- see [code]get_configuration_warnings[/code]).
 		</member>
 		<member name="fog_density" type="float" setter="set_fog_density" getter="get_fog_density" default="24.0">
 			Fog density multiplier applied to the smoke channel.
