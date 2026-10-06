@@ -10,11 +10,13 @@ env_physx = env_modules.Clone()
 # GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
 # which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /
 # eGPU-broadphase scene path. The CUDA-enabled PhysX SDK is required at build
-# time and PhysXGpu_64.dll next to the binary at run time; without a usable CUDA
-# device the server logs a warning and simulates on the CPU. Opt out with
-# `physx_gpu=no` — GODOT_PHYSX_GPU is then not defined, so the server never
-# touches CUDA (the GPU fluid object still compiles but stays inert, and the
-# cloth node falls back to its CPU solver).
+# time; at run time Windows needs PhysXGpu_64.dll next to the binary, while
+# Linux embeds the kernels in the static archive and only asks the NVIDIA
+# driver (dlopen'd) for a context -- without a usable CUDA device the server
+# logs a warning and simulates on the CPU. Opt out with `physx_gpu=no` --
+# GODOT_PHYSX_GPU is then not defined, so the server never touches CUDA (the
+# GPU fluid object still compiles but stays inert, and the cloth node falls
+# back to its CPU solver).
 physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False")
 
 # 1. PhysX Defines
@@ -24,16 +26,17 @@ physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False
 # the GPU fluid/cloth object code needs them to compile. GODOT_PHYSX_GPU only
 # gates whether OUR code creates a CUDA context.
 #
-# GPU dynamics is Windows-only: the vendored GPU-enabled SDK (and its
-# PhysXGpu runtime DLL) ships for win64, and the GPU link mechanism on other
-# platforms is unverified (upstream verified Linux CPU-only: a clang/gcc-built
-# PhysX SDK links into a GCC Godot build fine -- GPU stayed the untested path).
-# Other platforms build CPU-only; the wrappers' CPU fallbacks take over.
+# GPU platforms: Windows (PhysXGpu_64.dll runtime) and Linux (kernels embedded
+# in the aggregated libPhysXGpu_static_64.a; no cudart link-time dependency --
+# the driver API is dlopen'd, so machines without NVIDIA drivers keep loading
+# the engine and take the CPU fallback). Other platforms build CPU-only; the
+# wrappers' CPU fallbacks take over. Linux GPU linking itself is newly wired
+# and still runtime-unvalidated.
 physx_defines = [
     "PX_PHYSX_STATIC_LIB",
 ]
 
-if physx_gpu and env["platform"] == "windows":
+if physx_gpu and env["platform"] in ("windows", "linux", "linuxbsd"):
     physx_defines.append("GODOT_PHYSX_GPU")
 elif physx_gpu:
     print("physx: physx_gpu=yes has no GPU wiring for platform '%s'; building CPU-only." % env["platform"])
@@ -146,6 +149,15 @@ if env["platform"] != "windows":
         "PhysXCommon_static_64",
         "PhysXFoundation_static_64",
     ]
+
+    # Linux GPU dynamics: the SDK's aggregated CUDA archive (the separate
+    # per-domain Gpu libs from the Windows layout are combined into one).
+    # Its symbols reference Common/Foundation further down the list; kernels
+    # are embedded, so nothing else is needed at link time. PhysXGpu is only
+    # referenced when GODOT_PHYSX_GPU is defined -- with physx_gpu=no the
+    # unreferenced archive is skipped by the linker.
+    if physx_gpu and env["platform"] in ("linux", "linuxbsd"):
+        physx_libs.insert(physx_libs.index("PhysX_static_64") + 1, "PhysXGpu_static_64")
 
 # Prebuilt PhysX libraries use plain ".lib" names. On Windows, SCons would
 # otherwise append $LIBSUFFIX (e.g. ".windows.editor.x86_64.lib") to env.LIBS
