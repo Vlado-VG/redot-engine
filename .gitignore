@@ -421,3 +421,25 @@ $RECYCLE.BIN/
 *.msp
 *.lnk
 *.generated.props
+
+# PhysX / Flow / Blast SDKs: re-include prebuilt binaries, libs, PDBs and
+# headers (must come after *.dll/*.lib/*.pdb/[Bb]in/[Rr]elease rules above
+# so these negations win; covers the checked and release SDK configs)
+!thirdparty/physx/bin/
+!thirdparty/physx/bin/**
+!thirdparty/physx/lib/
+!thirdparty/physx/lib/**
+!thirdparty/physx/include/
+!thirdparty/physx/include/**
+!thirdparty/flow/bin/
+!thirdparty/flow/bin/**
+!thirdparty/flow/lib/
+!thirdparty/flow/lib/**
+!thirdparty/flow/include/
+!thirdparty/flow/include/**
+!thirdparty/blast/bin/
+!thirdparty/blast/bin/**
+!thirdparty/blast/lib/
+!thirdparty/blast/lib/**
+!thirdparty/blast/include/
+!thirdparty/blast/include/**
