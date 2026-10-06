@@ -47,7 +47,7 @@
 		<method name="get_diagnostics" qualifiers="const">
 			<return type="Dictionary" />
 			<description>
-				Live diagnostics: [code]available[/code], [code]unavailable_reason[/code], [code]backend[/code] ("vulkan"/"cpu"), [code]simulations[/code], [code]active_blocks[/code], [code]max_blocks[/code], [code]frames_simulated[/code], [code]sim_time[/code], [code]device_memory_mb[/code], [code]readback_memory_mb[/code], and the last step's CPU timings in microseconds ([code]last_submit_usec[/code], [code]last_flush_usec[/code], [code]last_decode_usec[/code]).
+				Live diagnostics: [code]available[/code], [code]unavailable_reason[/code], [code]backend[/code] ("vulkan"/"cpu"), [code]simulations[/code], [code]active_blocks[/code], [member max_blocks], [code]frames_simulated[/code], [code]sim_time[/code], [code]device_memory_mb[/code], [code]readback_memory_mb[/code], and the last step's CPU timings in microseconds ([code]last_submit_usec[/code], [code]last_flush_usec[/code], [code]last_decode_usec[/code]).
 			</description>
 		</method>
 		<method name="get_active_block_count" qualifiers="const">
@@ -116,7 +116,7 @@
 			Toggles the fuel-burn-temperature-smoke reaction; off = pure advected smoke.
 		</member>
 		<member name="gravity" type="Vector3" setter="set_gravity" getter="get_gravity" default="Vector3(0, -100, 0)">
-			Buoyancy reference gravity inside the solver (Flow's own units; [member buoyancy_per_temp] works against this). Godot's world gravity does not automatically apply -- a Flow volume is its own world.
+			Buoyancy reference gravity inside the solver (Flow's own units; [member buoyancy_per_temp] works against this). Redot's world gravity does not automatically apply -- a Flow volume is its own world.
 		</member>
 		<member name="buoyancy_per_temp" type="float" setter="set_buoyancy_per_temp" getter="get_buoyancy_per_temp" default="2.0">
 			Upward force per unit temperature (drives plume rise).

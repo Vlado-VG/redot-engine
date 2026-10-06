@@ -36,8 +36,8 @@ def get_doc_classes():
         "PhysXGas3D",
         "PhysXGasEmitter3D",
         "PhysXBlastAsset",
-		"PhysXBlastAuthoring",
-		"PhysXDestructible3D",
+        "PhysXBlastAuthoring",
+        "PhysXDestructible3D",
         "PhysXFlowSimulation3D",
         "PhysXFlowEmitter3D",
         "PhysXFlowCollider3D",
@@ -46,7 +46,7 @@ def get_doc_classes():
         "PhysXVehicleWheel3D",
         "PhysXMotorcycle3D",
         "PhysXTank3D",
-		"PhysXWaterSurface3D",
+        "PhysXWaterSurface3D",
     ]
 
 

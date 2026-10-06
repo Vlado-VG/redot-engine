@@ -6,7 +6,7 @@
 	<description>
 		PxVehicle2 has no built-in balancing mechanism for a 2-wheel vehicle -- staying upright is left entirely to the caller. This node does not attempt to balance itself; a script (e.g. one attached to this node) is expected to read the orientation/velocity getters below every physics tick and correct [method set_angular_velocity] or apply forces via [method apply_torque_impulse]/[method apply_force_at_local_position] to keep it up, the same way a rider actively balances a real bike.
 		Node structure mirrors [PhysXVehicle3D]: add a [CollisionShape3D] child with a [BoxShape3D] for the chassis, and exactly 2 [PhysXVehicleWheel3D] children -- one with [member PhysXVehicleWheel3D.use_as_steering] enabled (the front) and one with [member PhysXVehicleWheel3D.use_as_traction] enabled (the rear, matching a real motorcycle's rear-wheel-drive convention). Each wheel's own [member Node3D.position] is where it rests under static load, same convention [PhysXVehicle3D]'s wheels use.
-		Drive it every physics tick by setting [member throttle], [member brake], [member steer], and (once actually stopped) [member reverse], using PxVehicleCommandState's own convention ([code]throttle[/code]/[code]brake[/code] in [code][0, 1][/code], [code]steer[/code] in [code][-1, 1][/code]).
+		Drive it every physics tick by setting [member throttle], [member brake], [member steer], and (once actually stopped) [member reverse], using PxVehicleCommandState's own convention ([member throttle]/[member brake] in [code][0, 1][/code], [member steer] in [code][-1, 1][/code]).
 		Only runs in an actual running game, never in the editor -- placing or moving the node in the Inspector does not simulate or fall under gravity.
 	</description>
 	<tutorials>

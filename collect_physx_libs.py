@@ -8,6 +8,7 @@ out/<config>/ -- ready to drop into thirdparty/physx/lib/<platform>/...
 
 Usage: python3 collect_physx_libs.py <linux|macos>
 """
+
 import glob
 import os
 import shutil

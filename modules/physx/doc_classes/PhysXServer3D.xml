@@ -31,7 +31,7 @@
 			<param index="5" name="density" type="float" />
 			<param index="6" name="box_half_extents" type="Vector3" />
 			<description>
-				Adds a link and returns its 0-based index. [code]parent_index[/code] -1 creates the base link (world-posed via [code]child_frame[/code]; [code]joint_type[/code] ignored). Otherwise [code]child_frame[/code] is the link pose relative to its parent and [code]parent_frame[/code] the inbound joint anchor in the parent link's frame. [code]joint_type[/code]: 0 FIX, 1 PRISMATIC, 2 REVOLUTE, 3 REVOLUTE_UNWRAPPED, 4 SPHERICAL. Each link gets a default box collision shape ([code]box_half_extents[/code]); mass properties derive from it at [code]density[/code]. Replace the shape with [method articulation_set_link_shape].
+				Adds a link and returns its 0-based index. [param parent_index] -1 creates the base link (world-posed via [param child_frame]; [param joint_type] ignored). Otherwise [param child_frame] is the link pose relative to its parent and [param parent_frame] the inbound joint anchor in the parent link's frame. [param joint_type]: 0 FIX, 1 PRISMATIC, 2 REVOLUTE, 3 REVOLUTE_UNWRAPPED, 4 SPHERICAL. Each link gets a default box collision shape ([param box_half_extents]); mass properties derive from it at [param density]. Replace the shape with [method articulation_set_link_shape].
 			</description>
 		</method>
 		<method name="articulation_set_drive">
@@ -45,7 +45,7 @@
 			<param index="6" name="drive_velocity" type="float" />
 			<param index="7" name="drive_type" type="int" />
 			<description>
-				Unlocks [code]axis[/code] on the link's inbound joint and configures a PD drive toward [code]drive_target[/code] at [code]drive_velocity[/code]. Axes: 0 TWIST, 1 SWING1, 2 SWING2, 3 X, 4 Y, 5 Z. [code]drive_type[/code]: 0 FORCE, 1 ACCELERATION.
+				Unlocks [param axis] on the link's inbound joint and configures a PD drive toward [param drive_target] at [param drive_velocity]. Axes: 0 TWIST, 1 SWING1, 2 SWING2, 3 X, 4 Y, 5 Z. [param drive_type]: 0 FORCE, 1 ACCELERATION.
 			</description>
 		</method>
 		<method name="articulation_set_limit">
@@ -56,7 +56,7 @@
 			<param index="3" name="low" type="float" />
 			<param index="4" name="high" type="float" />
 			<description>
-				Unlocks [code]axis[/code] and clamps it to [code][low, high][/code] with a joint limit.
+				Unlocks [param axis] and clamps it to [code][low, high][/code] with a joint limit.
 			</description>
 		</method>
 		<method name="articulation_set_fix_base">
@@ -100,7 +100,7 @@
 			<param index="2" name="shape" type="RID" />
 			<param index="3" name="transform" type="Transform3D" />
 			<description>
-				Replaces the link's collision shape with a per-link instance of the shared shape [code]shape[/code] (created by the shape_create methods), placed at [code]transform[/code]. Convex polygon shapes preserve mirroring; concave shapes degrade to query-only on links (they simulate — REG-0014 semantics). Mass properties are recomputed at the link's stored density.
+				Replaces the link's collision shape with a per-link instance of the shared shape [param shape] (created by the shape_create methods), placed at [param transform]. Convex polygon shapes preserve mirroring; concave shapes degrade to query-only on links (they simulate — REG-0014 semantics). Mass properties are recomputed at the link's stored density.
 			</description>
 		</method>
 		<method name="articulation_set_link_collision_layer">
@@ -108,14 +108,14 @@
 			<param index="0" name="articulation" type="RID" />
 			<param index="1" name="link_index" type="int" />
 			<param index="2" name="layer" type="int" />
-			<description>Sets the link shape's collision layer (Godot "what I am" bits, filter word0).</description>
+			<description>Sets the link shape's collision layer (Redot "what I am" bits, filter word0).</description>
 		</method>
 		<method name="articulation_set_link_collision_mask">
 			<return type="void" />
 			<param index="0" name="articulation" type="RID" />
 			<param index="1" name="link_index" type="int" />
 			<param index="2" name="mask" type="int" />
-			<description>Sets the link shape's collision mask (Godot "what I collide with" bits, filter word1).</description>
+			<description>Sets the link shape's collision mask (Redot "what I collide with" bits, filter word1).</description>
 		</method>
 		<method name="articulation_get_link_collision_layer" qualifiers="const">
 			<return type="int" />
