@@ -34,6 +34,7 @@ jobs:
       - name: Build Redot Project for Linux
         run: |
           scons platform=linuxbsd production=yes
+          rm -rf bin/obj
 
       - name: Upload Linux dev artifact
         uses: actions/upload-artifact@v4
@@ -71,6 +72,7 @@ jobs:
       - name: Build Redot Templates for Linux
         run: |
           scons platform=linuxbsd target=template_release
+          rm -rf bin/obj
 
       - name: Upload Linux Template Artifact
         uses: actions/upload-artifact@v4
@@ -97,6 +99,7 @@ jobs:
       - name: Build Redot Project for Windows
         run: |
           scons platform=windows production=yes
+          Remove-Item -Recurse -Force bin/obj -ErrorAction SilentlyContinue
 
       - name: Upload Windows dev artifact
         uses: actions/upload-artifact@v4
@@ -123,6 +126,7 @@ jobs:
       - name: Build Redot Templates for Windows
         run: |
           scons platform=windows target=template_release
+          Remove-Item -Recurse -Force bin/obj -ErrorAction SilentlyContinue
 
       - name: Upload Windows Template Artifact
         uses: actions/upload-artifact@v4
@@ -149,6 +153,7 @@ jobs:
       - name: Build Redot Project for macOS x64
         run: |
           scons platform=macos arch=x64 production=yes
+          rm -rf bin/obj
 
       - name: Upload macOS x64 dev artifact
         uses: actions/upload-artifact@v4
@@ -175,7 +180,8 @@ jobs:
 
       - name: Build Redot Project for macOS arm64
         run: |
-          scons platform=macos arch=arm64
+          scons platform=macos arch=arm64 production=yes
+          rm -rf bin/obj
 
       - name: Upload macOS arm64 dev artifact
         uses: actions/upload-artifact@v4
@@ -202,6 +208,7 @@ jobs:
       - name: Build Redot Templates for macOS x64
         run: |
           scons platform=macos arch=x64 target=template_release
+          rm -rf bin/obj
 
       - name: Upload macOS x64 Template Artifact
         uses: actions/upload-artifact@v4
@@ -228,6 +235,7 @@ jobs:
       - name: Build Redot Templates for macOS arm64
         run: |
           scons platform=macos arch=arm64 target=template_release
+          rm -rf bin/obj
 
       - name: Upload macOS arm64 Template Artifact
         uses: actions/upload-artifact@v4
@@ -296,14 +304,14 @@ jobs:
 
       - name: Zip the dev artifact
         run: |
-          zip -r redot-linuxbsd.zip redot-linux-dev/*
-          zip -r redot-windowsx64.zip redot-windows-dev/*
-          zip -r redot-macos-x64.zip redot-macos-x64-dev/*
-          zip -r redot-macos-arm64.zip redot-macos-arm64-dev/*
-          zip -r redot-linux-template.zip redot-linux-template/*
-          zip -r redot-windows-template.zip redot-windows-template/*
-          zip -r redot-macos-x64-template.zip redot-macos-x64-template/*
-          zip -r redot-macos-arm64-template.zip redot-macos-arm64-template/*
+          zip -r -9 redot-linuxbsd.zip redot-linux-dev/*
+          zip -r -9 redot-windowsx64.zip redot-windows-dev/*
+          zip -r -9 redot-macos-x64.zip redot-macos-x64-dev/*
+          zip -r -9 redot-macos-arm64.zip redot-macos-arm64-dev/*
+          zip -r -9 redot-linux-template.zip redot-linux-template/*
+          zip -r -9 redot-windows-template.zip redot-windows-template/*
+          zip -r -9 redot-macos-x64-template.zip redot-macos-x64-template/*
+          zip -r -9 redot-macos-arm64-template.zip redot-macos-arm64-template/*
 
       # - name: Upload release artifacts
       #   uses: actions/upload-artifact@v4
