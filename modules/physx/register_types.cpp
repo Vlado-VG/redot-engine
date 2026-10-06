@@ -21,6 +21,10 @@
 #include "nodes/physx_cloth_3d.h"
 #include "cloth/physx_skinned_cloth_3d.h"
 #include "water/physx_water_surface_3d.h"
+#include "water/physx_buoyancy_3d.h"
+#include "water/physx_boat_3d.h"
+#include "water/physx_water_wake_3d.h"
+#include "water/physx_water_spray_3d.h"
 #include "water/water_ripple_probe.h"
 #include "nodes/physx_granular_3d.h"
 #include "nodes/physx_particle_fluid_3d.h"
@@ -104,6 +108,15 @@ void initialize_physx_module(ModuleInitializationLevel p_level) {
 		ClassDB::register_class<PhysXCloth3D>();
 		ClassDB::register_class<PhysXSkinnedCloth3D>();
 		ClassDB::register_class<PhysXWaterSurface3D>();
+		// Floats a parent RigidBody3D on a PhysXWaterSurface3D (Archimedes
+		// per sample point); PhysXBoat3D drives the same body's propeller,
+		// rudder and hull drag; PhysXWaterWake3D simulates a moving wake
+		// grid drawn by the surface; PhysXWaterSpray3D drives GPUParticles3D
+		// spray emitters from the hull's motion.
+		ClassDB::register_class<PhysXBuoyancy3D>();
+		ClassDB::register_class<PhysXBoat3D>();
+		ClassDB::register_class<PhysXWaterWake3D>();
+		ClassDB::register_class<PhysXWaterSpray3D>();
 		ClassDB::register_class<WaterRippleProbe>();
 		ClassDB::register_class<PhysXGranular3D>();
 		ClassDB::register_class<PhysXParticleFluid3D>();

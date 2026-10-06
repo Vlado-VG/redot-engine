@@ -47,6 +47,7 @@ ASYNC_SCRIPT = "res://gdscript/async_stress_test.gd"
 RUNTIME_SCRIPT = "res://gdscript/runtime_cost_test.gd"
 FLOW_SCRIPT = "res://gdscript/flow_smoke_test.gd"
 GPU_SCRIPT = "res://gdscript/gpu_smoke_test.gd"
+WATER_PARITY_SCRIPT = "res://gdscript/water_parity_test.gd"
 SOFT_ATTACH_SCRIPT = "res://gdscript/soft_body_attachment_test.gd"
 
 # Suites run by "--suite all" (the default, blocking CI tier): everything
@@ -64,6 +65,7 @@ SUITES = {
     "runtime": [RUNTIME_SCRIPT],
     "flow": [FLOW_SCRIPT],
     "gpu": [GPU_SCRIPT, SOFT_ATTACH_SCRIPT],
+    "water": [WATER_PARITY_SCRIPT],
 }
 # Suites whose tests carry categories and can run one category per process.
 CATEGORIZABLE_SUITES = ("csharp", "gdscript")

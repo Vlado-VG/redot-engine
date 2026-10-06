@@ -215,6 +215,17 @@ public:
 	// both layers (ripple + ocean), matching what the rendered mesh shows.
 	// Returns -INF over dry cells when a surface_mesh is set.
 	float sample_height(Vector3 p_world_pos) const;
+	// The same, leaving out one wake (a boat's buoyancy reading the water
+	// under it shouldn't sink into its own wake's dip).
+	float sample_height_excluding_wake(Vector3 p_world_pos, ObjectID p_wake) const;
+	// Moving wake grids (PhysXWaterWake3D): up to MAX_WAKES are drawn and
+	// sampled. register_wake() returns a slot (-1 when full).
+	static constexpr int MAX_WAKES = 4;
+	int register_wake(ObjectID p_wake);
+	void unregister_wake(int p_slot);
+	// The wake's height texture and its rect (xy world xz corner, z side, w
+	// shore-grid fade 0..1).
+	void set_wake_slot(int p_slot, const Ref<Texture2D> &p_height, const Vector4 &p_rect);
 	// False outside the surface_mesh footprint (always true without one).
 	bool is_wet(Vector3 p_world_pos) const;
 
@@ -284,6 +295,9 @@ private:
 	// seabed_from_floor the solver is configured on the first physics tick.
 	bool seabed_pending = false;
 	Ref<ShaderMaterial> water_material;
+	ObjectID wakes[MAX_WAKES];
+	Vector2 mesh_offset; // see _update_mesh_offset()
+	void _update_mesh_offset();
 	Ref<Texture2DRD> ripple_height_tex;
 	Ref<Texture2DRD> ocean_height_tex;
 	Ref<Texture2DRD> ocean_fade_tex;
@@ -310,7 +324,11 @@ private:
 	Vector2 cached_ocean_domain;
 
 	int frames_since_refresh = 0;
-	static constexpr int REFRESH_EVERY_FRAMES = 4; // throttled CPU cache refresh for sample_height() only -- rendering is unthrottled/automatic via the zero-copy textures
+	// CPU cache refresh for sample_height() only -- rendering is unthrottled/automatic via the zero-copy textures.
+	// Every tick (upstream 9531b60da5): the readback lands every step anyway and the copy is a COW share, while
+	// refreshing every 4th tick froze the heights in between and then jumped them several cm (rough seas), which
+	// jolted buoyancy and anything resting on sampled water.
+	static constexpr int REFRESH_EVERY_FRAMES = 1;
 
 	void _rebuild();
 	// Footprint triangles of surface_mesh in node-local XZ (degenerates dropped).
@@ -327,7 +345,13 @@ private:
 	void _unbind_all_textures(); // WATER-1
 	void _refresh_cpu_cache();
 	void _update(double p_delta);
-	float _bilinear_sample(const Vector<float> &p_grid, int p_n, Vector2 p_domain, float p_world_x, float p_world_z) const;
+	// p_repeat: wrap around instead of clamping at the edge (the FFT ocean is
+	// periodic).
+	float _bilinear_sample(const Vector<float> &p_grid, int p_n, Vector2 p_domain, float p_world_x, float p_world_z, bool p_repeat = false) const;
+	// The water carries on past the simulated square (render_extent), and
+	// whether world XZ (relative to grid_center) is inside what's drawn.
+	bool _open_beyond() const;
+	bool _inside_render_extent(float p_rel_x, float p_rel_z) const;
 };
 
 VARIANT_ENUM_CAST(PhysXWaterSurface3D::NormalMode);

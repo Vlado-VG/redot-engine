@@ -30,6 +30,11 @@
 
 #include "physx_water_surface_3d.h"
 
+#include "physx_water_wake_3d.h"
+
+#include "scene/3d/camera_3d.h"
+#include "scene/main/viewport.h"
+
 #include "core/config/engine.h"
 #include "core/math/face3.h"
 #include "core/object/class_db.h"
@@ -95,6 +100,20 @@ uniform vec2 ripple_domain_size = vec2(20.0, 20.0);
 uniform vec2 ocean_domain_size = vec2(40.0, 40.0);
 // World XZ both height fields are centred on (set by PhysXWaterSurface3D).
 uniform vec2 grid_center = vec2(0.0);
+// World xz the whole open-water mesh is moved by, so its dense core stays
+// under the camera; set by the node every frame.
+uniform vec2 mesh_offset = vec2(0.0);
+// Moving wake grids (PhysXWaterWake3D), up to four: height textures and
+// their rects (xy world xz of the corner, z side length -- 0 = unused, w how
+// much the wake fades out over the shore ripple grid, 0..1).
+uniform sampler2D wake_height_0 : hint_default_black, filter_linear, repeat_disable;
+uniform sampler2D wake_height_1 : hint_default_black, filter_linear, repeat_disable;
+uniform sampler2D wake_height_2 : hint_default_black, filter_linear, repeat_disable;
+uniform sampler2D wake_height_3 : hint_default_black, filter_linear, repeat_disable;
+uniform vec4 wake_rect_0 = vec4(0.0);
+uniform vec4 wake_rect_1 = vec4(0.0);
+uniform vec4 wake_rect_2 = vec4(0.0);
+uniform vec4 wake_rect_3 = vec4(0.0);
 // Mean surface height (node-relative), what the ripple layer settles back to
 // past the edge of its domain when the surface is rendered further out.
 uniform float water_level = 0.0;
@@ -165,6 +184,42 @@ varying vec3 v_world_normal;
 varying float v_foam;
 varying vec2 v_rest_xz;
 
+// One wake grid's height (x) and foam (y) at world_xz, faded out toward its edges.
+vec2 wake_one(sampler2D tex, vec4 rect, vec2 world_xz) {
+	if (rect.z <= 0.0) {
+		return vec2(0.0);
+	}
+	vec2 uv = (world_xz - rect.xy) / rect.z;
+	float edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+	if (edge <= 0.0) {
+		return vec2(0.0);
+	}
+	// Optionally fade out over the shore ripple grid (where a floater's own
+	// ripples can take over).
+	vec2 from_center = abs((world_xz - grid_center) / ripple_domain_size);
+	float outside = smoothstep(0.46, 0.5, max(from_center.x, from_center.y));
+	vec4 t = texture(tex, uv); // height, hull foam, propeller foam
+	return vec2(t.r, t.g + t.b) * smoothstep(0.0, 0.1, edge) * mix(1.0, outside, rect.w);
+}
+
+// All wakes at world_xz, everywhere (inside the shore ripple grid too).
+vec2 wake_sample(vec2 world_xz) {
+	vec2 w = wake_one(wake_height_0, wake_rect_0, world_xz) + wake_one(wake_height_1, wake_rect_1, world_xz)
+			+ wake_one(wake_height_2, wake_rect_2, world_xz) + wake_one(wake_height_3, wake_rect_3, world_xz);
+	// Not over dry sand: the wake dies out over the last 30 cm of depth.
+	vec2 cuv_r = clamp((world_xz - grid_center) / ripple_domain_size + 0.5, vec2(0.0), vec2(1.0));
+	return w * smoothstep(0.0, 0.3, texture(shore_depth_tex, cuv_r).r);
+}
+
+float wake_height(vec2 world_xz) {
+	return wake_sample(world_xz).x;
+}
+
+// Foam the wakes churned in (bow wave, propeller wash, breaking wake waves).
+float wake_foam(vec2 world_xz) {
+	return min(wake_sample(world_xz).y, 1.0);
+}
+
 // Offset of the surface point that rests at world_xz: (dx, height, dz).
 vec3 surface_offset(vec2 world_xz) {
 	vec2 rel = world_xz - grid_center;
@@ -179,6 +234,10 @@ vec3 surface_offset(vec2 world_xz) {
 	float inside = 1.0 - smoothstep(0.46, 0.5, max(from_center.x, from_center.y));
 	float ripple = mix(water_level, texture(ripple_height_tex, cuv_r).r, inside);
 	float h = ripple + texture(ocean_height_tex, cuv_o).r * fade;
+	// The wake grid is laid out where the water is now, not where it rests
+	// (its sources sit under the hull, and sample_height() reads it there):
+	// read it at this point's displaced position.
+	h += wake_height(world_xz + d);
 	// Never below the ground: over dry sand (and in the deepest troughs over
 	// shallows) the surface lies on the sand as a thin film, which is where
 	// the swash shows.
@@ -208,6 +267,12 @@ vec3 surface_normal_pixel(vec2 world_xz) {
 	float wet_w = smoothstep(0.0, 0.15, texture(shore_depth_tex, cuv_r).r);
 	rx *= wet_w;
 	rz *= wet_w;
+	// Wake slopes (zero over the shore grid), at the displaced position as
+	// surface_offset() reads the wake.
+	const float ew = 0.12;
+	vec2 wake_xz = world_xz + s * texture(ocean_disp_tex, cuv_o).rg;
+	rx += (wake_height(wake_xz + vec2(ew, 0.0)) - wake_height(wake_xz - vec2(ew, 0.0))) / (2.0 * ew);
+	rz += (wake_height(wake_xz + vec2(0.0, ew)) - wake_height(wake_xz - vec2(0.0, ew))) / (2.0 * ew);
 	vec3 tx = vec3(1.0 + s * der.z, der.x * fade + rx, s * dxz);
 	vec3 tz = vec3(s * dxz, der.y * fade + rz, 1.0 + s * der.w);
 	return normalize(cross(tz, tx));
@@ -233,7 +298,10 @@ float foam_at(vec2 world_xz) {
 	vec2 rel = world_xz - grid_center;
 	vec2 cuv_r = clamp(rel / ripple_domain_size + 0.5, vec2(0.0), vec2(1.0));
 	vec2 cuv_o = rel / ocean_domain_size + 0.5; // wraps: the FFT ocean is periodic
-	float amount = texture(ocean_foam_tex, cuv_o).r * texture(ocean_fade_tex, cuv_r).r;
+	float fade = texture(ocean_fade_tex, cuv_r).r;
+	float amount = texture(ocean_foam_tex, cuv_o).r * fade;
+	// Wake foam at the displaced position, as surface_offset() reads the wake.
+	amount = max(amount, wake_foam(world_xz - choppiness * fade * texture(ocean_disp_tex, cuv_o).rg));
 	vec2 p = world_xz * foam_detail_scale;
 	float n = 0.5 * foam_value_noise(p) + 0.3 * foam_value_noise(p * 2.7 + 17.0) + 0.2 * foam_value_noise(p * 7.3 - 5.0);
 	// Gentle ramp: fresh foam is solid, thinning foam turns translucent and
@@ -296,6 +364,7 @@ float shore_signal(vec2 world_xz, float time) {
 }
 
 void vertex() {
+	VERTEX += (inverse(MODEL_MATRIX) * vec4(mesh_offset.x, 0.0, mesh_offset.y, 0.0)).xyz;
 	vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_rest_xz = world_pos.xz;
 	VERTEX += surface_offset(world_pos.xz);
@@ -792,12 +861,19 @@ void PhysXWaterSurface3D::_notification(int p_what) {
 		case NOTIFICATION_ENTER_WORLD: {
 			_rebuild();
 			set_physics_process_internal(true);
+			set_process_internal(true);
 		} break;
 		case NOTIFICATION_EXIT_WORLD: {
 			set_physics_process_internal(false);
+			set_process_internal(false);
 		} break;
 		case NOTIFICATION_INTERNAL_PHYSICS_PROCESS: {
 			_update(get_physics_process_delta_time());
+		} break;
+		case NOTIFICATION_INTERNAL_PROCESS: {
+			if (!Engine::get_singleton()->is_editor_hint()) {
+				_update_mesh_offset();
+			}
 		} break;
 	}
 }
@@ -863,6 +939,7 @@ void PhysXWaterSurface3D::_rebuild() {
 		water_mesh = plane;
 	}
 	mesh_instance->set_mesh(water_mesh);
+	mesh_offset = Vector2(Math::INF, Math::INF); // re-applied for the new mesh on the next update
 
 	const Vector3 origin = get_global_position();
 	grid_center = Vector2(origin.x, origin.z) + local_center;
@@ -1002,6 +1079,40 @@ void PhysXWaterSurface3D::_configure_solver() {
 	frames_since_refresh = REFRESH_EVERY_FRAMES; // force an immediate CPU cache refresh on the next _update()
 }
 
+void PhysXWaterSurface3D::_update_mesh_offset() {
+	// Open water past the simulated square: the mesh's vertices spread out
+	// with distance from its dense core, and far out they're metres apart --
+	// too coarse for the short waves, so what's drawn there missed what
+	// sample_height() (and so a boat) sees by tenths of a metre. The core
+	// follows the camera instead, smoothly, every frame: near the camera the
+	// dense vertices sample the waves finely wherever they sit, and the
+	// coarse surface past it reshapes gradually (~1 cm per 5 cm moved, 20-35
+	// m out) instead of jumping. (Snapping popped: whole 40 m ocean tiles
+	// re-meshed everything past the core at once -- 15 cm jumps -- and
+	// core-spacing steps made a constant 6 cm shimmer.)
+	if (mesh_instance == nullptr || water_material.is_null() || surface_mesh.is_valid() || render_extent <= MAX(ocean_domain_size.x, ocean_domain_size.y)) {
+		return;
+	}
+	const Viewport *vp = get_viewport();
+	const Camera3D *cam = vp != nullptr ? vp->get_camera_3d() : nullptr;
+	if (cam == nullptr) {
+		return;
+	}
+	const Vector3 cp = cam->get_global_position();
+	const Vector2 rel = Vector2(cp.x, cp.z) - grid_center;
+	const Vector2 offset = rel;
+	if (offset == mesh_offset) {
+		return;
+	}
+	mesh_offset = offset;
+	water_material->set_shader_parameter("mesh_offset", mesh_offset);
+	if (water_mesh.is_valid()) {
+		AABB box = water_mesh->get_aabb();
+		box.position += mesh_instance->get_global_transform().basis.xform_inv(Vector3(offset.x, 0, offset.y));
+		mesh_instance->set_custom_aabb(box.grow(MAX(wave_amplitude * 4.0f, 2.0f)));
+	}
+}
+
 void PhysXWaterSurface3D::_update(double p_delta) {
 	if (Engine::get_singleton()->is_editor_hint()) {
 		return;
@@ -1025,8 +1136,7 @@ void PhysXWaterSurface3D::_update(double p_delta) {
 		_bind_textures();
 	}
 	if (solver.is_available() && caustics_enabled) {
-		const bool open_beyond = surface_mesh.is_null() && render_extent > MAX(domain_size.x, domain_size.y);
-		solver.render_caustics(Vector3(grid_center.x, get_global_position().y, grid_center.y), caustics_sun_direction, caustics_reference_depth, 1.333f, open_beyond);
+		solver.render_caustics(Vector3(grid_center.x, get_global_position().y, grid_center.y), caustics_sun_direction, caustics_reference_depth, 1.333f, _open_beyond());
 	}
 	frames_since_refresh++;
 	if (frames_since_refresh >= REFRESH_EVERY_FRAMES) {
@@ -1122,18 +1232,32 @@ void PhysXWaterSurface3D::_refresh_cpu_cache() {
 	solver.get_ocean_dz_grid(cached_ocean_dz);
 }
 
-float PhysXWaterSurface3D::_bilinear_sample(const Vector<float> &p_grid, int p_n, Vector2 p_domain, float p_world_x, float p_world_z) const {
+float PhysXWaterSurface3D::_bilinear_sample(const Vector<float> &p_grid, int p_n, Vector2 p_domain, float p_world_x, float p_world_z, bool p_repeat) const {
 	if (p_grid.is_empty() || p_n <= 0) {
 		return 0.0f;
 	}
 	const float gx = (p_world_x / (p_domain.x * 0.5f) + 1.0f) * 0.5f * p_n - 0.5f;
 	const float gz = (p_world_z / (p_domain.y * 0.5f) + 1.0f) * 0.5f * p_n - 0.5f;
-	const int x0 = CLAMP((int)floorf(gx), 0, p_n - 1);
-	const int z0 = CLAMP((int)floorf(gz), 0, p_n - 1);
-	const int x1 = CLAMP(x0 + 1, 0, p_n - 1);
-	const int z1 = CLAMP(z0 + 1, 0, p_n - 1);
-	const float fx = CLAMP(gx - x0, 0.0f, 1.0f);
-	const float fz = CLAMP(gz - z0, 0.0f, 1.0f);
+	int x0, z0, x1, z1;
+	float fx, fz;
+	if (p_repeat) {
+		const float flx = floorf(gx);
+		const float flz = floorf(gz);
+		auto wrap = [p_n](int p_i) { return ((p_i % p_n) + p_n) % p_n; };
+		x0 = wrap((int)flx);
+		z0 = wrap((int)flz);
+		x1 = wrap((int)flx + 1);
+		z1 = wrap((int)flz + 1);
+		fx = gx - flx;
+		fz = gz - flz;
+	} else {
+		x0 = CLAMP((int)floorf(gx), 0, p_n - 1);
+		z0 = CLAMP((int)floorf(gz), 0, p_n - 1);
+		x1 = CLAMP(x0 + 1, 0, p_n - 1);
+		z1 = CLAMP(z0 + 1, 0, p_n - 1);
+		fx = CLAMP(gx - x0, 0.0f, 1.0f);
+		fz = CLAMP(gz - z0, 0.0f, 1.0f);
+	}
 	const float h00 = p_grid[z0 * p_n + x0];
 	const float h10 = p_grid[z0 * p_n + x1];
 	const float h01 = p_grid[z1 * p_n + x0];
@@ -1142,6 +1266,41 @@ float PhysXWaterSurface3D::_bilinear_sample(const Vector<float> &p_grid, int p_n
 }
 
 float PhysXWaterSurface3D::sample_height(Vector3 p_world_pos) const {
+	return sample_height_excluding_wake(p_world_pos, ObjectID());
+}
+
+int PhysXWaterSurface3D::register_wake(ObjectID p_wake) {
+	for (int i = 0; i < MAX_WAKES; i++) {
+		if (wakes[i] == p_wake || ObjectDB::get_instance(wakes[i]) == nullptr) {
+			wakes[i] = p_wake;
+			return i;
+		}
+	}
+	return -1;
+}
+
+void PhysXWaterSurface3D::unregister_wake(int p_slot) {
+	ERR_FAIL_INDEX(p_slot, MAX_WAKES);
+	wakes[p_slot] = ObjectID();
+	if (water_material.is_valid()) {
+		water_material->set_shader_parameter("wake_height_" + itos(p_slot), Variant());
+		water_material->set_shader_parameter("wake_rect_" + itos(p_slot), Vector4());
+	}
+}
+
+void PhysXWaterSurface3D::set_wake_slot(int p_slot, const Ref<Texture2D> &p_height, const Vector4 &p_rect) {
+	ERR_FAIL_INDEX(p_slot, MAX_WAKES);
+	if (water_material.is_null()) {
+		return;
+	}
+	const String i = itos(p_slot);
+	if (water_material->get_shader_parameter("wake_height_" + i) != Variant(p_height)) {
+		water_material->set_shader_parameter("wake_height_" + i, p_height);
+	}
+	water_material->set_shader_parameter("wake_rect_" + i, p_rect);
+}
+
+float PhysXWaterSurface3D::sample_height_excluding_wake(Vector3 p_world_pos, ObjectID p_wake) const {
 	if (!is_wet(p_world_pos)) {
 		return -Math::INF;
 	}
@@ -1150,7 +1309,14 @@ float PhysXWaterSurface3D::sample_height(Vector3 p_world_pos) const {
 	// The ripple readback already includes water_level (it's the composed
 	// height the renderer draws), so only fall back to it before the first
 	// readback lands. Both are relative to the node, like the rendered mesh.
-	const float ripple = cached_ripple_height.is_empty() ? water_level : _bilinear_sample(cached_ripple_height, cached_ripple_n, cached_ripple_domain, x, z);
+	// Past the simulated square the ripples ease back to still water, as the
+	// shader draws them.
+	float ripple = cached_ripple_height.is_empty() ? water_level : _bilinear_sample(cached_ripple_height, cached_ripple_n, cached_ripple_domain, x, z);
+	if (!cached_ripple_height.is_empty()) {
+		const float from_center = MAX(Math::abs(x / cached_ripple_domain.x), Math::abs(z / cached_ripple_domain.y));
+		const float inside = 1.0f - Math::smoothstep(0.46f, 0.5f, from_center);
+		ripple = Math::lerp(water_level, ripple, inside);
+	}
 	const float fade = cell_fade.is_empty() ? 1.0f : _bilinear_sample(cell_fade, grid_resolution, active_domain_size, x, z);
 	// With choppy displacement the surface point above (x, z) rested
 	// somewhere else: find p0 with p0 + s * D(p0) = (x, z) by fixed-point
@@ -1160,24 +1326,63 @@ float PhysXWaterSurface3D::sample_height(Vector3 p_world_pos) const {
 	const float s = -choppiness * fade;
 	if (s != 0.0f && cached_ocean_dx.size() == cached_ocean_height.size() && cached_ocean_dz.size() == cached_ocean_height.size()) {
 		for (int i = 0; i < 4; i++) {
-			const Vector2 d(_bilinear_sample(cached_ocean_dx, cached_ocean_n, cached_ocean_domain, p0.x, p0.y),
-					_bilinear_sample(cached_ocean_dz, cached_ocean_n, cached_ocean_domain, p0.x, p0.y));
+			const Vector2 d(_bilinear_sample(cached_ocean_dx, cached_ocean_n, cached_ocean_domain, p0.x, p0.y, true),
+					_bilinear_sample(cached_ocean_dz, cached_ocean_n, cached_ocean_domain, p0.x, p0.y, true));
 			p0 = Vector2(x, z) - d * s;
 		}
 	}
-	const float ocean = _bilinear_sample(cached_ocean_height, cached_ocean_n, cached_ocean_domain, p0.x, p0.y) * fade;
-	return get_global_position().y + ripple + ocean;
+	const float ocean = _bilinear_sample(cached_ocean_height, cached_ocean_n, cached_ocean_domain, p0.x, p0.y, true) * fade;
+	// Wakes, everywhere (as the shader draws them).
+	float wake = 0.0f;
+	for (int i = 0; i < MAX_WAKES; i++) {
+		if (wakes[i] == p_wake) {
+			continue;
+		}
+		const PhysXWaterWake3D *w = ObjectDB::get_instance<PhysXWaterWake3D>(wakes[i]);
+		if (w != nullptr) {
+			const float out = Math::smoothstep(0.46f, 0.5f, MAX(Math::abs(x / active_domain_size.x), Math::abs(z / active_domain_size.y)));
+			wake += w->sample_height(p_world_pos) * Math::lerp(1.0f, out, w->get_shore_grid_fade());
+		}
+	}
+	// Not over dry sand (as the shader): fades out over the last 30 cm of depth.
+	if (wake != 0.0f && !cell_depth.is_empty()) {
+		wake *= Math::smoothstep(0.0f, 0.3f, _bilinear_sample(cell_depth, grid_resolution, active_domain_size, x, z));
+	}
+	return get_global_position().y + ripple + ocean + wake;
+}
+
+bool PhysXWaterSurface3D::_open_beyond() const {
+	return surface_mesh.is_null() && render_extent > MAX(domain_size.x, domain_size.y);
+}
+
+bool PhysXWaterSurface3D::_inside_render_extent(float p_rel_x, float p_rel_z) const {
+	return Math::abs(p_rel_x) <= render_extent * 0.5f && Math::abs(p_rel_z) <= render_extent * 0.5f;
 }
 
 bool PhysXWaterSurface3D::is_wet(Vector3 p_world_pos) const {
+	const float rel_x = p_world_pos.x - grid_center.x;
+	const float rel_z = p_world_pos.z - grid_center.y;
+	if (_open_beyond() && !_inside_render_extent(rel_x, rel_z)) {
+		return false; // past the drawn surface
+	}
 	if (cell_depth.is_empty()) {
 		return true;
 	}
 	const int n = grid_resolution;
-	const int gx = (int)Math::floor(((p_world_pos.x - grid_center.x) / active_domain_size.x + 0.5f) * n);
-	const int gz = (int)Math::floor(((p_world_pos.z - grid_center.y) / active_domain_size.y + 0.5f) * n);
-	if (gx < 0 || gz < 0 || gx >= n || gz >= n || cell_depth.size() != n * n) {
+	if (cell_depth.size() != n * n) {
 		return false;
+	}
+	int gx = (int)Math::floor((rel_x / active_domain_size.x + 0.5f) * n);
+	int gz = (int)Math::floor((rel_z / active_domain_size.y + 0.5f) * n);
+	if (gx < 0 || gz < 0 || gx >= n || gz >= n) {
+		if (!_open_beyond()) {
+			return false;
+		}
+		// Open water past the simulated square carries the edge's seabed on
+		// outward, as the shader draws it: the sea side stays sea, the beach
+		// side stays sand.
+		gx = CLAMP(gx, 0, n - 1);
+		gz = CLAMP(gz, 0, n - 1);
 	}
 	return cell_depth[gz * n + gx] > 0.0f;
 }

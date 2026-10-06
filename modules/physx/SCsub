@@ -328,6 +328,7 @@ _water_glsl = (
     "water_caustics_map.glsl",
     "water_shore_foam.glsl",
     "water_ripple.glsl",
+    "water_wake.glsl",
 )
 _water_glsl_dep = [os.path.join("water", "water_inc.glsl"), "#glsl_builders.py"]
 for _glsl in _water_glsl:
