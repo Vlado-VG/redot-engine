@@ -75,9 +75,14 @@ jobs:
           cmake --build compiler/linux-clang-rd-checked -j"$(nproc)"
           cmake --build compiler/linux-clang-rd-release -j"$(nproc)"
 
+      - name: Checkout engine repo (collection script)
+        uses: actions/checkout@v4
+        with:
+          path: engine
+
       - name: Collect static libraries
         run: |
-          python3 collect_physx_libs.py linux
+          python3 engine/collect_physx_libs.py linux
 
       - name: Upload SDK artifact
         uses: actions/upload-artifact@v4
