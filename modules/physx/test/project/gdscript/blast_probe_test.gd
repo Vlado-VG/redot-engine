@@ -61,6 +61,14 @@ func _run() -> void:
 		emitter.call("spawn_at", Vector3(0, 3, 0), Vector3(0, 1, 0), 6)
 		_check(int(emitter.call("get_active_chunk_count")) == 6, "chunk burst spawns chunks")
 		await physics_frame
+		# CORE-3: the pair count must come from the per-step cache and be live
+		# right after a spawn (the freshly spawned chunks overlap each other).
+		var pairs: int = PhysicsServer3D.get_process_info(PhysicsServer3D.INFO_COLLISION_PAIRS)
+		_check(pairs > 0, "INFO_COLLISION_PAIRS reports contacts from the step cache (%d)" % pairs)
+		# CORE-5: the PVD debug bridge defaults off (it used to dial
+		# localhost:5425 unconditionally on every debug build).
+		_check(ProjectSettings.get_setting("physics/physx_3d/debug/pvd", true) == false,
+				"physics/physx_3d/debug/pvd is registered and defaults off (CORE-5)")
 		await physics_frame
 		emitter.free()
 
@@ -97,6 +105,27 @@ func _run() -> void:
 	await physics_frame
 	await physics_frame
 	good.free()
+
+	# BLAST-3: auto_mass must survive a scene save/load round-trip. The mass
+	# property used to serialize the auto-computed value, and deserialization
+	# called set_mass() with it — silently flipping auto_mass off on every
+	# load. PackedScene pack/instantiate is the same property-serialization
+	# path the editor's save uses.
+	var keep: Node = ClassDB.instantiate("PhysXDestructible3D")
+	keep.set("blast_asset", asset)
+	root.add_child(keep) # ENTER_WORLD loads the asset and auto-computes mass
+	await process_frame
+	await physics_frame
+	var loaded_mass: float = float(keep.get("mass"))
+	_check(loaded_mass != 1.0, "auto-mass computed a non-default value (%.1f)" % loaded_mass)
+	root.remove_child(keep)
+	var packed := PackedScene.new()
+	var perr := packed.pack(keep)
+	_check(perr == OK, "destructible packs into a scene")
+	var revived: Node = packed.instantiate()
+	_check(bool(revived.get("auto_mass")), "auto_mass survives the scene round-trip (BLAST-3)")
+	keep.free()
+	revived.free()
 
 	# Corrupt bytes: fail cleanly, no crash, retryable (BLAST-2/BLAST-4).
 	# Case 1: a truncated REAL asset — the realistic corruption (interrupted

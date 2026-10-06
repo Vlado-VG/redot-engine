@@ -20,6 +20,8 @@ void PhysXProjectSettings::register_settings() {
 	GLOBAL_DEF(PropertyInfo(Variant::BOOL, "physics/physx_3d/simulation/async_step"), false);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "physics/physx_3d/simulation/cpu_worker_threads", PROPERTY_HINT_RANGE, U"0,32,1"), 0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "physics/physx_3d/soft_body/mode", PROPERTY_HINT_ENUM, "Auto,CPU,GPU"), 0);
+	// CORE-5: PVD used to connect unconditionally on every debug build.
+	GLOBAL_DEF(PropertyInfo(Variant::BOOL, "physics/physx_3d/debug/pvd"), false);
 	// NVIDIA Flow runtime device selection (see flow/flow_runtime.cpp).
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "physics/physx_3d/flow/device_api", PROPERTY_HINT_ENUM, "Auto,Vulkan,CPU"), 0);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "physics/physx_3d/flow/device_index", PROPERTY_HINT_RANGE, U"0,7,1"), 0);

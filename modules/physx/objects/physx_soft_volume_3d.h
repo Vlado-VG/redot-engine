@@ -57,6 +57,16 @@ private:
 
 	uint32_t coll_vertex_count = 0; // collision tet mesh vertices (readback size)
 	void *readback = nullptr; // pinned host PxVec4* : deformed collision positions
+	// SOFT-4: persistent pinned scratch buffers for the pin/impulse ops. The
+	// old per-call PX_EXT_PINNED_MEMORY_ALLOC/FREE churned the allocator on
+	// every script call; these are allocated once per build. The *_valid
+	// flags let consecutive calls in one step batch onto a single D2H (the
+	// scratch holds the device state as of the last H2D; read_back()
+	// invalidates after each solve).
+	void *sim_pos_scratch = nullptr; // pinned host PxVec4* (like readback)
+	void *sim_vel_scratch = nullptr; // pinned host PxVec4*
+	bool pos_scratch_valid = false;
+	bool vel_scratch_valid = false;
 	bool simulated_once = false;
 	float total_mass = 1.0f;
 	LocalVector<float> base_inv_mass; // per sim vertex, from updateMass -- for unpin

@@ -65,6 +65,18 @@ void PhysXSoftVolume3D::_destroy() {
 		PxVec4 *rb = static_cast<PxVec4 *>(readback);
 		PX_EXT_PINNED_MEMORY_FREE(*cuda, rb);
 	}
+	if (sim_pos_scratch) {
+		PxVec4 *sp = static_cast<PxVec4 *>(sim_pos_scratch);
+		PX_EXT_PINNED_MEMORY_FREE(*cuda, sp);
+		sim_pos_scratch = nullptr;
+	}
+	if (sim_vel_scratch) {
+		PxVec4 *sv = static_cast<PxVec4 *>(sim_vel_scratch);
+		PX_EXT_PINNED_MEMORY_FREE(*cuda, sv);
+		sim_vel_scratch = nullptr;
+	}
+	pos_scratch_valid = false;
+	vel_scratch_valid = false;
 	readback = nullptr;
 	coll_vertex_count = 0;
 	simulated_once = false;
@@ -275,6 +287,10 @@ void PhysXSoftVolume3D::apply_params(const Params &p_params) {
 }
 
 void PhysXSoftVolume3D::read_back() {
+	// The device buffers changed during the solve: the pin/impulse scratch
+	// no longer mirrors them (SOFT-4 validity).
+	pos_scratch_valid = false;
+	vel_scratch_valid = false;
 	if (!volume || coll_vertex_count == 0) {
 		return;
 	}
@@ -333,8 +349,13 @@ void PhysXSoftVolume3D::set_pins(const Vector<int> &p_welded_indices, const Vect
 		return;
 	}
 	const uint32_t sim_nv = base_inv_mass.size();
-	PxVec4 *sp = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
-	Ext::PxCudaHelpersExt::copyDToH(*cuda, sp, volume->getSimPositionInvMassBufferD(), sim_nv);
+if (!sim_pos_scratch) {
+		sim_pos_scratch = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
+	}
+	PxVec4 *sp = static_cast<PxVec4 *>(sim_pos_scratch);
+	if (!pos_scratch_valid) {
+		Ext::PxCudaHelpersExt::copyDToH(*cuda, sp, volume->getSimPositionInvMassBufferD(), sim_nv);
+	}
 
 	for (uint32_t i = 0; i < sim_nv; i++) {
 		sp[i].w = base_inv_mass[i]; // restore first, then re-pin below
@@ -355,7 +376,7 @@ void PhysXSoftVolume3D::set_pins(const Vector<int> &p_welded_indices, const Vect
 
 	Ext::PxCudaHelpersExt::copyHToD(*cuda, volume->getSimPositionInvMassBufferD(), sp, sim_nv);
 	volume->markDirty(PxDeformableVolumeDataFlag::eSIM_POSITION_INVMASS);
-	PX_EXT_PINNED_MEMORY_FREE(*cuda, sp);
+	pos_scratch_valid = true; // device now equals the scratch
 }
 
 void PhysXSoftVolume3D::add_central_impulse(const Vector3 &p_impulse) {
@@ -364,8 +385,13 @@ void PhysXSoftVolume3D::add_central_impulse(const Vector3 &p_impulse) {
 	}
 	const uint32_t sim_nv = base_inv_mass.size();
 	const PxVec3 dv = physx_to_px(p_impulse / total_mass);
-	PxVec4 *sv = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
-	Ext::PxCudaHelpersExt::copyDToH(*cuda, sv, volume->getSimVelocityBufferD(), sim_nv);
+if (!sim_vel_scratch) {
+		sim_vel_scratch = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
+	}
+	PxVec4 *sv = static_cast<PxVec4 *>(sim_vel_scratch);
+	if (!vel_scratch_valid) {
+		Ext::PxCudaHelpersExt::copyDToH(*cuda, sv, volume->getSimVelocityBufferD(), sim_nv);
+	}
 	for (uint32_t i = 0; i < sim_nv; i++) {
 		if (base_inv_mass[i] > 0.0f) {
 			sv[i].x += dv.x;
@@ -375,7 +401,7 @@ void PhysXSoftVolume3D::add_central_impulse(const Vector3 &p_impulse) {
 	}
 	Ext::PxCudaHelpersExt::copyHToD(*cuda, volume->getSimVelocityBufferD(), sv, sim_nv);
 	volume->markDirty(PxDeformableVolumeDataFlag::eSIM_VELOCITY);
-	PX_EXT_PINNED_MEMORY_FREE(*cuda, sv);
+	vel_scratch_valid = true; // device now equals the scratch
 }
 
 void PhysXSoftVolume3D::add_point_impulse(uint32_t p_welded_index, const Vector3 &p_impulse) {
@@ -388,14 +414,19 @@ void PhysXSoftVolume3D::add_point_impulse(uint32_t p_welded_index, const Vector3
 	}
 	const uint32_t sim_nv = base_inv_mass.size();
 	const PxVec3 dv = physx_to_px(p_impulse * base_inv_mass[s]);
-	PxVec4 *sv = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
-	Ext::PxCudaHelpersExt::copyDToH(*cuda, sv, volume->getSimVelocityBufferD(), sim_nv);
+if (!sim_vel_scratch) {
+		sim_vel_scratch = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
+	}
+	PxVec4 *sv = static_cast<PxVec4 *>(sim_vel_scratch);
+	if (!vel_scratch_valid) {
+		Ext::PxCudaHelpersExt::copyDToH(*cuda, sv, volume->getSimVelocityBufferD(), sim_nv);
+	}
 	sv[s].x += dv.x;
 	sv[s].y += dv.y;
 	sv[s].z += dv.z;
 	Ext::PxCudaHelpersExt::copyHToD(*cuda, volume->getSimVelocityBufferD(), sv, sim_nv);
 	volume->markDirty(PxDeformableVolumeDataFlag::eSIM_VELOCITY);
-	PX_EXT_PINNED_MEMORY_FREE(*cuda, sv);
+	vel_scratch_valid = true; // device now equals the scratch
 }
 
 double PhysXSoftVolume3D::_estimate_mesh_volume(const Vector<Vector3> &p_verts, const Vector<int32_t> &p_indices, const Transform3D &p_xform) {

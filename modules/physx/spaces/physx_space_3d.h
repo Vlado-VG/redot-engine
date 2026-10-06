@@ -79,6 +79,11 @@ public:
     float get_last_step() const { return last_step; }
     /// Active-actor count of the last completed solve (INFO_ACTIVE_OBJECTS).
     int get_active_objects() const { return active_objects; }
+    /// Narrow-phase pair count of the last completed solve
+    /// (INFO_COLLISION_PAIRS). Sampled in _finish_step — must not be queried
+    /// mid-solve (getSimulationStatistics is silently ignored there and races
+    /// under separate-thread physics).
+    int get_cached_contact_pairs() const { return cached_contact_pairs; }
     /// World gravity the PxScene was created with (zero until initialized).
     Vector3 get_scene_gravity() const { return scene_gravity; }
 
@@ -308,6 +313,7 @@ private:
     bool batched_isosurface = false;
     float last_step = 0.0f;
     int active_objects = 0;
+    int cached_contact_pairs = 0;
 
     // Queued scene mutations from the async in-flight window (see
     // add_actor/remove_actor/release_actor), applied in order at fetch time.

@@ -351,6 +351,11 @@ real_t PhysXServer3D::shape_get_custom_solver_bias(RID p_shape) const {
 }
 
 RID PhysXServer3D::space_create() {
+    // CORE-1: same degraded-boot discipline as body_create/area_create —
+    // the space's default area (created below) needs PxPhysics.
+    ERR_FAIL_NULL_V_MSG(px_physics, RID(),
+            "PhysX: space_create() called before PhysX initialization. "
+            "Check that init() succeeded and that PhysX DLLs/libs are available.");
     PhysXSpace3D *space = memnew(PhysXSpace3D);
     RID rid = space_owner.make_rid(space);
     space->set_rid(rid);
@@ -429,6 +434,12 @@ PhysXShape3D *PhysXServer3D::get_shape(RID p_rid) const {
 }
 
 RID PhysXServer3D::area_create() {
+	// CORE-1: degrade gracefully like body_create() — the area constructor
+	// needs PxPhysics to create its kinematic actor, so constructing one
+	// before init() (or after a failed init) would crash.
+	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
+			"PhysX: area_create() called before PhysX initialization. "
+			"Check that init() succeeded and that PhysX DLLs/libs are available.");
 	PhysXArea3D *area = memnew(PhysXArea3D);
 	RID rid = area_owner.make_rid(area);
 	area->set_rid(rid);
@@ -2654,11 +2665,15 @@ void PhysXServer3D::init() {
 
 #ifdef DEBUG_ENABLED
 	// PVD must be connected BEFORE PxCreatePhysics, which takes the pvd pointer.
-	px_pvd_transport = physx::PxDefaultPvdSocketTransportCreate("127.0.0.1", 5425, 10);
-	if (px_pvd_transport) {
-		px_debugger = physx::PxCreatePvd(*px_foundation);
-		if (px_debugger) {
-			px_debugger->connect(*px_pvd_transport, physx::PxPvdInstrumentationFlag::eALL);
+	// Opt-in via the project setting (CORE-5): connecting unconditionally made
+	// every debug build dial localhost:5425 with eALL instrumentation.
+	if (GLOBAL_GET("physics/physx_3d/debug/pvd")) {
+		px_pvd_transport = physx::PxDefaultPvdSocketTransportCreate("127.0.0.1", 5425, 10);
+		if (px_pvd_transport) {
+			px_debugger = physx::PxCreatePvd(*px_foundation);
+			if (px_debugger) {
+				px_debugger->connect(*px_pvd_transport, physx::PxPvdInstrumentationFlag::eALL);
+			}
 		}
 	}
 #endif
@@ -2945,19 +2960,17 @@ int PhysXServer3D::get_process_info(PhysicsServer3D::ProcessInfo p_process_info)
 			return total;
 		}
 		case PhysicsServer3D::INFO_COLLISION_PAIRS: {
-			// Narrow-phase pair count of the last step, aggregated over active
-			// spaces. PxScene::getSimulationStatistics must not be called
-			// while the simulation runs — under the synchronous step model
-			// this is only ever consulted between steps (same window as
-			// INFO_ACTIVE_OBJECTS). Cost is one stats-struct copy per active
-			// scene per poll, so no caching layer is warranted.
+			// Narrow-phase pair count of the last completed step, aggregated
+			// over active spaces. PxScene::getSimulationStatistics must not be
+			// called while a solve runs (it is silently ignored mid-solve and
+			// races under separate-thread physics), so each space caches the
+			// count in its _finish_step — the same pattern as
+			// INFO_ACTIVE_OBJECTS — and this poll only reads the caches.
 			int pairs = 0;
 			for (const RID &rid : _space_list) {
 				const PhysXSpace3D *space = space_owner.get_or_null(rid);
-				if (space && space->is_active() && space->get_px_scene()) {
-					physx::PxSimulationStatistics stats;
-					space->get_px_scene()->getSimulationStatistics(stats);
-					pairs += (int)stats.nbDiscreteContactPairsTotal;
+				if (space) {
+					pairs += space->get_cached_contact_pairs();
 				}
 			}
 			return pairs;

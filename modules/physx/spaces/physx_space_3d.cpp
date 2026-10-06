@@ -406,6 +406,11 @@ void PhysXSpace3D::_finish_step() {
     };
     LocalVector<PhysXBody3D *> &now_active = _finish_now_active;
     if (px_scene) {
+        // Safe window for getSimulationStatistics: the solve is complete.
+        physx::PxSimulationStatistics stats;
+        px_scene->getSimulationStatistics(stats);
+        cached_contact_pairs = (int)stats.nbDiscreteContactPairsTotal;
+
         physx::PxU32 nb_active = 0;
         physx::PxActor **active_actors = px_scene->getActiveActors(nb_active);
         active_objects = (int)nb_active;
@@ -422,6 +427,7 @@ void PhysXSpace3D::_finish_step() {
         }
     } else {
         active_objects = 0;
+        cached_contact_pairs = 0;
     }
     for (PhysXBody3D *body : bodies) {
         if (body->get_mode() == PhysicsServer3D::BODY_MODE_KINEMATIC) {

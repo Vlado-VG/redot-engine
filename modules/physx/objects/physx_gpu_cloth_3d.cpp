@@ -434,7 +434,15 @@ void PhysXGPUCloth3D::apply_wind(const Vector3 &p_wind, float p_drag, float p_li
 		}
 	}
 
-	if (p_drag > 0.0f || p_lift > 0.0f) {
+	// CLOTH-3: an idle cloth (no wind this tick, no pin moved) has nothing to
+	// push — the H2D velocity upload + markDirty below only force the solver
+	// to consume a state that is already on the device.
+	const bool wind_applied = p_drag > 0.0f || p_lift > 0.0f;
+	if (!wind_applied && !moved_pin) {
+		return;
+	}
+
+	if (wind_applied) {
 		const PxVec3 wind = physx_to_px(p_wind);
 		for (uint32_t t = 0; t + 2 < indices.size(); t += 3) {
 			const uint32_t a = indices[t];
@@ -484,11 +492,27 @@ void PhysXGPUCloth3D::read_back() {
 	Ext::PxCudaHelpersExt::copyDToH(*cuda, hv, surface->getVelocityBufferD(), vertex_count);
 
 	MutexLock lock(mesh_mutex);
-	read_positions.resize(vertex_count);
-	for (uint32_t i = 0; i < vertex_count; i++) {
-		read_positions[i] = Vector3(hp[i].x, hp[i].y, hp[i].z);
+	// CLOTH-3: bump the mesh version only when the deformed positions actually
+	// moved — the node-side RS surface rebuild is keyed on this version, and
+	// bumping it every tick made even a sleeping cloth rebuild its whole
+	// render surface 60x/s. The D2H above stays: it is what detects change.
+	bool changed = read_positions.size() != vertex_count;
+	if (!changed) {
+		for (uint32_t i = 0; i < vertex_count; i++) {
+			const Vector3 &prev = read_positions[i];
+			if (Math::abs(prev.x - hp[i].x) > 1.0e-6f || Math::abs(prev.y - hp[i].y) > 1.0e-6f || Math::abs(prev.z - hp[i].z) > 1.0e-6f) {
+				changed = true;
+				break;
+			}
+		}
 	}
-	mesh_version++;
+	if (changed) {
+		read_positions.resize(vertex_count);
+		for (uint32_t i = 0; i < vertex_count; i++) {
+			read_positions[i] = Vector3(hp[i].x, hp[i].y, hp[i].z);
+		}
+		mesh_version++;
+	}
 }
 
 uint32_t PhysXGPUCloth3D::copy_mesh(LocalVector<Vector3> &r_positions, LocalVector<int32_t> &r_indices, uint32_t &p_have_version) const {

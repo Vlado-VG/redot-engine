@@ -196,6 +196,12 @@ void PhysXDestructible3D::set_auto_mass(bool p_auto) {
 void PhysXDestructible3D::_validate_property(PropertyInfo &p_property) const {
 	if (auto_mass && p_property.name == "mass") {
 		p_property.usage |= PROPERTY_USAGE_READ_ONLY;
+		// BLAST-3: while auto_mass owns the value, `mass` must not be
+		// serialized either. It used to store the auto-computed value, and
+		// scene deserialization called set_mass() with it on every load —
+		// silently flipping auto_mass off, so a saved/reloaded destructible
+		// lost auto-mass (and scale changes then kept a stale mass).
+		p_property.usage &= ~PROPERTY_USAGE_STORAGE;
 	}
 }
 
