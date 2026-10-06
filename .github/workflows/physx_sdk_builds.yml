@@ -9,14 +9,18 @@ on:
         required: false
 
 # Builds the PhysX CPU static libraries needed by modules/physx on
-# Linux (x86_64) and macOS (universal x86_64+arm64), in both SDK
-# configurations:
+# Linux (x86_64), in both SDK configurations:
 #   checked  -> linked by editor / template_debug builds (default)
 #   release  -> linked by template_release builds (physx_config=release)
 #
 # GPU dynamics libs are Windows-only in the module (see its SCsub), so
 # no CUDA toolchain is required here. Feed the downloaded artifact's
-# out/checked and out/release folders into thirdparty/physx/lib/<platform>/...
+# out/checked and out/release folders into thirdparty/physx/lib/linux/x86_64/...
+#
+# macOS: PhysX 5.11 upstream dropped macOS from its build system entirely
+# (no presets, no Darwin cmake handling, no mac device sources), so there
+# is no job here. The module gates itself off on macOS via can_build()
+# until/unless someone ports the SDK build to Darwin.
 
 jobs:
   build-linux-x86_64:
@@ -28,10 +32,16 @@ jobs:
           repository: NVIDIA-Omniverse/PhysX
           ref: ${{ inputs.physx_ref }}
 
+      - name: Generate build projects (packman pulls dependencies)
+        run: |
+          cd physx
+          ./generate_projects.sh linux-clang-cpu-only
+
       - name: Build checked and release configs
         run: |
           cd physx
-          ./build.sh checked release
+          cmake --build compiler/linux-clang-cpu-only-checked -j"$(nproc)"
+          cmake --build compiler/linux-clang-cpu-only-release -j"$(nproc)"
 
       - name: Collect static libraries
         run: |
@@ -41,28 +51,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: physx-sdk-linux-x86_64
-          path: out/
-
-  build-macos-universal:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout PhysX source
-        uses: actions/checkout@v4
-        with:
-          repository: NVIDIA-Omniverse/PhysX
-          ref: ${{ inputs.physx_ref }}
-
-      - name: Build checked and release configs
-        run: |
-          cd physx
-          ./build.sh checked release
-
-      - name: Collect static libraries (lipo into universal)
-        run: |
-          python3 collect_physx_libs.py macos
-
-      - name: Upload SDK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: physx-sdk-macos-universal
           path: out/
