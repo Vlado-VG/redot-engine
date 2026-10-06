@@ -1,8 +1,24 @@
+import os
+
+
 def can_build(env, platform):
-    # PhysX ships prebuilt static libs for windows/macos/linux/android only
-    # (see SCsub's lib-path table; iOS and web have no SDK wiring yet and
-    # would fail at link time).
-    return platform in ["windows", "macos", "linuxbsd", "android"]
+    # The module links prebuilt PhysX SDK static libs vendored under
+    # thirdparty/physx/lib/<platform>/<arch>/<config> (see SCsub's lib-path
+    # table). Only build on platforms whose libs are actually vendored, so
+    # CI for platforms without an SDK checkout stays green instead of dying
+    # at link time; the module lights up on a platform automatically as soon
+    # as its lib directory lands in the tree.
+    lib_roots = {
+        "windows": "thirdparty/physx/lib/windows/x86_64",
+        "macos": "thirdparty/physx/lib/macos/universal",
+        "linuxbsd": "thirdparty/physx/lib/linux/x86_64",
+    }
+    if platform == "android":
+        return os.path.isdir("thirdparty/physx/lib/android")
+    if platform in lib_roots:
+        return os.path.isdir(lib_roots[platform])
+    # iOS and web have no SDK wiring yet and would fail at link time.
+    return False
 
 
 def configure(env):
