@@ -87,6 +87,8 @@ void PhysXServer3D::_bind_methods() {
 
 	// Lifecycle.
 	ClassDB::bind_method(D_METHOD("soft_body_set_solver_mode", "soft_body", "mode"), &PhysXServer3D::soft_body_set_solver_mode);
+	ClassDB::bind_method(D_METHOD("soft_body_attach_point_to_body", "soft_body", "point_index", "body"), &PhysXServer3D::soft_body_attach_point_to_body);
+	ClassDB::bind_method(D_METHOD("soft_body_detach_point_from_body", "soft_body", "point_index"), &PhysXServer3D::soft_body_detach_point_from_body);
 	ClassDB::bind_method(D_METHOD("soft_body_get_solver_mode", "soft_body"), &PhysXServer3D::soft_body_get_solver_mode);
 	// The cloth RID API (like vehicle/particle_fluid) is exposed to scripts so
 	// tests and tools can drive it without the PhysXCloth3D node.
@@ -1500,6 +1502,26 @@ int PhysXServer3D::soft_body_get_solver_mode(RID p_body) const {
 	return soft_body->get_solver_mode();
 }
 
+void PhysXServer3D::soft_body_attach_point_to_body(RID p_body, int p_point_index, RID p_rigid_body) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	// Attachment creation mutates the deformable's constraint set — a
+	// mid-solve create is not legal (async stepping). Fetch first.
+	if (soft_body->get_space()) {
+		soft_body->get_space()->ensure_synced();
+	}
+	soft_body->attach_point_to_body(p_point_index, p_rigid_body);
+}
+
+void PhysXServer3D::soft_body_detach_point_from_body(RID p_body, int p_point_index) {
+	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(soft_body);
+	if (soft_body->get_space()) {
+		soft_body->get_space()->ensure_synced();
+	}
+	soft_body->detach_point_from_body(p_point_index);
+}
+
 void PhysXServer3D::soft_body_update_rendering_server(RID p_body, PhysicsServer3DRenderingServerHandler *p_rendering_server_handler) {
 	PhysXSoftBody3D *soft_body = soft_body_owner.get_or_null(p_body);
 	ERR_FAIL_NULL(soft_body);
@@ -2431,6 +2453,13 @@ void PhysXServer3D::free(RID p_rid) {
 			return;
 		}
 		b = body_owner.get_or_null(p_rid);
+
+		// Release any soft-body rigid attachments referencing this body BEFORE
+		// the space detach/actor release (GAP-15): a live PxDeformableAttachment
+		// must never dangle on a freed rigid.
+		if (b->get_px_actor() && b->get_space()) {
+			b->get_space()->release_soft_body_attachments_for(b->get_px_actor());
+		}
 
 		// Detach from the space first (godot-physics parity): unregisters the
 		// body, removes the actor from the scene, and queues body_exited

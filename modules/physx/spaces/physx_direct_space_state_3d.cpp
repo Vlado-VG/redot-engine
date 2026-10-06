@@ -84,7 +84,8 @@ PhysXDirectSpaceState3D::PhysXDirectSpaceState3D(PhysXSpace3D *p_space) {
 static bool _build_query_shape(const RID &p_shape_rid,
                                const Transform3D &p_transform,
                                physx::PxGeometryHolder &r_geometry,
-                               physx::PxTransform &r_pose) {
+                               physx::PxTransform &r_pose,
+                               float p_margin = 0.0f) {
     PhysXServer3D *server = PhysXServer3D::get_singleton();
     ERR_FAIL_NULL_V(server, false);
     const PhysXShape3D *shape = server->get_shape(p_shape_rid);
@@ -107,6 +108,29 @@ static bool _build_query_shape(const RID &p_shape_rid,
     if (!shape->get_physx_geometry(r_geometry, px_scale)) {
         ERR_PRINT_ONCE("PhysX: query shape failed to generate geometry.");
         return false;
+    }
+
+    // Query-margin inflation (godot_physics_3d contract: solve_static grows
+    // both shapes by p_parameters.margin for intersect_shape / collide_shape /
+    // cast_motion / rest_info). PhysX-native equivalent for the primitives we
+    // can grow in place; cooked meshes (convex/concave/heightfield) and the
+    // custom cylinder/cone are exact — Godot's GJK margin can't be reproduced
+    // without re-cooking, so those stay uninflated (documented module gap,
+    // audit §4 "query margin inflation contract").
+    if (p_margin > 0.0f) {
+        switch (r_geometry.getType()) {
+            case physx::PxGeometryType::eSPHERE:
+                r_geometry.sphere().radius += p_margin;
+                break;
+            case physx::PxGeometryType::eBOX:
+                r_geometry.box().halfExtents += physx::PxVec3(p_margin);
+                break;
+            case physx::PxGeometryType::eCAPSULE:
+                r_geometry.capsule().radius += p_margin;
+                break;
+            default:
+                break;
+        }
     }
 
     // Compose world pose * shape-local alignment pose (e.g. capsule Y->X).
@@ -359,7 +383,7 @@ int PhysXDirectSpaceState3D::intersect_shape(const ShapeParameters &p_parameters
     // shape type via the shape's own get_physx_geometry / get_local_pose).
     physx::PxGeometryHolder geometry;
     physx::PxTransform pose(physx::PxIdentity);
-    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, geometry, pose)) {
+    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, geometry, pose, (float)p_parameters.margin)) {
         return 0;
     }
 
@@ -421,7 +445,7 @@ bool PhysXDirectSpaceState3D::cast_motion(const ShapeParameters &p_parameters, r
     // Build the query geometry + pose from the shape resource.
     physx::PxGeometryHolder geometry;
     physx::PxTransform pose(physx::PxIdentity);
-    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, geometry, pose)) {
+    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, geometry, pose, (float)p_parameters.margin)) {
         r_closest_safe = 1.0;
         r_closest_unsafe = 1.0;
         return false;
@@ -537,7 +561,7 @@ bool PhysXDirectSpaceState3D::collide_shape(const ShapeParameters &p_parameters,
     // Build the query geometry + pose from the shape resource.
     physx::PxGeometryHolder query_geom;
     physx::PxTransform query_pose(physx::PxIdentity);
-    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, query_geom, query_pose)) {
+    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, query_geom, query_pose, (float)p_parameters.margin)) {
         return false;
     }
 
@@ -619,7 +643,7 @@ bool PhysXDirectSpaceState3D::rest_info(const ShapeParameters &p_parameters, Sha
 
     physx::PxGeometryHolder query_geom;
     physx::PxTransform query_pose(physx::PxIdentity);
-    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, query_geom, query_pose)) {
+    if (!_build_query_shape(p_parameters.shape_rid, p_parameters.transform, query_geom, query_pose, (float)p_parameters.margin)) {
         return false;
     }
 

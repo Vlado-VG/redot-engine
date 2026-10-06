@@ -91,6 +91,7 @@ internal static class BodyTests {
         s.Add("PHYSX-BODY-067", "param writes on a sleeping body do not wake it", ParamSetKeepsSleeping);
         s.Add("PHYSX-BODY-068", "damp-mode params round-trip", DampModeParamRoundTrip);
         s.Add("PHYSX-BODY-069", "tilted scaled body with custom COM keeps COM world position and round-trips", ScaledCustomComTiltRoundTrip);
+        s.Add("PHYSX-BODY-070", "axis locks are WORLD-frame on rotated bodies (OBJ-13 probe)", AxisLockFrameProbe);
     }
 
     // ------------------------------------------------------------------ modes
@@ -1138,5 +1139,30 @@ internal static class BodyTests {
         var back = w.Pos(b);
         Assert.ExpectVecNear(back.Basis.Scale, xf.Basis.Scale, 1e-3f, "scale survives the tilt round-trip (get_scale)");
         Assert.Expect(back.Basis.GetRotationQuaternion().AngleTo(xf.Basis.GetRotationQuaternion()) < 1e-3f, "tilt orientation round-trips");
+    }
+
+    // OBJ-13 (Phase 13): the SDK documents no frame for PxRigidDynamicLockFlag
+    // — this probe pins the actual semantics. The body is rotated 90° about Z
+    // (local Y = world -X, local X = world Y) and LINEAR_Y is locked; a world-Y
+    // impulse then separates the two hypotheses: world-frame locks block the
+    // motion entirely (matching Godot's world-axis lock semantics), actor-frame
+    // locks would let it through as local -X.
+    static IEnumerator AxisLockFrameProbe() {
+        using var w = new PhysxWorld(false);
+        var b = w.MakeBody(w.Box(0.4f), new Vector3(0, 0, 0));
+        var rot = new Basis(new Vector3(0, 0, 1), Mathf.DegToRad(90f));
+        PhysicsServer3D.BodySetState(b, PhysicsServer3D.BodyState.Transform, new Transform3D(rot, new Vector3(0, 0, 0)));
+        PhysicsServer3D.BodySetAxisLock(b, PhysicsServer3D.BodyAxis.LinearY, true);
+        PhysicsServer3D.BodySetParam(b, PhysicsServer3D.BodyParameter.GravityScale, 0f);
+        PhysicsServer3D.BodyApplyCentralImpulse(b, new Vector3(0, 3, 0));
+        yield return Wait.Frames(30);
+        Vector3 v = w.Vel(b);
+        Assert.Expect(Mathf.Abs(v.Y) < 0.01f,
+            $"world-Y motion is blocked by LINEAR_Y lock on a 90°-rotated body (vy={v.Y:F3}) — locks are WORLD-frame");
+        // Control: the perpendicular world axis (body-local Y, unlocked) moves.
+        PhysicsServer3D.BodyApplyCentralImpulse(b, new Vector3(2, 0, 0));
+        yield return Wait.Frames(30);
+        Vector3 v2 = w.Vel(b);
+        Assert.Expect(Mathf.Abs(v2.X) > 0.1f, "world-X motion stays free (body-local Y)");
     }
 }

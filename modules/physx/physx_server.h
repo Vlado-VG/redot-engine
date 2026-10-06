@@ -357,6 +357,11 @@ public:
 	void soft_body_set_solver_mode(RID p_body, int p_mode);
 	int soft_body_get_solver_mode(RID p_body) const;
 
+	// Module extension: rigid attachment of a soft-body render vertex to a
+	// rigid body (PxDeformableAttachment, GPU solver path — GAP-15).
+	void soft_body_attach_point_to_body(RID p_body, int p_point_index, RID p_rigid_body);
+	void soft_body_detach_point_from_body(RID p_body, int p_point_index);
+
 	RID vehicle_create(int p_archetype);
 	void vehicle_set_chassis_body(RID p_vehicle, RID p_body);
 	void vehicle_set_space(RID p_vehicle, RID p_space);

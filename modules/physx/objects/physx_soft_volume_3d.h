@@ -16,6 +16,8 @@ namespace physx {
 class PxDeformableVolume;
 class PxDeformableVolumeMesh;
 class PxDeformableVolumeMaterial;
+class PxDeformableAttachment;
+class PxRigidActor;
 class PxShape;
 class PxCudaContextManager;
 } // namespace physx
@@ -58,6 +60,7 @@ private:
 	bool simulated_once = false;
 	float total_mass = 1.0f;
 	LocalVector<float> base_inv_mass; // per sim vertex, from updateMass -- for unpin
+	LocalVector<physx::PxDeformableAttachment *> attachments; // rigid attachments (GAP-15)
 
 	// render (welded) vertex -> nearest collision-mesh vertex, from rest state.
 	LocalVector<uint32_t> welded_to_coll;
@@ -97,6 +100,15 @@ public:
 	void set_pins(const Vector<int> &p_welded_indices, const Vector<Vector3> &p_targets);
 	void add_central_impulse(const Vector3 &p_impulse);
 	void add_point_impulse(uint32_t p_welded_index, const Vector3 &p_impulse);
+
+	// Rigid attachment (GAP-15): pins the given welded render vertices to
+	// p_rigid with a PxDeformableAttachment (SDK positional constraints). The
+	// attachment is created against the actors' CURRENT poses — the soft body
+	// and the rigid must both be in the same scene for it to be active. The
+	// volume keeps ownership; release_attachment() or _destroy() frees it.
+	/// Returns null when the SDK refuses the attachment (logged).
+	physx::PxDeformableAttachment *create_rigid_attachment(const Vector<int> &p_welded_indices, physx::PxRigidActor *p_rigid);
+	void release_attachment(physx::PxDeformableAttachment *&p_attachment);
 
 	PhysXSoftVolume3D() {}
 	~PhysXSoftVolume3D();

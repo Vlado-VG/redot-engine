@@ -138,6 +138,11 @@ public:
     PhysXArea3D *get_default_area() const { return default_area; }
     void set_default_area(PhysXArea3D *p_area) { default_area = p_area; }
 
+    /// Releases every soft-body rigid attachment referencing p_actor — called
+    /// from the server's body-free path BEFORE the actor is released, so a
+    /// live PxDeformableAttachment never dangles on a freed rigid (GAP-15).
+    void release_soft_body_attachments_for(physx::PxActor *p_actor);
+
     // --------------------------------------------------------------------
     // Debug contacts — drives the "Visible Collision Shapes" contact overlay.
     //

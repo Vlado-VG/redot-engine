@@ -42,6 +42,57 @@ internal static class QueryTests {
         s.Add("PHYSX-QUERY-029", "cast_motion overlapped start hits the wall behind the overlap", CastMotionOverlapDisregard);
         s.Add("PHYSX-QUERY-030", "rest_info picks the deepest of several overlaps", RestInfoDeepest);
         s.Add("PHYSX-QUERY-031", "interior ray against backfaces reports the far wall at its real position", RayBackfaceInterior);
+        s.Add("PHYSX-QUERY-032", "query margin inflates primitive query shapes (godot_physics contract)", QueryMarginInflation);
+    }
+
+    // Phase 13 margin-contract item: godot_physics grows the query shape by
+    // ShapeParameters.margin for intersect_shape/collide_shape/cast_motion/
+    // rest_info. A sphere query 0.15 m from a wall must miss at margin 0 and
+    // hit at margin 0.3 — and cast_motion's swept box must be stopped by a
+    // wall it only marginally overlaps.
+    static IEnumerator QueryMarginInflation() {
+        using var w = new PhysxWorld(false);
+        // Thin wall: +Z face at z = 0.1.
+        w.MakeStatic(w.Box(2f, 2f, 0.1f), new Vector3(0, 0, 0));
+        yield return Wait.Frames(2);
+
+        // Sphere query whose surface is 0.15 away from the wall face.
+        var sphere = w.Sphere(0.25f);
+        var at = new Transform3D(Basis.Identity, new Vector3(0, 0, 0.5f));
+
+        var q0 = new PhysicsShapeQueryParameters3D {
+            ShapeRid = sphere, Transform = at, CollisionMask = 0xFFFFFFFF, CollideWithBodies = true, Margin = 0f,
+        };
+        Assert.Expect(w.Dss().IntersectShape(q0).Count == 0, "margin 0: no hit across a 0.15 gap");
+
+        var q1 = new PhysicsShapeQueryParameters3D {
+            ShapeRid = sphere, Transform = at, CollisionMask = 0xFFFFFFFF, CollideWithBodies = true, Margin = 0.3f,
+        };
+        var hits = w.Dss().IntersectShape(q1);
+        Assert.Expect(hits.Count > 0, "margin 0.3: inflated sphere reaches across the 0.15 gap");
+
+        // cast_motion with margin: the inflated sphere swept toward -Z starts
+        // overlapping, so the query reports the blocked/initial-overlap state
+        // (safe fraction 0), while margin 0 sweeps the full motion.
+        // cast_motion with margin: sweep from farther out so neither start pose
+        // overlaps the wall. The margin-inflated sphere must be stopped
+        // strictly earlier than the uninflated one — margin makes the sweep
+        // more conservative.
+        var far = new Transform3D(Basis.Identity, new Vector3(0, 0, 0.9f));
+        var q2 = new PhysicsShapeQueryParameters3D {
+            ShapeRid = sphere, Transform = far, CollisionMask = 0xFFFFFFFF,
+            CollideWithBodies = true, Margin = 0f, Motion = new Vector3(0, 0, -1f),
+        };
+        var f0 = w.Dss().CastMotion(q2);
+        q2.Margin = 0.3f;
+        var f1 = w.Dss().CastMotion(q2);
+        Assert.Expect(f0 != null && f0.Length == 2 && f0[0] < 1f, "margin 0: sweep stops at the wall");
+        Assert.Expect(f1 != null && f1.Length == 2 && f1[0] < f0[0],
+            $"margin 0.3: inflated sweep stops earlier ({Fmt(f1[0])} < {Fmt(f0[0])})");
+    }
+
+    private static string Fmt(float v) {
+        return v.ToString("0.000");
     }
 
     static IEnumerator RayFields() {

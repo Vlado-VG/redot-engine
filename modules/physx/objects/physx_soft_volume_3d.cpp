@@ -6,6 +6,7 @@
 #include "physx_soft_volume_3d.h"
 
 #include "../physx_conversions.h"
+#include "../physx_server.h"
 #include "../spaces/physx_space_3d.h"
 
 #include "core/error/error_macros.h"
@@ -23,6 +24,15 @@ PhysXSoftVolume3D::~PhysXSoftVolume3D() {
 }
 
 void PhysXSoftVolume3D::_destroy() {
+	// Attachments must die BEFORE the deformable actor: a PxDeformableAttachment
+	// references both of its actors, and releasing it after the volume would
+	// leave the constraint pointing at freed memory.
+	for (physx::PxDeformableAttachment *att : attachments) {
+		if (att) {
+			att->release();
+		}
+	}
+	attachments.clear();
 	if (volume) {
 		// Routed through the space (queued when a solve is in flight).
 		if (space) {
@@ -408,4 +418,93 @@ void PhysXSoftVolume3D::set_exception_slot(uint32_t p_slot) {
 	const PxFilterData current = shape->getSimulationFilterData();
 	PxFilterData fd(current.word0, current.word1, p_slot, current.word3);
 	shape->setSimulationFilterData(fd);
+}
+
+// ---------------------------------------------------------------------------
+// Rigid attachments (GAP-15) — PxDeformableAttachment between welded soft-body
+// vertices and a rigid actor. SDK positional constraints; active only while
+// both actors live in the same scene.
+// ---------------------------------------------------------------------------
+
+physx::PxDeformableAttachment *PhysXSoftVolume3D::create_rigid_attachment(const Vector<int> &p_welded_indices, physx::PxRigidActor *p_rigid) {
+	if (!volume || !p_rigid || p_welded_indices.is_empty()) {
+		return nullptr;
+	}
+	// Translate welded render indices -> sim (collision) mesh vertex indices,
+	// the same mapping set_pins() consumes. Rigid side: per SDK table 2 the
+	// eRIGID pose is LOCAL to the rigid actor ("local pose for eRIGID") and
+	// the coords are expressed in that frame — so pose[1] stays identity and
+	// each world-space soft vertex position is transformed into the rigid's
+	// current local frame: the vertex sticks to the body exactly where it
+	// attaches, and follows it 1:1 from then on.
+	const PxTransform rigid_global = p_rigid->getGlobalPose();
+	// The SDK takes the deformable side of an eVERTEX attachment from the sim
+	// mesh's CURRENT vertices, so the rigid-side point must be captured from
+	// the same fresh state — read the sim position buffer directly (same
+	// access path set_pins() uses). The last read-back (read_positions) lags
+	// a frame and made the constraint start with a visible violation.
+	const uint32_t sim_nv = base_inv_mass.size();
+	LocalVector<PxVec4> fresh;
+	fresh.resize(sim_nv);
+	{
+		PxVec4 *sp = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
+		Ext::PxCudaHelpersExt::copyDToH(*cuda, sp, volume->getSimPositionInvMassBufferD(), sim_nv);
+		for (uint32_t i = 0; i < sim_nv; i++) {
+			fresh[i] = sp[i];
+		}
+		PX_EXT_PINNED_MEMORY_FREE(*cuda, sp);
+	}
+	LocalVector<PxU32> sim_indices;
+	LocalVector<PxVec4> rigid_coords;
+	for (int i = 0; i < p_welded_indices.size(); i++) {
+		const int wi = p_welded_indices[i];
+		if (wi < 0 || (uint32_t)wi >= welded_to_coll.size()) {
+			continue;
+		}
+		const uint32_t s = welded_to_coll[wi];
+		sim_indices.push_back(s);
+		const PxVec3 &wp = (uint32_t)s < fresh.size()
+				? PxVec3(fresh[s].x, fresh[s].y, fresh[s].z)
+				: PxVec3(0.0f);
+		const PxVec3 local = rigid_global.transformInv(wp);
+		rigid_coords.push_back(PxVec4(local.x, local.y, local.z, 0.0f));
+	}
+	if (sim_indices.is_empty()) {
+		return nullptr;
+	}
+
+	PxDeformableAttachmentData desc;
+	desc.actor[0] = volume;
+	desc.type[0] = PxDeformableAttachmentTargetType::eVERTEX;
+	desc.indices[0].count = (PxU32)sim_indices.size();
+	desc.indices[0].data = sim_indices.ptr();
+
+	desc.actor[1] = p_rigid;
+	desc.type[1] = PxDeformableAttachmentTargetType::eRIGID;
+	desc.pose[1] = PxTransform(PxIdentity);
+	desc.coords[1].count = (PxU32)rigid_coords.size();
+	desc.coords[1].data = rigid_coords.ptr();
+
+	physx::PxPhysics &physics = PhysXServer3D::get_singleton()->get_physics();
+	PxDeformableAttachment *att = physics.createDeformableAttachment(desc);
+	if (!att) {
+		ERR_PRINT("PhysXSoftVolume3D: PxPhysics::createDeformableAttachment returned null (same-scene requirement, or vertex indices invalid).");
+		return nullptr;
+	}
+	attachments.push_back(att);
+	return att;
+}
+
+void PhysXSoftVolume3D::release_attachment(physx::PxDeformableAttachment *&p_attachment) {
+	if (!p_attachment) {
+		return;
+	}
+	for (uint32_t i = 0; i < attachments.size(); i++) {
+		if (attachments[i] == p_attachment) {
+			attachments.remove_at(i);
+			break;
+		}
+	}
+	p_attachment->release();
+	p_attachment = nullptr;
 }

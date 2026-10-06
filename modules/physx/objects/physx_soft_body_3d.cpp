@@ -6,8 +6,10 @@
 #include "physx_soft_body_3d.h"
 
 #include "../physx_project_settings.h"
+#include "../physx_server.h"
 #include "../spaces/physx_direct_space_state_3d.h"
 #include "../spaces/physx_space_3d.h"
+#include "physx_body_3d.h"
 
 #include "core/config/project_settings.h"
 #include "core/object/object.h"
@@ -35,6 +37,7 @@ void PhysXSoftBody3D::set_space(PhysXSpace3D *p_space) {
 	// The GPU volume is bound to a scene; drop it on space change and let the
 	// next set_mesh / rebuild decide the path again.
 	if (volume) {
+		point_attachments.clear(); // volume dtor releases the attachments
 		memdelete(volume);
 		volume = nullptr;
 		using_gpu = false;
@@ -51,6 +54,7 @@ void PhysXSoftBody3D::set_space(PhysXSpace3D *p_space) {
 void PhysXSoftBody3D::notify_space_destroyed() {
 	space = nullptr;
 	if (volume) {
+		point_attachments.clear(); // volume dtor releases the attachments
 		memdelete(volume);
 		volume = nullptr;
 		using_gpu = false;
@@ -111,6 +115,7 @@ void PhysXSoftBody3D::_rebuild_from_mesh(bool p_keep_state) {
 	visual_vertex_count = 0;
 	solver.clear();
 	if (volume) {
+		point_attachments.clear(); // volume dtor releases the attachments
 		memdelete(volume);
 		volume = nullptr;
 	}
@@ -723,6 +728,70 @@ void PhysXSoftBody3D::set_exception_slot(uint32_t p_slot) {
 	// baked into its collision shape's filter data word2.
 	if (volume) {
 		volume->set_exception_slot(p_slot);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Rigid attachments (GAP-15)
+// ---------------------------------------------------------------------------
+
+void PhysXSoftBody3D::attach_point_to_body(int p_point_index, const RID &p_body) {
+	if (p_point_index < 0 || (uint32_t)p_point_index >= visual_vertex_count) {
+		ERR_FAIL_MSG("PhysXSoftBody3D: attach_point_to_body index out of range.");
+		return;
+	}
+	if (!using_gpu || !volume) {
+		// The CPU XPBD solver has no SDK constraint facility; a rigid
+		// attachment is a GPU-path capability (warn once per body).
+		WARN_PRINT_ONCE("PhysXSoftBody3D: attach_point_to_body requires the GPU solver path (project setting physics/physx_3d/soft_body/mode=GPU or the node's physx_soft_mode metadata).");
+		return;
+	}
+	PhysXBody3D *body = PhysXServer3D::get_singleton()->get_body(p_body);
+	if (!body || !body->get_px_actor()) {
+		ERR_FAIL_MSG("PhysXSoftBody3D: attach_point_to_body target is not a valid body.");
+		return;
+	}
+	if (space && body->get_space() != space) {
+		ERR_FAIL_MSG("PhysXSoftBody3D: attach_point_to_body target lives in a different space (the attachment is only active when both actors share a scene).");
+		return;
+	}
+	// Re-attaching a point replaces its previous attachment.
+	detach_point_from_body(p_point_index);
+	Vector<int> welded;
+	welded.push_back((int)map_visual_to_physics[p_point_index]);
+	physx::PxDeformableAttachment *att = volume->create_rigid_attachment(welded, body->get_px_actor());
+	if (att) {
+		point_attachments.insert(p_point_index, att);
+	}
+}
+
+void PhysXSoftBody3D::detach_point_from_body(int p_point_index) {
+	HashMap<int, physx::PxDeformableAttachment *>::Iterator it = point_attachments.find(p_point_index);
+	if (!it) {
+		return;
+	}
+	if (volume) {
+		volume->release_attachment(it->value);
+	}
+	point_attachments.erase(p_point_index);
+}
+
+void PhysXSoftBody3D::release_attachments_for(physx::PxActor *p_actor) {
+	if (!volume || !p_actor) {
+		return;
+	}
+	// Collect-then-erase: Godot HashMaps cannot erase while iterating.
+	LocalVector<int> dead;
+	for (const KeyValue<int, physx::PxDeformableAttachment *> &kv : point_attachments) {
+		physx::PxActor *a0 = nullptr;
+		physx::PxActor *a1 = nullptr;
+		kv.value->getActors(a0, a1);
+		if (a0 == p_actor || a1 == p_actor) {
+			dead.push_back(kv.key);
+		}
+	}
+	for (int idx : dead) {
+		detach_point_from_body(idx);
 	}
 }
 

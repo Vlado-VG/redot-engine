@@ -312,6 +312,15 @@ void PhysXSpace3D::sync() {
     _finish_step();
 }
 
+// GAP-15 safety net: a rigid actor being freed must not leave a live
+// PxDeformableAttachment pointing at it. Walks the space's soft bodies and
+// drops every attachment that references the actor.
+void PhysXSpace3D::release_soft_body_attachments_for(physx::PxActor *p_actor) {
+	for (PhysXSoftBody3D *sb : soft_bodies) {
+		sb->release_attachments_for(p_actor);
+	}
+}
+
 void PhysXSpace3D::ensure_synced() {
     if (!stepping || !px_scene) {
         return;
