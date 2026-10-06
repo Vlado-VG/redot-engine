@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="PhysXMotorcycle3D" inherits="Node3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+<class name="PhysXMotorcycle3D" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
 	<brief_description>
 		A PhysX-specific 2-wheel vehicle (motorcycle-style), powered by PxVehicle2 -- the same real per-wheel suspension/tire/drivetrain composition [PhysXVehicle3D] offers for 4 wheels, ported to a 2-wheel layout [PhysXVehicle3D] itself can't represent.
 	</brief_description>
