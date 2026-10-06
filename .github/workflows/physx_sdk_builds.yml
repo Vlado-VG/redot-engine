@@ -37,7 +37,7 @@ jobs:
       - name: Install toolchain
         run: |
           apt-get update -qq
-          apt-get install -y -qq clang lld python3 git curl ca-certificates > /dev/null
+          apt-get install -y -qq clang lld python3 git curl ca-certificates cmake make > /dev/null
 
       - name: Checkout PhysX source
         uses: actions/checkout@v4
