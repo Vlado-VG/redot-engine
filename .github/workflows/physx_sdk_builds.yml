@@ -89,3 +89,132 @@ jobs:
         with:
           name: physx-sdk-linux-x86_64
           path: out/
+
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout PhysX source
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA-Omniverse/PhysX
+          ref: ${{ inputs.physx_ref }}
+
+      - name: Write vendor preset
+        run: |
+          # linux-clang-rd authored for aarch64: CPU-only (no CUDA on the
+          # runner), snippets and OmniPVD runtime off, SIMD math on.
+          cat > physx/buildtools/presets/public/linux-aarch64-rd.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <preset name="linux-aarch64-rd" comment="Linux aarch64 clang PhysX SDK general settings">
+            <platform targetPlatform="linux" compiler="clang" />
+            <CMakeSwitches>
+              <cmakeSwitch name="PX_BUILDSNIPPETS" value="False" comment="Generate the snippets" />
+              <cmakeSwitch name="PX_BUILDPVDRUNTIME" value="False" comment="Generate the OmniPVD project" />
+              <cmakeSwitch name="PX_GENERATE_STATIC_LIBRARIES" value="True" comment="Generate static libs" />
+              <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS" value="False" comment="Generate the GPU projects, if possible." />
+              <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS_ONLY" value="False" comment="Generate ONLY the GPU projects, if possible." />
+              <cmakeSwitch name="PX_SCALAR_MATH" value="False" comment="Disable SIMD math" />
+              <cmakeSwitch name="PX_FLOAT_POINT_PRECISE_MATH" value="False" comment="Float point precise math" />
+            </CMakeSwitches>
+            <CMakeParams>
+              <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/linux-aarch64-rd/PhysX" comment="Install path relative to PhysX SDK root" />
+            </CMakeParams>
+          </preset>
+          EOF
+
+      - name: Generate build projects (packman pulls dependencies)
+        run: |
+          cd physx
+          ./generate_projects.sh linux-aarch64-rd
+
+      - name: Build checked and release configs
+        run: |
+          cd physx
+          cmake --build compiler/linux-aarch64-rd-checked -j"$(nproc)"
+          cmake --build compiler/linux-aarch64-rd-release -j"$(nproc)"
+
+      - name: Checkout engine repo (collection script)
+        uses: actions/checkout@v4
+        with:
+          path: engine
+
+      - name: Collect static libraries
+        run: |
+          python3 engine/collect_physx_libs.py linux
+
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: physx-sdk-linux-arm64
+          path: out/
+
+  build-linux-x86_64-gpu:
+    runs-on: ubuntu-latest
+    # GPU static libs (PhysXCommonGpu/SolverGpu/..._static_64) are built from
+    # source and need nvcc; the closed-source kernel runtime (libPhysXGpu_64.so)
+    # is NOT built here -- NVIDIA ships it prebuilt inside the ovphysx release
+    # archives (plugins/). Place that .so beside the engine binary at runtime.
+    container:
+      image: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    steps:
+      - name: Install toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq clang lld python3 git > /dev/null
+
+      - name: Checkout PhysX source
+        uses: actions/checkout@v4
+        with:
+          repository: NVIDIA-Omniverse/PhysX
+          ref: ${{ inputs.physx_ref }}
+
+      - name: Write vendor preset
+        run: |
+          # linux-clang-rd with GPU projects and GPU static libraries enabled;
+          # everything else matches the CPU vendor configuration.
+          cat > physx/buildtools/presets/public/linux-clang-rd-gpu.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <preset name="linux-clang-rd-gpu" comment="Linux clang PhysX SDK general settings (CUDA GPU)">
+            <platform targetPlatform="linux" compiler="clang" />
+            <CMakeSwitches>
+              <cmakeSwitch name="PX_BUILDSNIPPETS" value="False" comment="Generate the snippets" />
+              <cmakeSwitch name="PX_BUILDPVDRUNTIME" value="False" comment="Generate the OmniPVD project" />
+              <cmakeSwitch name="PX_GENERATE_STATIC_LIBRARIES" value="True" comment="Generate static libs" />
+              <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS" value="True" comment="Generate the GPU projects" />
+              <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS_ONLY" value="False" comment="Generate ONLY the GPU projects, if possible." />
+              <cmakeSwitch name="PX_GENERATE_GPU_STATIC_LIBRARIES" value="True" comment="Generate PhysXGPU static libraries" />
+              <cmakeSwitch name="PX_GENERATE_GPU_REDUCED_ARCHITECTURES" value="False" comment="Generate only a reduced number of GPU architectures for faster compilation" />
+              <cmakeSwitch name="PX_SCALAR_MATH" value="False" comment="Disable SIMD math" />
+              <cmakeSwitch name="PX_FLOAT_POINT_PRECISE_MATH" value="False" comment="Float point precise math" />
+            </CMakeSwitches>
+            <CMakeParams>
+              <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/linux-clang-rd-gpu/PhysX" comment="Install path relative to PhysX SDK root" />
+            </CMakeParams>
+          </preset>
+          EOF
+
+      - name: Generate build projects (packman pulls dependencies)
+        run: |
+          cd physx
+          ./generate_projects.sh linux-clang-rd-gpu
+
+      - name: Build checked and release configs
+        run: |
+          cd physx
+          cmake --build compiler/linux-clang-rd-gpu-checked -j"$(nproc)"
+          cmake --build compiler/linux-clang-rd-gpu-release -j"$(nproc)"
+
+      - name: Checkout engine repo (collection script)
+        uses: actions/checkout@v4
+        with:
+          path: engine
+
+      - name: Collect static libraries
+        run: |
+          python3 engine/collect_physx_libs.py linux
+
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: physx-sdk-linux-x86_64-gpu
+          path: out/
