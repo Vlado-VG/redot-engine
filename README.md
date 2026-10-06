@@ -65,8 +65,26 @@ This will automatically install all build dependencies and compile Redot if the 
 
 Detailed Nix usage, including passing SCons build flags through `nix run`, forwarding runtime arguments, and manual `nix develop` workflows, is documented in the `Nix usage guide` at `doc/nix.md`.
 
+#### PhysX module build flags
 
-## Community and contributing
+The bundled PhysX module ships with prebuilt SDK libraries and accepts
+the following SCons flags (defaults first):
+
+| Flag | Values | What it controls |
+| --- | --- | --- |
+| `physx_config` | `checked`, `release` | Which prebuilt SDK library set is linked. `checked` (default) pairs with editor and `target=template_debug` builds; `release` pairs with `target=template_release`. |
+| `physx_gpu` | `yes`, `no` | CUDA GPU dynamics (Windows and Linux). With `no`, the engine always simulates on the CPU and never initializes CUDA. |
+| `flow` | `yes`, `no` | NVIDIA Flow sparse-grid fluid simulation (volumetric fire, smoke, and fluids). |
+| `blast` | `yes`, `no` | NVIDIA Blast mesh destruction. The prebuilt Blast libraries are Windows-only; other platforms build without it. |
+
+Example — a Windows release template with the optimized SDK libraries:
+
+```bash
+scons platform=windows target=template_release physx_config=release
+```
+
+
+## Community and Contributing
 
 Redot is not only an engine but an ever-growing community of users and engine
 developers. Please visit our [Discord server](https://discord.gg/redot)!
@@ -75,6 +93,12 @@ To get started contributing to the project, see the [contributing guide](CONTRIB
 This document also includes guidelines for reporting bugs.
 
 Follow [Redot on X/Twitter](https://x.com/Redot_Engine)!
+## Credits
+**Credits** to [**Uno "Wild-ox"**](https://github.com/uno1982) studios for:
+MPM shaders, a lot of fixes and implementations for water, 2W vehicle, boat, foam and more.
+Visit his Godot upstream (4.7+) PhysX module at:
+https://github.com/uno1982/godot/tree/feature/physx5-module
+
 ## Documentation and demos
 
 The class reference is accessible from the Redot editor.
