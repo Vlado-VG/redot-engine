@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+from misc.utility.scons_hints import *
+
 import os
 
 Import("env")
@@ -39,7 +41,7 @@ physx_defines = [
 if physx_gpu and env["platform"] in ("windows", "linux", "linuxbsd"):
     physx_defines.append("GODOT_PHYSX_GPU")
 elif physx_gpu:
-    print("physx: physx_gpu=yes has no GPU wiring for platform '%s'; building CPU-only." % env["platform"])
+    print(f"physx: physx_gpu=yes has no GPU wiring for platform '{env['platform']}'; building CPU-only.")
 
 env_physx.Append(CPPDEFINES=physx_defines)
 
@@ -51,17 +53,21 @@ env_physx.Append(CPPDEFINES=physx_defines)
 # everywhere: the SDK's full debug configuration is orders of magnitude
 # slower and no target maps to it.
 if env["target"] != "template_release":
-    env_physx.Append(CPPDEFINES=[
-        "PX_DEBUG=0",
-        "PX_CHECKED=1",
-        "PX_SUPPORT_PVD=1",
-    ])
+    env_physx.Append(
+        CPPDEFINES=[
+            "PX_DEBUG=0",
+            "PX_CHECKED=1",
+            "PX_SUPPORT_PVD=1",
+        ]
+    )
 else:
-    env_physx.Append(CPPDEFINES=[
-        "PX_DEBUG=0",
-        "PX_CHECKED=0",
-        "PX_SUPPORT_PVD=0",
-    ])
+    env_physx.Append(
+        CPPDEFINES=[
+            "PX_DEBUG=0",
+            "PX_CHECKED=0",
+            "PX_SUPPORT_PVD=0",
+        ]
+    )
 # 2. Paths
 # The PhysX SDK lives in thirdparty/physx with the vendor layout:
 #   include/                                headers
@@ -90,10 +96,12 @@ elif env["platform"] == "android":
 else:
     physx_lib_path = thirdparty_dir.Dir("lib")
 
-env_physx.PrependUnique(CPPPATH=[
-    module_path,
-    physx_include_path,
-])
+env_physx.PrependUnique(
+    CPPPATH=[
+        module_path,
+        physx_include_path,
+    ]
+)
 
 # Fail with an explanation rather than a cryptic linker error when a
 # platform's SDK libraries aren't vendored (only Windows x64 ships in this
@@ -101,7 +109,11 @@ env_physx.PrependUnique(CPPPATH=[
 # static libs under bin/linux.x86_64/<config>/ -- verify against whatever the
 # build actually produced before extending the vendor layout below).
 if env["platform"] != "windows" and not os.path.isdir(physx_lib_path.abspath):
-    print("physx: WARNING: no PhysX SDK libraries vendored for platform '%s' (expected %s) -- the link step will fail until the SDK libs are added." % (env["platform"], physx_lib_path.abspath))
+    print(
+        "physx: WARNING: no PhysX SDK libraries vendored for platform '{}' (expected {}) -- the link step will fail until the SDK libs are added.".format(
+            env["platform"], physx_lib_path.abspath
+        )
+    )
 
 env.PrependUnique(LIBPATH=[physx_lib_path.abspath])
 
@@ -195,10 +207,12 @@ if flow_enabled:
     env_physx.Append(CPPDEFINES=["GODOT_PHYSX_FLOW"])
     # NvFlowLoader.h includes Windows.h and the SDK headers live in two roots
     # (nvflow/, nvflowext/) with same-directory #includes.
-    env_physx.PrependUnique(CPPPATH=[
-        flow_dir.Dir("include/nvflow").abspath,
-        flow_dir.Dir("include/nvflowext").abspath,
-    ])
+    env_physx.PrependUnique(
+        CPPPATH=[
+            flow_dir.Dir("include/nvflow").abspath,
+            flow_dir.Dir("include/nvflowext").abspath,
+        ]
+    )
 
     # Runtime DLLs next to the engine binary (only the base pair -- the _rtx
     # variants cover Flow's own raytraced composite path, unused here).
@@ -287,7 +301,9 @@ else:
 if blast_enabled and env["platform"] == "windows":
     env_nvidia.add_source_files(env.modules_sources, "blast/*.cpp")
 elif blast_enabled and env["platform"] != "windows":
-    print("physx: blast=yes has no library wiring for platform '%s' yet; building without Blast." % env["platform"])
+    print(
+        "physx: blast=yes has no library wiring for platform '{}' yet; building without Blast.".format(env["platform"])
+    )
 
 # NVIDIA Flow sources (solver runtime + scene nodes). Flow itself is
 # Windows-only for now (prebuilt DLLs), but flow/*.cpp are fully guarded and
