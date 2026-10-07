@@ -223,9 +223,9 @@ if env["platform"] != "windows":
 if env["platform"] == "windows" and env.msvc:
     env.Append(LINKFLAGS=[lib + ".lib" for lib in physx_libs])
 else:
-    env.Append(
-        LIBS=[physx_lib_path.File(lib + ".lib").abspath if env["platform"] == "windows" else lib for lib in physx_libs]
-    )
+    # File nodes: SCons passes them as direct link inputs (no -l mangling
+    # of absolute paths) at the correct position after the module objects.
+    env.Append(LIBS=[physx_lib_path.File(lib + ".lib") for lib in physx_libs])
 
 # Linux GPU dynamics: link NVIDIA's prebuilt runtime directly (it exports
 # the GPU entry points the CPU statics don't carry) and place it next to
@@ -238,7 +238,7 @@ else:
 # if NVIDIA ever ships one.
 if physx_gpu and env["platform"] in ("linux", "linuxbsd"):
     gpu_so = thirdparty_dir.File("bin/linux/x86_64/release/libPhysXGpu_64.so")
-    env.Append(LIBS=[gpu_so.abspath])
+    env.Append(LIBS=[gpu_so])
     env.Command(
         File("#bin/libPhysXGpu_64.so"),
         gpu_so,
@@ -333,11 +333,10 @@ if blast_enabled and env["platform"] == "windows":
     blast_lib_path = blast_dir.Dir("lib/windows/x86_64/release")
     env.PrependUnique(LIBPATH=[blast_lib_path.abspath])
     # Bare .lib names resolve via LIBPATH for MSVC only (see the PhysX block).
-    env.Append(
-        LINKFLAGS=[x + ".lib" for x in blast_libs]
-        if env.msvc
-        else [blast_lib_path.File(x + ".lib").abspath for x in blast_libs]
-    )
+    if env.msvc:
+        env.Append(LINKFLAGS=[x + ".lib" for x in blast_libs])
+    else:
+        env.Append(LIBS=[blast_lib_path.File(x + ".lib") for x in blast_libs])
     # Copy the full runtime DLL set: NvBlastExtAuthoring.dll may pull in the
     # other NvBlast DLLs at load time, and a missing one fails the engine load.
     blast_dll_dir = blast_dir.Dir("bin/windows/x86_64/release")
