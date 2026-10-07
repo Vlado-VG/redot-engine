@@ -341,7 +341,7 @@ real_t PhysXMotorcycle3D::get_wheel_jounce(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.suspensionStates[i].jounce;
@@ -354,7 +354,7 @@ real_t PhysXMotorcycle3D::get_wheel_separation(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.suspensionStates[i].separation;
@@ -367,7 +367,7 @@ real_t PhysXMotorcycle3D::get_wheel_lateral_force(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			const Vector3 lateral_force_world = physx_to_godot(impl->vehicle.tireForces[i].forces[PxVehicleTireDirectionModes::eLATERAL]);
@@ -383,7 +383,7 @@ real_t PhysXMotorcycle3D::get_wheel_lateral_speed(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.tireSpeedStates[i].speedStates[PxVehicleTireDirectionModes::eLATERAL];
@@ -396,7 +396,7 @@ Vector3 PhysXMotorcycle3D::get_wheel_lateral_direction(int p_wheel) const {
 	if (!impl->built) {
 		return Vector3();
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), Vector3());
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), Vector3());
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return physx_to_godot(impl->vehicle.tireDirectionStates[i].directions[PxVehicleTireDirectionModes::eLATERAL]);
@@ -409,7 +409,7 @@ Vector3 PhysXMotorcycle3D::get_wheel_lateral_force_vector(int p_wheel) const {
 	if (!impl->built) {
 		return Vector3();
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), Vector3());
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), Vector3());
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return physx_to_godot(impl->vehicle.tireForces[i].forces[PxVehicleTireDirectionModes::eLATERAL]);
@@ -422,7 +422,7 @@ Vector3 PhysXMotorcycle3D::get_wheel_lateral_velocity(int p_wheel) const {
 	if (!impl->built) {
 		return Vector3();
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), Vector3());
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), Vector3());
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			const PxVec3 &direction = impl->vehicle.tireDirectionStates[i].directions[PxVehicleTireDirectionModes::eLATERAL];
@@ -436,7 +436,7 @@ real_t PhysXMotorcycle3D::get_wheel_camber_angle(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 2; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.tireCamberAngleStates[i].camberAngle;

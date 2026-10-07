@@ -368,7 +368,7 @@ real_t PhysXVehicle3D::get_wheel_jounce(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 4; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.suspensionStates[i].jounce;
@@ -381,7 +381,7 @@ real_t PhysXVehicle3D::get_wheel_separation(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 4; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.suspensionStates[i].separation;
@@ -449,7 +449,7 @@ float PhysXVehicle3D::get_wheel_rpm(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 4; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.wheelRigidBody1dStates[i].rotationSpeed * (60.0f / 6.28318530717958647692f);
@@ -462,7 +462,7 @@ float PhysXVehicle3D::get_wheel_skid(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 4; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.tireSlipStates[i].slips[physx::PxVehicleTireDirectionModes::eLONGITUDINAL];
@@ -478,7 +478,7 @@ Dictionary PhysXVehicle3D::get_wheel_contact(int p_wheel) const {
 	if (!impl->built) {
 		return out;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), out);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), out);
 	for (uint32_t i = 0; i < 4; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			const PxVehicleRoadGeometryState &rg = impl->vehicle.roadGeomStates[i];
@@ -496,7 +496,7 @@ float PhysXVehicle3D::get_wheel_steer_angle(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	for (uint32_t i = 0; i < 4; i++) {
 		if (impl->wheel_order[i] == (uint32_t)p_wheel) {
 			return (real_t)impl->vehicle.steerCommandResponseStates[i];

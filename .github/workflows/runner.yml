@@ -53,4 +53,7 @@ jobs:
   web-build:
     name: 🌐 Web
     needs: static-checks
+    # Paused like macOS/iOS/Android above; re-enable via repo variable
+    # ENABLE_WEB_BUILDS = true (Settings -> Secrets and variables -> Actions).
+    if: ${{ vars.ENABLE_WEB_BUILDS == 'true' }}
     uses: ./.github/workflows/web_builds.yml

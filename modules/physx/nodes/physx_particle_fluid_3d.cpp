@@ -734,7 +734,7 @@ void PhysXParticleFluid3D::_make_fluid() {
 		WARN_PRINT_ONCE("PhysXParticleFluid3D does nothing unless the 3D physics engine is set to \"PhysX\".");
 		return;
 	}
-	ERR_FAIL_NULL(get_world_3d());
+	ERR_FAIL_NULL(get_world_3d().ptr());
 
 	fluid = server->particle_fluid_create();
 	server->particle_fluid_set_space(fluid, get_world_3d()->get_space());

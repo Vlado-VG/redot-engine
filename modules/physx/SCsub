@@ -31,6 +31,13 @@ else:
             # live on a per-directory environment.
             "-Wno-missing-field-initializers",
             "-Wno-missing-braces",
+            # Vendor headers (PhysX/Blast/Flow) trip a dozen clang/gcc-specific
+            # style warnings MSVC never emits (unknown MSVC pragmas, bitwise &
+            # on bools, C-linkage returns, non-virtual dtors on vendor
+            # interfaces...). Keep every warning visible but none fatal for
+            # module sources, instead of chasing per-compiler flag sets across
+            # gcc/clang/MinGW versions.
+            "-Wno-error",
         ]
     )
     # gcc-only: the SDK's PxSamplingExt.h defines PxTriangleMeshPoissonSampler

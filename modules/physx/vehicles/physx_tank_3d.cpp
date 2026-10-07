@@ -285,7 +285,7 @@ real_t PhysXTank3D::get_wheel_jounce(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	return (real_t)impl->vehicle.suspensionStates[p_wheel].jounce;
 }
 
@@ -293,7 +293,7 @@ real_t PhysXTank3D::get_wheel_separation(int p_wheel) const {
 	if (!impl->built) {
 		return 0.0;
 	}
-	ERR_FAIL_INDEX_V((uint32_t)p_wheel, wheels.size(), 0.0);
+	ERR_FAIL_INDEX_V(p_wheel, (int)wheels.size(), 0.0);
 	return (real_t)impl->vehicle.suspensionStates[p_wheel].separation;
 }
 
