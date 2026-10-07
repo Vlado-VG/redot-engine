@@ -217,9 +217,10 @@ if env["platform"] != "windows":
 # entries, producing names like "PhysX_static_64.lib.windows.editor.x86_64.lib").
 # The non-MSVC Windows toolchains (MinGW gcc, llvm-mingw cross) treat bare
 # "Name.lib" arguments as files, so they get absolute paths instead.
-from methods import using_msvc
-
-if env["platform"] == "windows" and using_msvc(env):
+# env.msvc is initialized False in SConstruct and set by
+# platform/windows/detect.py for MSVC toolchains (same idiom as
+# modules/raycast/config.py).
+if env["platform"] == "windows" and env.msvc:
     env.Append(LINKFLAGS=[lib + ".lib" for lib in physx_libs])
 else:
     env.Append(
@@ -334,7 +335,7 @@ if blast_enabled and env["platform"] == "windows":
     # Bare .lib names resolve via LIBPATH for MSVC only (see the PhysX block).
     env.Append(
         LINKFLAGS=[x + ".lib" for x in blast_libs]
-        if using_msvc(env)
+        if env.msvc
         else [blast_lib_path.File(x + ".lib").abspath for x in blast_libs]
     )
     # Copy the full runtime DLL set: NvBlastExtAuthoring.dll may pull in the
