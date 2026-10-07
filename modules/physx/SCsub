@@ -242,12 +242,18 @@ else:
 # SDK configurations link the same file; a checked/ sibling can take over
 # if NVIDIA ever ships one.
 if physx_gpu and env["platform"] in ("linux", "linuxbsd"):
+    # Runtime-only on Linux: the 346 MB .so must NOT join the link (ld
+    # loads the whole object and stalls for the better part of an hour,
+    # plus its cu* driver symbols would need -lcuda). The module instead
+    # dlopens the runtime and dlsyms the GPU entry points at init; the
+    # copy below places the .so next to the engine binary where the
+    # module's dlopen finds it. No link-time GPU dependency remains.
     gpu_so = thirdparty_dir.File("bin/linux/x86_64/release/libPhysXGpu_64.so")
-    env.Append(LIBS=[gpu_so])
-    # The runtime's cudamanager calls the CUDA driver API directly; those
-    # cu* symbols resolve at runtime from the driver library, which the
-    # module dlopens (RTLD_GLOBAL) before creating the CUDA context.
-    env.Append(LINKFLAGS=["-Wl,--allow-shlib-undefined"])
+    env.Command(
+        File("#bin/libPhysXGpu_64.so"),
+        gpu_so,
+        Copy("$TARGET", "$SOURCE"),
+    )
     env.Command(
         File("#bin/libPhysXGpu_64.so"),
         gpu_so,

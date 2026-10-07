@@ -2752,15 +2752,43 @@ void PhysXServer3D::init() {
 	// present. A GPU build without a usable CUDA device falls back to CPU.
 	if (!PhysXProjectSettings::enhanced_determinism) {
 #if defined(__linux__)
-		// The prebuilt GPU runtime resolves the CUDA driver API through the
-		// process's global namespace instead of linking libcuda, so preload
-		// it; on machines without NVIDIA drivers this fails cleanly and the
-		// engine takes the CPU fallback rather than crashing on the first
-		// lazy cu* call.
-		if (dlopen("libcuda.so.1", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+		// Linux loads the GPU runtime dynamically instead of linking it: the
+		// 346 MB libPhysXGpu_64.so makes ld pathologically slow as a direct
+		// link input, and dlopen keeps the engine bootable on driverless
+		// machines. Chain: preload the CUDA driver (its cu* symbols must sit
+		// in the global namespace before the runtime loads), then the
+		// runtime, then fetch the GPU entry point. Any failure falls back
+		// to CPU simulation.
+		void *cuda_driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_GLOBAL);
+		if (cuda_driver == nullptr) {
 			WARN_PRINT(vformat("PhysX: libcuda.so.1 could not be loaded (%s); falling back to CPU simulation.", dlerror()));
-		} else
-#endif
+		} else {
+			void *gpu_runtime = dlopen("libPhysXGpu_64.so", RTLD_NOW | RTLD_GLOBAL);
+			if (gpu_runtime == nullptr) {
+				WARN_PRINT(vformat("PhysX: libPhysXGpu_64.so could not be loaded (%s); falling back to CPU simulation.", dlerror()));
+			} else {
+				using PxCudaContextManagerCreateFn = physx::PxCudaContextManager *(*)(const physx::PxFoundation &, const physx::PxCudaContextManagerDesc &, physx::PxProfilerCallback *);
+				PxCudaContextManagerCreateFn create_cuda_context =
+						reinterpret_cast<PxCudaContextManagerCreateFn>(dlsym(gpu_runtime, "PxCreateCudaContextManager"));
+				if (create_cuda_context == nullptr) {
+					WARN_PRINT(vformat("PhysX: PxCreateCudaContextManager missing from libPhysXGpu_64.so (%s); falling back to CPU simulation.", dlerror()));
+				} else {
+					physx::PxCudaContextManagerDesc cuda_desc;
+					px_cuda_context = create_cuda_context(*px_foundation, cuda_desc, PxGetProfilerCallback());
+					if (px_cuda_context && !px_cuda_context->contextIsValid()) {
+						px_cuda_context->release();
+						px_cuda_context = nullptr;
+					}
+					if (px_cuda_context) {
+						print_line(vformat("PhysX: CUDA context ready on device '%s' -> GPU dynamics available.", px_cuda_context->getDeviceName()));
+						gpu_dynamics_enabled = true;
+					} else {
+						WARN_PRINT("PhysX: no usable CUDA device; falling back to CPU simulation.");
+					}
+				}
+			}
+		}
+#else
 		{
 			physx::PxCudaContextManagerDesc cuda_desc;
 			px_cuda_context = PxCreateCudaContextManager(*px_foundation, cuda_desc, PxGetProfilerCallback());
@@ -2775,6 +2803,7 @@ void PhysXServer3D::init() {
 				WARN_PRINT("PhysX: no usable CUDA device; falling back to CPU simulation.");
 			}
 		}
+#endif
 	} else {
 		print_verbose("PhysX: enhanced_determinism is set -> GPU dynamics disabled (the GPU solver is not deterministic).");
 	}

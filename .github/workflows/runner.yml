@@ -45,9 +45,13 @@ jobs:
     if: ${{ vars.ENABLE_MAC_IOS_ANDROID == 'true' }}
     uses: ./.github/workflows/macos_builds.yml
 
+  # Windows builds paused after going fully green (editor + template with
+  # the full PhysX/Blast/Flow module); re-enable via repo variable
+  # ENABLE_WINDOWS_BUILDS = true (Settings -> Secrets and variables -> Actions).
   windows-build:
     name: 🏁 Windows
     needs: static-checks
+    if: ${{ vars.ENABLE_WINDOWS_BUILDS == 'true' }}
     uses: ./.github/workflows/windows_builds.yml
 
   web-build:
