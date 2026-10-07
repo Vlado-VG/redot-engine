@@ -356,7 +356,9 @@ void FlowRuntime::flush(uint64_t *r_flushed_frame_id) {
 	if (context_opt != nullptr && context_opt_interface.flush != nullptr) {
 		context_opt_interface.flush(context_opt);
 	}
-	uint64_t flushed = 0;
+	// NvFlowUint64 (unsigned long long) is a distinct type from uint64_t
+	// (unsigned long) on gcc/clang Linux; the device flush wants exactly it.
+	NvFlowUint64 flushed = 0;
 	device_interface.flush(queue, &flushed, nullptr, nullptr);
 	if (flushed != 0) {
 		frames_submitted = flushed;

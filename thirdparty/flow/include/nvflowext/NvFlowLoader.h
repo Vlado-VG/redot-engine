@@ -29,7 +29,8 @@
 #define NV_FLOW_LOADER_H
 
 #if defined(_WIN32)
-#include <Windows.h>
+// Godot patch: lowercase include so case-sensitive filesystems (cross builds) find it.
+#include <windows.h>
 static void* NvFlowLoadLibrary(const char* winName, const char* linuxName)
 {
     return (void*)LoadLibraryA(winName);

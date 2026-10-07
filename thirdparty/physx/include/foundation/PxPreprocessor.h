@@ -445,7 +445,7 @@ PX_CUDA_CALLABLE PX_INLINE void PX_UNUSED(T const&)
 // This assert works on win32/win64, but may need further specialization on other platforms.
 // Some GCC compilers need the compiler flag -malign-double to be set.
 // Apparently the apple-clang-llvm compiler doesn't support malign-double.
-#if PX_APPLE_FAMILY || (PX_CLANG && !PX_ARM)
+#if PX_APPLE_FAMILY || (PX_CLANG && !PX_ARM && !PX_WINDOWS) // Godot patch: clang-on-Windows is LLP64 (long is 32 bit); use the long long branch like MSVC.
 	struct PxPackValidation
 	{
 		char _;
