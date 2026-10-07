@@ -2,9 +2,11 @@
 /*  mpm_fluid_solver.h                                                    */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -63,7 +65,7 @@ public:
 		float rest_density = 1000.0f;
 		float collider_friction = 0.25f;
 		float surface_iso = 0.5f; // isosurface level as a fraction of the native packed kernel density
-		float surface_kernel = 0.06f; // isosurface SPH kernel radius, world metres (from particle_size)
+		float surface_kernel = 0.06f; // isosurface SPH kernel radius, world meters (from particle_size)
 		float surface_boost = 1.0f; // per-particle mass multiplier in the surface scatter -- inflates the mesh
 		// Granular (Drucker-Prager sand / snow) instead of a fluid EOS.
 		bool granular = false;
@@ -71,8 +73,8 @@ public:
 		float granular_friction_deg = 35.0f; // internal friction angle -> angle of repose
 		float granular_cohesion = 0.0f; // 0 = dry sand; small values -> wet sand / packing snow
 		Vector3 gravity = Vector3(0, -9.8f, 0);
-		Vector3 domain = Vector3(3, 3, 3); // MPM sim box / boundary, centred on the solver transform
-		Vector3 spawn_region = Vector3(1, 1, 1); // prefill fills this, centred on the transform (clamped to the domain)
+		Vector3 domain = Vector3(3, 3, 3); // MPM sim box / boundary, centered on the solver transform
+		Vector3 spawn_region = Vector3(1, 1, 1); // prefill fills this, centered on the transform (clamped to the domain)
 
 		// Vulkan diffuse (foam/spray/bubble) layer, per Ihmsen et al. 2012 with
 		// the SPH neighbor sums translated into MPM measures (strain/curl off
@@ -101,10 +103,13 @@ public:
 	};
 
 	// An analytic collider coupled to the fluid.
-	enum ColliderShape { COLLIDER_SPHERE, COLLIDER_BOX, COLLIDER_PLANE, COLLIDER_CAPSULE };
+	enum ColliderShape { COLLIDER_SPHERE,
+		COLLIDER_BOX,
+		COLLIDER_PLANE,
+		COLLIDER_CAPSULE };
 	struct Collider {
 		ColliderShape shape = COLLIDER_SPHERE;
-		Vector3 position; // world centre (or a point on the plane)
+		Vector3 position; // world center (or a point on the plane)
 		Vector3 extents; // sphere: x=radius | box: half-extents | plane: unit normal | capsule: (radius, half-height, -)
 		Quaternion rotation; // box / capsule orientation
 		Vector3 velocity;
@@ -134,14 +139,14 @@ public:
 
 	// (Re)build buffers. `p_prefill` seeds a full jittered block at rest (drop-in-
 	// a-tank); otherwise the buffer starts empty and fills via emit() (a faucet).
-	// `p_xform` places the domain centre in world.
+	// `p_xform` places the domain center in world.
 	void configure(const Settings &p_settings, const Transform3D &p_xform, bool p_prefill = true);
 
-	// Move the domain centre without reseeding.
+	// Move the domain center without reseeding.
 	void set_domain_transform(const Transform3D &p_xform);
 
 	// Live isosurface tweak -- no reseed. `p_iso` is a fraction (0..1) of the
-	// packed kernel density, `p_kernel` the SPH scatter radius in metres.
+	// packed kernel density, `p_kernel` the SPH scatter radius in meters.
 	void set_surface_params(float p_iso, float p_kernel, float p_boost) {
 		settings.surface_iso = p_iso;
 		settings.surface_kernel = p_kernel;
@@ -205,7 +210,18 @@ public:
 	float get_submersion(const AABB &p_world_aabb) const;
 
 private:
-	enum Pass { PASS_CLEAR, PASS_P2G_MASS, PASS_P2G_MOM, PASS_GRID, PASS_COUPLE, PASS_G2P, PASS_FOAM_SPAWN, PASS_FOAM_ADVECT, PASS_SURFACE, PASS_MARCH, PASS_RENDER, PASS_MAX };
+	enum Pass { PASS_CLEAR,
+		PASS_P2G_MASS,
+		PASS_P2G_MOM,
+		PASS_GRID,
+		PASS_COUPLE,
+		PASS_G2P,
+		PASS_FOAM_SPAWN,
+		PASS_FOAM_ADVECT,
+		PASS_SURFACE,
+		PASS_MARCH,
+		PASS_RENDER,
+		PASS_MAX };
 
 	RenderingDevice *rd = nullptr;
 	bool built = false;

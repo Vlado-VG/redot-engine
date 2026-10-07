@@ -1,10 +1,12 @@
 /**************************************************************************/
-/*  physx_cloth_paint_plugin.cpp                                                 */
+/*  physx_cloth_paint_plugin.cpp                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -27,6 +29,7 @@
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
+
 #include "physx_cloth_paint_plugin.h"
 
 #include "../cloth/physx_skinned_cloth_3d.h"

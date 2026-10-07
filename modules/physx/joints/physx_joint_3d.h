@@ -1,3 +1,37 @@
+/**************************************************************************/
+/*  physx_joint_3d.h                                                      */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
 /**
  * @file physx_joint_3d.h
  * @brief Joint wrapper — bridges Godot's PhysicsServer3D joint API to PhysX.
@@ -42,20 +76,20 @@
 #ifndef PHYSX_JOINT_3D_H
 #define PHYSX_JOINT_3D_H
 
-#include "core/variant/variant.h"
 #include "core/math/transform_3d.h"
 #include "core/math/vector3.h"
 #include "core/templates/rid.h"
+#include "core/variant/variant.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
 #include "physx_rid_owner.h"
 
-#include <PxPhysicsAPI.h>
-#include "extensions/PxRevoluteJoint.h"
-#include "extensions/PxPrismaticJoint.h"
-#include "extensions/PxSphericalJoint.h"
 #include "extensions/PxD6Joint.h"
 #include "extensions/PxJointLimit.h"
+#include "extensions/PxPrismaticJoint.h"
+#include "extensions/PxRevoluteJoint.h"
+#include "extensions/PxSphericalJoint.h"
+#include <PxPhysicsAPI.h>
 
 class PhysXBody3D;
 
@@ -63,7 +97,7 @@ namespace physx {
 class PxJoint;
 class PxRigidActor;
 class PxPhysics;
-}
+} //namespace physx
 
 /**
  * @brief Godot-side metadata for a pin joint — stored on wrapper, no PhysX equivalent.
@@ -229,8 +263,8 @@ private:
 	G6DOFDriveState g6dof_lin_drives[6];
 	G6DOFDriveState g6dof_ang_drives[6];
 	// Cached 6DOF drive velocity — accumulated across all axes
-	physx::PxVec3 cached_g6dof_lin_drive_vel{0.0f, 0.0f, 0.0f};
-	physx::PxVec3 cached_g6dof_ang_drive_vel{0.0f, 0.0f, 0.0f};
+	physx::PxVec3 cached_g6dof_lin_drive_vel{ 0.0f, 0.0f, 0.0f };
+	physx::PxVec3 cached_g6dof_ang_drive_vel{ 0.0f, 0.0f, 0.0f };
 
 	// true = Godot's Joint3D default (exclude_nodes_from_collision) and the
 	// PhysX constraint default; _apply_params() pushes it on (re)creation.

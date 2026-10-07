@@ -2,9 +2,11 @@
 /*  physx_flow_simulation_3d.cpp                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -19,13 +21,13 @@
 /* The above copyright notice and this permission notice shall be         */
 /* included in all copies or substantial portions of the Software.        */
 /*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,         */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
 /* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
 /* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                  */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "physx_flow_simulation_3d.h"
@@ -768,7 +770,9 @@ void PhysXFlowSimulation3D::set_enabled(bool p_enabled) {
 	}
 }
 
-void PhysXFlowSimulation3D::set_paused(bool p_paused) { paused = p_paused; }
+void PhysXFlowSimulation3D::set_paused(bool p_paused) {
+	paused = p_paused;
+}
 
 void PhysXFlowSimulation3D::set_max_blocks(int p_blocks) {
 	p_blocks = CLAMP(p_blocks, 64, 262144);
@@ -781,22 +785,54 @@ void PhysXFlowSimulation3D::set_max_blocks(int p_blocks) {
 void PhysXFlowSimulation3D::set_cell_size(float p_size) {
 	cell_size = MAX(p_size, 0.0f);
 }
-void PhysXFlowSimulation3D::set_steps_per_second(float p_sps) { steps_per_second = MAX(p_sps, 1.0f); }
-void PhysXFlowSimulation3D::set_time_scale(float p_scale) { time_scale = MAX(p_scale, 0.0f); }
-void PhysXFlowSimulation3D::set_max_steps_per_simulate(int p_steps) { max_steps_per_simulate = CLAMP(p_steps, 1, 16); }
-void PhysXFlowSimulation3D::set_velocity_substeps(int p_steps) { velocity_substeps = CLAMP(p_steps, 1, 8); }
-void PhysXFlowSimulation3D::set_block_min_lifetime(int p_seconds) { block_min_lifetime = CLAMP(p_seconds, 0, 64); }
-void PhysXFlowSimulation3D::set_simulate_when_paused(bool p_enabled) { simulate_when_paused = p_enabled; }
-void PhysXFlowSimulation3D::set_combustion_enabled(bool p_enabled) { combustion_enabled = p_enabled; }
-void PhysXFlowSimulation3D::set_gravity(const Vector3 &p_gravity) { gravity = p_gravity; }
-void PhysXFlowSimulation3D::set_buoyancy_per_temp(float p_b) { buoyancy_per_temp = MAX(p_b, 0.0f); }
-void PhysXFlowSimulation3D::set_buoyancy_per_smoke(float p_b) { buoyancy_per_smoke = MAX(p_b, 0.0f); }
-void PhysXFlowSimulation3D::set_cooling_rate(float p_rate) { cooling_rate = MAX(p_rate, 0.0f); }
-void PhysXFlowSimulation3D::set_smoke_fade(float p_fade) { smoke_fade = MAX(p_fade, 0.0f); }
-void PhysXFlowSimulation3D::set_temperature_fade(float p_fade) { temperature_fade = MAX(p_fade, 0.0f); }
-void PhysXFlowSimulation3D::set_fuel_fade(float p_fade) { fuel_fade = MAX(p_fade, 0.0f); }
-void PhysXFlowSimulation3D::set_vorticity(float p_strength) { vorticity = MAX(p_strength, 0.0f); }
-void PhysXFlowSimulation3D::set_pressure_projection(bool p_enabled) { pressure_projection = p_enabled; }
+void PhysXFlowSimulation3D::set_steps_per_second(float p_sps) {
+	steps_per_second = MAX(p_sps, 1.0f);
+}
+void PhysXFlowSimulation3D::set_time_scale(float p_scale) {
+	time_scale = MAX(p_scale, 0.0f);
+}
+void PhysXFlowSimulation3D::set_max_steps_per_simulate(int p_steps) {
+	max_steps_per_simulate = CLAMP(p_steps, 1, 16);
+}
+void PhysXFlowSimulation3D::set_velocity_substeps(int p_steps) {
+	velocity_substeps = CLAMP(p_steps, 1, 8);
+}
+void PhysXFlowSimulation3D::set_block_min_lifetime(int p_seconds) {
+	block_min_lifetime = CLAMP(p_seconds, 0, 64);
+}
+void PhysXFlowSimulation3D::set_simulate_when_paused(bool p_enabled) {
+	simulate_when_paused = p_enabled;
+}
+void PhysXFlowSimulation3D::set_combustion_enabled(bool p_enabled) {
+	combustion_enabled = p_enabled;
+}
+void PhysXFlowSimulation3D::set_gravity(const Vector3 &p_gravity) {
+	gravity = p_gravity;
+}
+void PhysXFlowSimulation3D::set_buoyancy_per_temp(float p_b) {
+	buoyancy_per_temp = MAX(p_b, 0.0f);
+}
+void PhysXFlowSimulation3D::set_buoyancy_per_smoke(float p_b) {
+	buoyancy_per_smoke = MAX(p_b, 0.0f);
+}
+void PhysXFlowSimulation3D::set_cooling_rate(float p_rate) {
+	cooling_rate = MAX(p_rate, 0.0f);
+}
+void PhysXFlowSimulation3D::set_smoke_fade(float p_fade) {
+	smoke_fade = MAX(p_fade, 0.0f);
+}
+void PhysXFlowSimulation3D::set_temperature_fade(float p_fade) {
+	temperature_fade = MAX(p_fade, 0.0f);
+}
+void PhysXFlowSimulation3D::set_fuel_fade(float p_fade) {
+	fuel_fade = MAX(p_fade, 0.0f);
+}
+void PhysXFlowSimulation3D::set_vorticity(float p_strength) {
+	vorticity = MAX(p_strength, 0.0f);
+}
+void PhysXFlowSimulation3D::set_pressure_projection(bool p_enabled) {
+	pressure_projection = p_enabled;
+}
 
 void PhysXFlowSimulation3D::set_volumetric_render(bool p_enabled) {
 	volumetric_render = p_enabled;
@@ -836,7 +872,9 @@ void PhysXFlowSimulation3D::set_fire_emission_strength(float p_strength) {
 	}
 }
 
-void PhysXFlowSimulation3D::set_debug_stats(bool p_enabled) { debug_stats = p_enabled; }
+void PhysXFlowSimulation3D::set_debug_stats(bool p_enabled) {
+	debug_stats = p_enabled;
+}
 
 void PhysXFlowSimulation3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_enabled", "enabled"), &PhysXFlowSimulation3D::set_enabled);

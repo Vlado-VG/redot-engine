@@ -1,9 +1,12 @@
 /**************************************************************************/
-/*  physx_vehicle2w.h                                               */
+/*  physx_vehicle2w.h                                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -20,7 +23,7 @@
 /*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
 /* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
 /* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
@@ -64,16 +67,16 @@ using namespace physx;
 // balancing torque every tick, the same role Jolt's lean spring plays, just
 // implemented at the node/script layer instead of inside the SDK).
 class Vehicle2W : public PxVehicleRigidBodyComponent,
-				   public PxVehicleSuspensionComponent,
-				   public PxVehicleTireComponent,
-				   public PxVehicleWheelComponent,
-				   public PxVehiclePhysXActorBeginComponent,
-				   public PxVehiclePhysXActorEndComponent,
-				   public PxVehiclePhysXConstraintComponent,
-				   public PxVehiclePhysXRoadGeometrySceneQueryComponent,
-				   public PxVehicleDirectDriveCommandResponseComponent,
-				   public PxVehicleDirectDriveActuationStateComponent,
-				   public PxVehicleDirectDrivetrainComponent {
+				  public PxVehicleSuspensionComponent,
+				  public PxVehicleTireComponent,
+				  public PxVehicleWheelComponent,
+				  public PxVehiclePhysXActorBeginComponent,
+				  public PxVehiclePhysXActorEndComponent,
+				  public PxVehiclePhysXConstraintComponent,
+				  public PxVehiclePhysXRoadGeometrySceneQueryComponent,
+				  public PxVehicleDirectDriveCommandResponseComponent,
+				  public PxVehicleDirectDriveActuationStateComponent,
+				  public PxVehicleDirectDrivetrainComponent {
 public:
 	static constexpr PxU32 WHEEL_FRONT = 0;
 	static constexpr PxU32 WHEEL_REAR = 1;
@@ -647,8 +650,12 @@ inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhys
 	// lets it graze the ground.
 	PxMaterial *chassis_material = physics.createMaterial(0.0f, 0.0f, 0.1f);
 	if (!wheel_material || !chassis_material) {
-		if (wheel_material) wheel_material->release();
-		if (chassis_material) chassis_material->release();
+		if (wheel_material) {
+			wheel_material->release();
+		}
+		if (chassis_material) {
+			chassis_material->release();
+		}
 		ERR_PRINT("PhysX motorcycle: failed to create material.");
 		return false;
 	}

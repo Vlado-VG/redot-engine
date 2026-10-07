@@ -1,5 +1,36 @@
-#ifndef PHYSX_AREA_3D_H
-#define PHYSX_AREA_3D_H
+/**************************************************************************/
+/*  physx_area_3d.h                                                       */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
 
 #include "core/math/transform_3d.h"
 #include "core/object/object_id.h"
@@ -7,8 +38,8 @@
 #include "core/variant/variant.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
-#include "physx_shaped_object_3d.h"
 #include "../shapes/physx_user_data.h"
+#include "physx_shaped_object_3d.h"
 
 // Forward declarations
 namespace physx {
@@ -100,16 +131,16 @@ public:
 	real_t get_angular_damp() const { return angular_damp; }
 	/// Returns the area's angular damping override mode.
 	PhysicsServer3D::AreaSpaceOverrideMode get_angular_damp_override_mode() const { return angular_damp_override_mode; }
-    /// Returns the area's priority.
-    int get_priority() const { return priority; }
+	/// Returns the area's priority.
+	int get_priority() const { return priority; }
 
-    /// True when this area carries a wind force (wind_force_magnitude != 0).
-    bool has_wind() const { return wind_force_magnitude != 0.0f; }
-    /// Wind force contribution at a world position: wind_direction scaled by
-    /// wind_force_magnitude, attenuated over downwind distance from
-    /// wind_source by wind_attenuation_factor (zero unless the wind params
-    /// are set).
-    Vector3 wind_at(const Vector3 &p_position) const;
+	/// True when this area carries a wind force (wind_force_magnitude != 0).
+	bool has_wind() const { return wind_force_magnitude != 0.0f; }
+	/// Wind force contribution at a world position: wind_direction scaled by
+	/// wind_force_magnitude, attenuated over downwind distance from
+	/// wind_source by wind_attenuation_factor (zero unless the wind params
+	/// are set).
+	Vector3 wind_at(const Vector3 &p_position) const;
 
 	/// Returns true if this area has any area override enabled.
 	bool has_gravity_override() const { return gravity_override_mode != PhysicsServer3D::AREA_SPACE_OVERRIDE_DISABLED; }
@@ -218,11 +249,20 @@ inline bool physx_apply_area_override(TValue &r_value,
 		PhysicsServer3D::AreaSpaceOverrideMode p_mode,
 		TGetter &&p_getter) {
 	switch (p_mode) {
-		case PhysicsServer3D::AREA_SPACE_OVERRIDE_DISABLED:        return false;
-		case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE:         r_value += p_getter(); return false;
-		case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE_REPLACE: r_value += p_getter(); return true;
-		case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE:         r_value  = p_getter(); return true;
-		case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE_COMBINE: r_value  = p_getter(); return false;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_DISABLED:
+			return false;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE:
+			r_value += p_getter();
+			return false;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_COMBINE_REPLACE:
+			r_value += p_getter();
+			return true;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE:
+			r_value = p_getter();
+			return true;
+		case PhysicsServer3D::AREA_SPACE_OVERRIDE_REPLACE_COMBINE:
+			r_value = p_getter();
+			return false;
 	}
 	return false;
 }
@@ -230,4 +270,3 @@ inline bool physx_apply_area_override(TValue &r_value,
 // The area's gravity contribution at a world position (handles point gravity
 // and the area's world transform).
 Vector3 physx_area_gravity_at(const PhysXArea3D &p_area, const Vector3 &p_position);
-#endif // PHYSX_AREA_3D_H

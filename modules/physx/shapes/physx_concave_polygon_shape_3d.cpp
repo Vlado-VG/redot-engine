@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  physx_concave_polygon_shape_3d.cpp                                    */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 #include "physx_concave_polygon_shape_3d.h"
 #include "../physx_server.h"
 #include <cooking/PxCooking.h>
@@ -5,7 +37,7 @@
 #include "core/templates/local_vector.h"
 
 PhysXConcavePolygonShape3D::~PhysXConcavePolygonShape3D() {
-    _release_triangle_mesh();
+	_release_triangle_mesh();
 }
 
 AABB PhysXConcavePolygonShape3D::_calculate_aabb() const {
@@ -48,41 +80,38 @@ Variant PhysXConcavePolygonShape3D::get_data() const {
 	return data;
 }
 
-bool PhysXConcavePolygonShape3D::get_physx_geometry(physx::PxGeometryHolder &holder, const physx::PxVec3 &scale) const{
+bool PhysXConcavePolygonShape3D::get_physx_geometry(physx::PxGeometryHolder &holder, const physx::PxVec3 &scale) const {
+	if (!_ensure_triangle_mesh()) {
+		return false;
+	}
 
-	 if (!_ensure_triangle_mesh()) {
-        return false;
-    }
+	// Backface handling is baked at cook time (reversed-winding triangle
+	// duplicates in _ensure_triangle_mesh), so the geometry stays
+	// single-sided: eDOUBLE_SIDED here would generate a second, conflicting
+	// contact set against the duplicated back-facing copies.
+	physx::PxMeshGeometryFlags flags;
 
-    // Backface handling is baked at cook time (reversed-winding triangle
-    // duplicates in _ensure_triangle_mesh), so the geometry stays
-    // single-sided: eDOUBLE_SIDED here would generate a second, conflicting
-    // contact set against the duplicated back-facing copies.
-    physx::PxMeshGeometryFlags flags;
+	holder.storeAny(
+			physx::PxTriangleMeshGeometry(
+					triangle_mesh,
+					physx::PxMeshScale(scale),
+					flags));
 
-    holder.storeAny(
-        physx::PxTriangleMeshGeometry(
-            triangle_mesh,
-            physx::PxMeshScale(scale),
-            flags
-        )
-    );
-
-    return true;
+	return true;
 }
 
 void PhysXConcavePolygonShape3D::_release_triangle_mesh() {
-    if (!triangle_mesh) {
-        return;
-    }
+	if (!triangle_mesh) {
+		return;
+	}
 
-    triangle_mesh->release();
-    triangle_mesh = nullptr;
+	triangle_mesh->release();
+	triangle_mesh = nullptr;
 }
 
 bool PhysXConcavePolygonShape3D::_ensure_triangle_mesh() const {
-    if (triangle_mesh) {
-    return true;
+	if (triangle_mesh) {
+		return true;
 	}
 	const int vertex_count = faces.size();
 	const int triangle_count = vertex_count / 3;
@@ -95,7 +124,7 @@ bool PhysXConcavePolygonShape3D::_ensure_triangle_mesh() const {
 	ERR_FAIL_COND_V_MSG(vertex_count < 3, false, "Failed to build PhysX concave polygon: vertex count < 3.");
 	ERR_FAIL_COND_V_MSG(excess_vertex_count != 0, false, "Failed to build PhysX concave polygon: vertex count not divisible by 3.");
 
-    	// 1. Prepare PhysX data arrays. When backface collision is enabled,
+	// 1. Prepare PhysX data arrays. When backface collision is enabled,
 	// every triangle is duplicated with reversed winding: PhysX generates
 	// back-face contacts following the triangle winding, so a single-winding
 	// mesh pushes bodies THROUGH its back side even with eDOUBLE_SIDED.
@@ -147,12 +176,12 @@ bool PhysXConcavePolygonShape3D::_ensure_triangle_mesh() const {
 	ERR_FAIL_NULL_V_MSG(&physics, false, "PhysX PxPhysics is not initialized.");
 
 	// 4. Cook the mesh directly — no cooking object, just params + insertion callback
-	triangle_mesh = PxCreateTriangleMesh(cooking_params,mesh_desc, physics.getPhysicsInsertionCallback());
+	triangle_mesh = PxCreateTriangleMesh(cooking_params, mesh_desc, physics.getPhysicsInsertionCallback());
 
 	if (!triangle_mesh) {
-        ERR_PRINT("PhysX failed to create triangle mesh.");
-        return false;
-    }
+		ERR_PRINT("PhysX failed to create triangle mesh.");
+		return false;
+	}
 
 	return true;
 }

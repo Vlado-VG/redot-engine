@@ -2,9 +2,11 @@
 /*  physx_flow_collider_3d.cpp                                            */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -19,13 +21,13 @@
 /* The above copyright notice and this permission notice shall be         */
 /* included in all copies or substantial portions of the Software.        */
 /*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,         */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
 /* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
 /* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                  */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "physx_flow_collider_3d.h"
@@ -35,8 +37,8 @@
 #include "core/object/class_db.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/resources/3d/box_shape_3d.h"
-#include "scene/resources/3d/convex_polygon_shape_3d.h"
 #include "scene/resources/3d/concave_polygon_shape_3d.h"
+#include "scene/resources/3d/convex_polygon_shape_3d.h"
 
 void PhysXFlowCollider3D::_notification(int p_what) {
 	switch (p_what) {
@@ -53,15 +55,40 @@ void PhysXFlowCollider3D::_notification(int p_what) {
 void PhysXFlowCollider3D::build_icosphere_soup(float p_radius, int p_subdivisions, LocalVector<float> &r_positions) {
 	static const float t = 0.6180339887498949f; // (sqrt(5)-1)/2
 	static const Vector3 base_verts[12] = {
-		Vector3(-1, t, 0), Vector3(1, t, 0), Vector3(-1, -t, 0), Vector3(1, -t, 0),
-		Vector3(0, -1, t), Vector3(0, 1, t), Vector3(0, -1, -t), Vector3(0, 1, -t),
-		Vector3(t, 0, -1), Vector3(t, 0, 1), Vector3(-t, 0, -1), Vector3(-t, 0, 1),
+		Vector3(-1, t, 0),
+		Vector3(1, t, 0),
+		Vector3(-1, -t, 0),
+		Vector3(1, -t, 0),
+		Vector3(0, -1, t),
+		Vector3(0, 1, t),
+		Vector3(0, -1, -t),
+		Vector3(0, 1, -t),
+		Vector3(t, 0, -1),
+		Vector3(t, 0, 1),
+		Vector3(-t, 0, -1),
+		Vector3(-t, 0, 1),
 	};
 	static const int base_faces[20][3] = {
-		{ 0, 11, 5 }, { 0, 5, 1 }, { 0, 1, 7 }, { 0, 7, 10 }, { 0, 10, 11 },
-		{ 1, 5, 9 }, { 5, 11, 4 }, { 11, 10, 2 }, { 10, 7, 6 }, { 7, 1, 8 },
-		{ 3, 9, 4 }, { 3, 4, 2 }, { 3, 2, 6 }, { 3, 6, 8 }, { 3, 8, 9 },
-		{ 4, 9, 5 }, { 2, 4, 11 }, { 6, 2, 10 }, { 8, 6, 7 }, { 9, 8, 1 },
+		{ 0, 11, 5 },
+		{ 0, 5, 1 },
+		{ 0, 1, 7 },
+		{ 0, 7, 10 },
+		{ 0, 10, 11 },
+		{ 1, 5, 9 },
+		{ 5, 11, 4 },
+		{ 11, 10, 2 },
+		{ 10, 7, 6 },
+		{ 7, 1, 8 },
+		{ 3, 9, 4 },
+		{ 3, 4, 2 },
+		{ 3, 2, 6 },
+		{ 3, 6, 8 },
+		{ 3, 8, 9 },
+		{ 4, 9, 5 },
+		{ 2, 4, 11 },
+		{ 6, 2, 10 },
+		{ 8, 6, 7 },
+		{ 9, 8, 1 },
 	};
 
 	LocalVector<Vector3> verts;
@@ -159,10 +186,20 @@ bool PhysXFlowCollider3D::_build_shape3d_mesh(CollisionShape3D *p_cs) {
 		// analytic path so SHAPE_SHAPE3D handles it uniformly.
 		const Vector3 h = box->get_size() * 0.5f;
 		static const int axis_pairs[6][2] = {
-			{ 0, 1 }, { 0, 1 }, { 0, 2 }, { 0, 2 }, { 1, 2 }, { 1, 2 },
+			{ 0, 1 },
+			{ 0, 1 },
+			{ 0, 2 },
+			{ 0, 2 },
+			{ 1, 2 },
+			{ 1, 2 },
 		};
 		static const float signs[6][2] = {
-			{ -1, -1 }, { 1, 1 }, { -1, -1 }, { 1, 1 }, { -1, -1 }, { 1, 1 },
+			{ -1, -1 },
+			{ 1, 1 },
+			{ -1, -1 },
+			{ 1, 1 },
+			{ -1, -1 },
+			{ 1, 1 },
 		};
 		mesh_positions.clear();
 		for (int face = 0; face < 6; face++) {

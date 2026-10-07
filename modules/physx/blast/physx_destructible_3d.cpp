@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  physx_destructible_3d.cpp                                             */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 //////////////////////////////////////////////////////////////////////////
 /*  physx_destructible_3d.cpp                                           */
 //////////////////////////////////////////////////////////////////////////
@@ -6,7 +38,6 @@
 /*                        https://redotengine.org                         */
 /* Copyright (c) 2024-present Redot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
-
 
 #include "physx_destructible_3d.h"
 
@@ -556,8 +587,7 @@ bool PhysXDestructible3D::_load_asset_bytes(const PackedByteArray &p_bytes) {
 	{
 		const size_t declared_size = NvBlastAssetGetSize(asset, blast_log);
 		if (declared_size == 0 || declared_size > (size_t)p_bytes.size()) {
-			ERR_FAIL_V_MSG(false, vformat("PhysXDestructible3D: asset block size mismatch (declares %d bytes, have %d) — corrupt or truncated asset.",
-					(uint64_t)declared_size, p_bytes.size()));
+			ERR_FAIL_V_MSG(false, vformat("PhysXDestructible3D: asset block size mismatch (declares %d bytes, have %d) — corrupt or truncated asset.", (uint64_t)declared_size, p_bytes.size()));
 		}
 	}
 	asset_chunk_count = NvBlastAssetGetChunkCount(asset, blast_log);
@@ -1130,7 +1160,7 @@ int PhysXDestructible3D::apply_radial_damage(const Vector3 &p_world_position, fl
 		set_physics_process_internal(true);
 	}
 
-		if (spawned > 0) {
+	if (spawned > 0) {
 		// Engine-level destruction event (see the header): fired only when
 		// real chunks actually broke off. Consumed by the Flow bridge for
 		// dust/smoke, and directly usable by gameplay/audio/particles.

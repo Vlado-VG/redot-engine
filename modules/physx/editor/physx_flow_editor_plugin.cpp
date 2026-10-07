@@ -2,9 +2,11 @@
 /*  physx_flow_editor_plugin.cpp                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -19,13 +21,13 @@
 /* The above copyright notice and this permission notice shall be         */
 /* included in all copies or substantial portions of the Software.        */
 /*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,         */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
 /* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
 /* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                  */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
 #include "physx_flow_editor_plugin.h"
@@ -107,12 +109,17 @@ void PhysXFlowEmitter3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	const Vector3 dir = Vector3(0, 1, 0);
 	const float length = 0.8f;
 	p_gizmo->add_lines({
-			dir * 0.2f, dir * length,
-			dir * length, dir * (length - 0.18f) + Vector3(0.1f, 0, 0),
-			dir * length, dir * (length - 0.18f) + Vector3(-0.1f, 0, 0),
-			dir * length, dir * (length - 0.18f) + Vector3(0, 0, 0.1f),
-			dir * length, dir * (length - 0.18f) + Vector3(0, 0, -0.1f),
-	},
+							   dir * 0.2f,
+							   dir * length,
+							   dir * length,
+							   dir * (length - 0.18f) + Vector3(0.1f, 0, 0),
+							   dir * length,
+							   dir * (length - 0.18f) + Vector3(-0.1f, 0, 0),
+							   dir * length,
+							   dir * (length - 0.18f) + Vector3(0, 0, 0.1f),
+							   dir * length,
+							   dir * (length - 0.18f) + Vector3(0, 0, -0.1f),
+					   },
 			velocity_material);
 }
 
@@ -225,15 +232,21 @@ void PhysXFlowSimulation3DGizmoPlugin::redraw(EditorNode3DGizmo *p_gizmo) {
 	const Transform3D to_local = sim->get_global_transform().affine_inverse();
 	Vector3 corners[8];
 	for (int c = 0; c < 8; c++) {
-		corners[c] = to_local.xform(pos + Vector3(
-				(c & 1) ? size.x : 0.0f,
-				(c & 2) ? size.y : 0.0f,
-				(c & 4) ? size.z : 0.0f));
+		corners[c] = to_local.xform(pos + Vector3((c & 1) ? size.x : 0.0f, (c & 2) ? size.y : 0.0f, (c & 4) ? size.z : 0.0f));
 	}
 	static const int edges[12][2] = {
-		{ 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 },
-		{ 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },
-		{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+		{ 0, 1 },
+		{ 2, 3 },
+		{ 4, 5 },
+		{ 6, 7 },
+		{ 0, 2 },
+		{ 1, 3 },
+		{ 4, 6 },
+		{ 5, 7 },
+		{ 0, 4 },
+		{ 1, 5 },
+		{ 2, 6 },
+		{ 3, 7 },
 	};
 	Vector<Vector3> lines;
 	for (const int *e : edges) {

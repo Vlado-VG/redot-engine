@@ -2,9 +2,11 @@
 /*  gas_solver.h                                                          */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -64,8 +66,8 @@ public:
 		// Extra curl-noise perturbation velocity (m/s) added only to the
 		// backtrace sample, not the real solved field -- fakes fine "billowing
 		// cauliflower" turbulent detail a coarse real-time grid can't resolve
-		// on its own. 0 = off (matches pre-turbulence behaviour exactly).
-		// scale is the base octave's spatial frequency (1/metres); higher =
+		// on its own. 0 = off (matches pre-turbulence behavior exactly).
+		// scale is the base octave's spatial frequency (1/meters); higher =
 		// finer wrinkles. See gas_block_inc.glsl's turbulence_velocity().
 		float turbulence_strength = 0.0f;
 		float turbulence_scale = 2.5f;
@@ -86,7 +88,7 @@ public:
 		float density = 1.0f;
 		// Outward-radial speed from world_position, added on top of velocity --
 		// an explosion/burst emitter (a "nuke plume" base) wants every cell
-		// pushed away from centre, not all pushed the same direction.
+		// pushed away from center, not all pushed the same direction.
 		float divergence = 0.0f;
 		// Tangential speed around world +Y through world_position -- directly
 		// authors rotation (vorticity confinement alone only amplifies
@@ -151,7 +153,7 @@ public:
 		COLLIDER_PLANE = 2 };
 	struct Collider {
 		ColliderShape shape = COLLIDER_SPHERE;
-		Vector3 position; // world; sphere/box: centre | plane: any point on it
+		Vector3 position; // world; sphere/box: center | plane: any point on it
 		Vector3 extents; // sphere: x=radius | box: half-extents | plane: unit outward normal
 	};
 

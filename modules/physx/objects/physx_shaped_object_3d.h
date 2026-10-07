@@ -1,3 +1,37 @@
+/**************************************************************************/
+/*  physx_shaped_object_3d.h                                              */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
 /**
  * @file physx_shaped_object_3d.h
  * @brief Base class for objects that own collision shapes (bodies, areas).
@@ -21,10 +55,10 @@
 #ifndef PHYSX_SHAPED_OBJECT_3D_H
 #define PHYSX_SHAPED_OBJECT_3D_H
 
+#include "core/math/transform_3d.h"
+#include "core/templates/local_vector.h"
 #include "physx_object_3d.h"
 #include "shapes/physx_shape_3d.h"
-#include "core/templates/local_vector.h"
-#include "core/math/transform_3d.h"
 
 #include <PxPhysicsAPI.h>
 
@@ -41,11 +75,11 @@ void physx_apply_space_rest_offset(physx::PxShape *p_px_shape, float p_margin, c
 
 class PhysXShapedObject3D : public PhysXObject3D {
 public:
-    explicit PhysXShapedObject3D(ObjectType p_type);
+	explicit PhysXShapedObject3D(ObjectType p_type);
 	virtual ~PhysXShapedObject3D();
 
 	/** @brief Converts a Godot Transform3D to a PhysX PxTransform. */
-    static physx::PxTransform to_physx_transform(const Transform3D &p_transform);
+	static physx::PxTransform to_physx_transform(const Transform3D &p_transform);
 
 	/**
 	 * @brief Computes the total geometry scale for an attached shape: the
@@ -138,7 +172,7 @@ public:
 
 protected:
 	/** @brief Re-applies collision layer/mask/notify to all attached PxShapes. */
-    void update_shapes_collision_filter();
+	void update_shapes_collision_filter();
 
 	/** @brief Computes the word3 module flags (contact-notify / IS_AREA) for this object's shapes. */
 	uint32_t shape_filter_flags() const;
@@ -163,7 +197,7 @@ protected:
 	 * switch), because releasing the old PxRigidActor releases its attached
 	 * PxShapes, leaving the AttachedShape records with dangling pointers.
 	 */
-    void rebuild_shapes();
+	void rebuild_shapes();
 
 	// --- Shape lifecycle hooks (overridden by derived classes like PhysXBody3D) ---
 	virtual void _on_shape_added();
@@ -185,13 +219,13 @@ protected:
 	/// trigger flag configuration.
 	struct AttachedShape {
 		PhysXShape3D *shareable_shape = nullptr; ///< The shared RID resource.
-		physx::PxShape *px_shape = nullptr;      ///< The per-actor PhysX instance.
+		physx::PxShape *px_shape = nullptr; ///< The per-actor PhysX instance.
 		/// Optional second, non-trigger simulation shape (areas only, REG-0011):
 		/// PhysX 5 does not report trigger-vs-trigger pairs, so a monitorable
 		/// area needs a plain simulation shape for other areas' triggers to
 		/// fire against. nullptr for bodies and for non-monitorable areas.
 		physx::PxShape *detection_shape = nullptr;
-		Transform3D relative_transform;          ///< Local transform relative to body center.
+		Transform3D relative_transform; ///< Local transform relative to body center.
 		bool disabled = false;
 		bool trigger = false;
 	};
@@ -208,7 +242,6 @@ public:
 	Vector3 get_body_scale() const { return body_scale; }
 
 private:
-
 	/// True when contact-point notifications are requested.
 	bool contact_notify = false;
 };

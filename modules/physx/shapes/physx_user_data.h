@@ -1,3 +1,37 @@
+/**************************************************************************/
+/*  physx_user_data.h                                                     */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
 /**
  * @file physx_user_data.h
  * @brief userData bridge structures between PhysX and Godot.
@@ -48,11 +82,11 @@ class PhysXObject3D;
  * safe under the synchronous step model.
  */
 struct PhysXActorUserData {
-	RID rid;                     ///< Godot RID of the owning body/area.
-	ObjectID object_id;          ///< Godot ObjectID of the scene-tree node.
+	RID rid; ///< Godot RID of the owning body/area.
+	ObjectID object_id; ///< Godot ObjectID of the scene-tree node.
 	PhysXObject3D *object = nullptr; ///< Back-pointer to the wrapper (for filter/callback use).
-	float bounce = 0.0f;         ///< Signed bounce (negative = absorbent). Read by contact-modify.
-	float friction = 1.0f;       ///< Signed friction (negative = rough). Read by contact-modify.
+	float bounce = 0.0f; ///< Signed bounce (negative = absorbent). Read by contact-modify.
+	float friction = 1.0f; ///< Signed friction (negative = rough). Read by contact-modify.
 };
 
 // Resolves a (actor, shape) query hit to the body-local shape index, or -1
@@ -63,18 +97,22 @@ struct PhysXActorUserData {
 // Both PhysXBody3D and PhysXArea3D are shaped objects; areas/bodies both
 // support find_shape_index, so we check the type and cast accordingly.
 static inline int physx_resolve_shape_index(const physx::PxRigidActor *p_actor,
-                                             const physx::PxShape *p_shape) {
-    if (!p_actor || !p_actor->userData || !p_shape) return -1;
-    const auto *ad = static_cast<const PhysXActorUserData *>(p_actor->userData);
-    if (!ad->object) return -1;
-    // Bodies and areas are both shaped objects; areas/bodies both support this.
-    if (ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_BODY &&
-        ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_AREA) {
-        return -1;
-    }
-    const PhysXShapedObject3D *shaped = static_cast<const PhysXShapedObject3D *>(ad->object);
-    const int idx = shaped->find_shape_index(p_shape);
-    return idx;
+		const physx::PxShape *p_shape) {
+	if (!p_actor || !p_actor->userData || !p_shape) {
+		return -1;
+	}
+	const auto *ad = static_cast<const PhysXActorUserData *>(p_actor->userData);
+	if (!ad->object) {
+		return -1;
+	}
+	// Bodies and areas are both shaped objects; areas/bodies both support this.
+	if (ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_BODY &&
+			ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_AREA) {
+		return -1;
+	}
+	const PhysXShapedObject3D *shaped = static_cast<const PhysXShapedObject3D *>(ad->object);
+	const int idx = shaped->find_shape_index(p_shape);
+	return idx;
 }
 
 #endif // PHYSX_USER_DATA_H

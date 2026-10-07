@@ -1,9 +1,12 @@
 /**************************************************************************/
-/*  physx_vehicle4w.h                                               */
+/*  physx_vehicle4w.h                                                     */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -20,7 +23,7 @@
 /*                                                                        */
 /* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
 /* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
 /* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
@@ -54,20 +57,20 @@ using namespace physx;
 // composition with no project-specific decisions in them, so duplicating them
 // would just be ~500 lines of copy-pasted boilerplate for no benefit.
 class Vehicle4W : public PxVehicleRigidBodyComponent,
-				   public PxVehicleSuspensionComponent,
-				   public PxVehicleTireComponent,
-				   public PxVehicleWheelComponent,
-				   public PxVehiclePhysXActorBeginComponent,
-				   public PxVehiclePhysXActorEndComponent,
-				   public PxVehiclePhysXConstraintComponent,
-				   public PxVehiclePhysXRoadGeometrySceneQueryComponent,
-				   public PxVehicleDirectDriveCommandResponseComponent,
-				   public PxVehicleDirectDriveActuationStateComponent,
-				   public PxVehicleDirectDrivetrainComponent,
-				   public PxVehicleEngineDriveCommandResponseComponent,
-				   public PxVehicleFourWheelDriveDifferentialStateComponent,
-				   public PxVehicleEngineDriveActuationStateComponent,
-				   public PxVehicleEngineDrivetrainComponent {
+				  public PxVehicleSuspensionComponent,
+				  public PxVehicleTireComponent,
+				  public PxVehicleWheelComponent,
+				  public PxVehiclePhysXActorBeginComponent,
+				  public PxVehiclePhysXActorEndComponent,
+				  public PxVehiclePhysXConstraintComponent,
+				  public PxVehiclePhysXRoadGeometrySceneQueryComponent,
+				  public PxVehicleDirectDriveCommandResponseComponent,
+				  public PxVehicleDirectDriveActuationStateComponent,
+				  public PxVehicleDirectDrivetrainComponent,
+				  public PxVehicleEngineDriveCommandResponseComponent,
+				  public PxVehicleFourWheelDriveDifferentialStateComponent,
+				  public PxVehicleEngineDriveActuationStateComponent,
+				  public PxVehicleEngineDrivetrainComponent {
 public:
 	static constexpr PxU32 WHEEL_FL = 0;
 	static constexpr PxU32 WHEEL_FR = 1;
@@ -677,7 +680,7 @@ struct Vehicle4WWheelConfig {
 	// static weight at rest (measured directly via PxVehicleSuspensionState
 	// .jounce: 0.102/0.15) -- almost no margin before bottoming out under any
 	// real driving load (braking, cornering weight transfer, a bump), same
-	// failure mode VehicleWheel3D's own default (5.88) had. Retuned so static
+	// failure mode VehicleWheel3D's own default (5.88) had. Returned so static
 	// jounce sits around 30% of travel instead, leaving real margin.
 	real_t suspension_stiffness = 90000.0f;
 	real_t suspension_damping = 4500.0f;
@@ -1064,8 +1067,12 @@ inline bool configure_vehicle4w(Vehicle4W &v, const Vehicle4WConfig &cfg, PxPhys
 	PxMaterial *chassis_material = physics.createMaterial(0.0f, 0.0f, 0.1f);
 	if (!wheel_material || !chassis_material) {
 		// Release whichever side DID create -- a plain return leaked it.
-		if (wheel_material) wheel_material->release();
-		if (chassis_material) chassis_material->release();
+		if (wheel_material) {
+			wheel_material->release();
+		}
+		if (chassis_material) {
+			chassis_material->release();
+		}
 		ERR_PRINT("PhysX vehicle: failed to create material.");
 		return false;
 	}

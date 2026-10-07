@@ -2,9 +2,11 @@
 /*  physx_gas_3d.cpp                                                      */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -44,10 +46,11 @@ static constexpr int GAS_DENSITY_READBACK_EVERY = 2;
 #include "scene/3d/physics/collision_object_3d.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/main/viewport.h"
-#include "scene/resources/3d/fog_material.h"
 #include "scene/resources/3d/box_shape_3d.h"
+#include "scene/resources/3d/fog_material.h"
 #include "scene/resources/3d/primitive_meshes.h"
 #include "scene/resources/3d/sphere_shape_3d.h"
+#include "scene/resources/3d/world_3d.h"
 #include "scene/resources/3d/world_boundary_shape_3d.h"
 #include "scene/resources/environment.h"
 #include "scene/resources/gradient.h"
@@ -55,7 +58,6 @@ static constexpr int GAS_DENSITY_READBACK_EVERY = 2;
 #include "scene/resources/image_texture.h"
 #include "scene/resources/material.h"
 #include "scene/resources/shader.h"
-#include "scene/resources/3d/world_3d.h"
 #include "servers/rendering/rendering_server.h"
 
 namespace {
@@ -585,10 +587,18 @@ void PhysXGas3D::_update_point_cloud_render() {
 	float *w = buffer.ptrw();
 	for (int i = 0; i < n; i++) {
 		float *t = w + i * 16;
-		t[0] = 1; t[1] = 0; t[2] = 0;
-		t[3] = 0; t[4] = 1; t[5] = 0;
-		t[6] = 0; t[7] = 0; t[8] = 1;
-		t[9] = positions[i].x; t[10] = positions[i].y; t[11] = positions[i].z;
+		t[0] = 1;
+		t[1] = 0;
+		t[2] = 0;
+		t[3] = 0;
+		t[4] = 1;
+		t[5] = 0;
+		t[6] = 0;
+		t[7] = 0;
+		t[8] = 1;
+		t[9] = positions[i].x;
+		t[10] = positions[i].y;
+		t[11] = positions[i].z;
 		const float a = CLAMP(density[i], 0.0f, 1.0f);
 		// Dim-blue -> white heat-ish ramp so the density gradient actually
 		// reads (kept from the per-instance version).

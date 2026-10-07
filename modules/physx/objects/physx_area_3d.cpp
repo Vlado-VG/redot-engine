@@ -1,7 +1,39 @@
+/**************************************************************************/
+/*  physx_area_3d.cpp                                                     */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 #include "physx_area_3d.h"
 #include "../physx_server.h"
-#include "../spaces/physx_space_3d.h"
 #include "../shapes/physx_shape_3d.h"
+#include "../spaces/physx_space_3d.h"
 #include "physx_body_3d.h"
 
 #include "PxPhysicsAPI.h"
@@ -13,8 +45,8 @@
 // Lifecycle
 // ============================================================================
 
-PhysXArea3D::PhysXArea3D()
-		: PhysXShapedObject3D(OBJECT_TYPE_AREA) {
+PhysXArea3D::PhysXArea3D() :
+		PhysXShapedObject3D(OBJECT_TYPE_AREA) {
 	// Areas are KINEMATIC rigid bodies, not static ones (REG-0011):
 	// - PhysX never runs the simulation filter shader for pairs of two static
 	//   rigid actors, so static-vs-static area pairs could never generate the
@@ -70,71 +102,71 @@ PhysXArea3D::~PhysXArea3D() {
 // ============================================================================
 
 void PhysXArea3D::set_space(PhysXSpace3D *p_space) {
-    if (space == p_space) {
-        return;
-    }
+	if (space == p_space) {
+		return;
+	}
 
-    if (space) {
-        // Queue exit events for all overlapping bodies/areas before leaving the
-        // space — trigger events may not fire (e.g., when a body is freed while
-        // overlapping this area). We must emit these events so Godot does not
-        // leak state and so the overlap lists do not retain dangling pointers.
-        for (unsigned int i = 0; i < overlapping_bodies.size(); i++) {
-            PhysXBody3D *body = overlapping_bodies[i];
-            // Remove the body from this area's overlap list.
-            body->remove_overlapping_area(this);
-            // Queue the body_monitor dispatch for flush_queries().
-            if (space) {
-            PhysXSpace3D::TriggerEvent ev;
-            ev.area = this;
-            ev.body = body;
-            ev.body_rid = body->get_rid();
-            ev.body_id = body->get_instance_id();
-            ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
-            ev.other_shape = 0;
-            ev.area_shape = 0;
-            ev.is_area_vs_area = false;
-            space->queue_trigger(ev);
-            }
-        }
-        overlapping_bodies.clear();
+	if (space) {
+		// Queue exit events for all overlapping bodies/areas before leaving the
+		// space — trigger events may not fire (e.g., when a body is freed while
+		// overlapping this area). We must emit these events so Godot does not
+		// leak state and so the overlap lists do not retain dangling pointers.
+		for (unsigned int i = 0; i < overlapping_bodies.size(); i++) {
+			PhysXBody3D *body = overlapping_bodies[i];
+			// Remove the body from this area's overlap list.
+			body->remove_overlapping_area(this);
+			// Queue the body_monitor dispatch for flush_queries().
+			if (space) {
+				PhysXSpace3D::TriggerEvent ev;
+				ev.area = this;
+				ev.body = body;
+				ev.body_rid = body->get_rid();
+				ev.body_id = body->get_instance_id();
+				ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
+				ev.other_shape = 0;
+				ev.area_shape = 0;
+				ev.is_area_vs_area = false;
+				space->queue_trigger(ev);
+			}
+		}
+		overlapping_bodies.clear();
 
-        for (unsigned int i = 0; i < overlapping_areas.size(); i++) {
-            PhysXArea3D *other_area = overlapping_areas[i];
-            // Remove this area from the other area's overlap list.
-            other_area->remove_overlapping_area(this);
-            // Queue the area_monitor dispatch for flush_queries().
-            if (space) {
-            PhysXSpace3D::TriggerEvent ev;
-            ev.area = this;
-            ev.other_area = other_area;
-            ev.other_area_rid = other_area->get_rid();
-            ev.other_area_id = other_area->get_instance_id();
-            ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
-            ev.other_shape = 0;
-            ev.area_shape = 0;
-            ev.is_area_vs_area = true;
-            space->queue_trigger(ev);
-            }
-        }
-        overlapping_areas.clear();
+		for (unsigned int i = 0; i < overlapping_areas.size(); i++) {
+			PhysXArea3D *other_area = overlapping_areas[i];
+			// Remove this area from the other area's overlap list.
+			other_area->remove_overlapping_area(this);
+			// Queue the area_monitor dispatch for flush_queries().
+			if (space) {
+				PhysXSpace3D::TriggerEvent ev;
+				ev.area = this;
+				ev.other_area = other_area;
+				ev.other_area_rid = other_area->get_rid();
+				ev.other_area_id = other_area->get_instance_id();
+				ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
+				ev.other_shape = 0;
+				ev.area_shape = 0;
+				ev.is_area_vs_area = true;
+				space->queue_trigger(ev);
+			}
+		}
+		overlapping_areas.clear();
 
-        space->unregister_area(this);
+		space->unregister_area(this);
 
-        if (px_actor) {
-            space->remove_actor(px_actor);
-        }
-    }
+		if (px_actor) {
+			space->remove_actor(px_actor);
+		}
+	}
 
-    space = p_space;
+	space = p_space;
 
-    if (space) {
-        space->register_area(this);
+	if (space) {
+		space->register_area(this);
 
-        if (px_actor) {
-            space->add_actor(px_actor);
-        }
-    }
+		if (px_actor) {
+			space->add_actor(px_actor);
+		}
+	}
 }
 
 // ============================================================================
@@ -267,19 +299,19 @@ Transform3D PhysXArea3D::get_transform() const {
 // ============================================================================
 
 void PhysXArea3D::_configure_shape_as_trigger(physx::PxShape *p_shape) const {
-    // Areas never simulate; their shapes are either triggers (when the area
-    // detects, can be detected, or exerts space overrides) or purely
-    // scene-query shapes. Godot decouples monitoring (this area detects
-    // bodies/areas) from monitorable (other areas may detect this area) — a
-    // shape must be a trigger for EITHER. Override modes also require trigger
-    // pairs: a plain gravity area (no monitoring) must still track the bodies
-    // inside it so on_pre_step can resolve the override.
-    // Keeping eSCENE_QUERY_SHAPE lets raycasts/overlaps still hit the area.
-    const bool detects = monitor_callback.is_valid() || area_monitor_callback.is_valid();
-    const bool overrides = has_gravity_override() || has_linear_damp_override() || has_angular_damp_override();
-    p_shape->setFlag(physx::PxShapeFlag::eSIMULATION_SHAPE, false);
-    p_shape->setFlag(physx::PxShapeFlag::eTRIGGER_SHAPE, detects || monitorable || overrides);
-    p_shape->setFlag(physx::PxShapeFlag::eSCENE_QUERY_SHAPE, true);
+	// Areas never simulate; their shapes are either triggers (when the area
+	// detects, can be detected, or exerts space overrides) or purely
+	// scene-query shapes. Godot decouples monitoring (this area detects
+	// bodies/areas) from monitorable (other areas may detect this area) — a
+	// shape must be a trigger for EITHER. Override modes also require trigger
+	// pairs: a plain gravity area (no monitoring) must still track the bodies
+	// inside it so on_pre_step can resolve the override.
+	// Keeping eSCENE_QUERY_SHAPE lets raycasts/overlaps still hit the area.
+	const bool detects = monitor_callback.is_valid() || area_monitor_callback.is_valid();
+	const bool overrides = has_gravity_override() || has_linear_damp_override() || has_angular_damp_override();
+	p_shape->setFlag(physx::PxShapeFlag::eSIMULATION_SHAPE, false);
+	p_shape->setFlag(physx::PxShapeFlag::eTRIGGER_SHAPE, detects || monitorable || overrides);
+	p_shape->setFlag(physx::PxShapeFlag::eSCENE_QUERY_SHAPE, true);
 }
 
 void PhysXArea3D::add_shape(PhysXShape3D *p_shape, const Transform3D &p_transform, bool p_disabled) {
@@ -747,7 +779,7 @@ Vector3 physx_area_gravity_at(const PhysXArea3D &p_area, const Vector3 &p_positi
 		const Vector3 to_point = point_ws - p_position;
 		const real_t d_sq = to_point.length_squared();
 		if (d_sq <= 0.0f) {
-			return Vector3();   // body exactly at the singularity
+			return Vector3(); // body exactly at the singularity
 		}
 		const real_t unit = p_area.get_gravity_point_unit_distance();
 		if (unit > 0.0f) {

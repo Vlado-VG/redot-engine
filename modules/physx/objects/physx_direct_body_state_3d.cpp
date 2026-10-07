@@ -1,8 +1,40 @@
+/**************************************************************************/
+/*  physx_direct_body_state_3d.cpp                                        */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 #include "physx_direct_body_state_3d.h"
-#include "physx_body_3d.h"
 #include "../physx_server.h"
-#include "../spaces/physx_space_3d.h"
 #include "../spaces/physx_direct_space_state_3d.h"
+#include "../spaces/physx_space_3d.h"
+#include "physx_body_3d.h"
 
 #include "PxPhysicsAPI.h"
 #include "extensions/PxRigidBodyExt.h"
@@ -20,13 +52,13 @@ static inline physx::PxRigidDynamic *_dyn(const PhysXBody3D *p_body) {
 // ---------------------------------------------------------------------------
 
 Vector3 PhysXDirectBodyState3D::get_total_gravity() const {
-    return body ? body->get_cached_total_gravity() : Vector3();
+	return body ? body->get_cached_total_gravity() : Vector3();
 }
 real_t PhysXDirectBodyState3D::get_total_linear_damp() const {
-    return body ? body->get_cached_total_linear_damp() : 0.0;
+	return body ? body->get_cached_total_linear_damp() : 0.0;
 }
 real_t PhysXDirectBodyState3D::get_total_angular_damp() const {
-    return body ? body->get_cached_total_angular_damp() : 0.0;
+	return body ? body->get_cached_total_angular_damp() : 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,13 +85,13 @@ Vector3 PhysXDirectBodyState3D::get_center_of_mass_local() const {
 }
 
 Basis PhysXDirectBodyState3D::get_principal_inertia_axes() const {
-    if (const physx::PxRigidDynamic *dyn = _dyn(body)) {
-        // The orientation of the center-of-mass frame is the principal inertia
-        // axes rotation, relative to the actor's local frame.
-        const physx::PxQuat q = dyn->getCMassLocalPose().q;
-        return Basis(Quaternion(q.x, q.y, q.z, q.w));
-    }
-    return Basis();
+	if (const physx::PxRigidDynamic *dyn = _dyn(body)) {
+		// The orientation of the center-of-mass frame is the principal inertia
+		// axes rotation, relative to the actor's local frame.
+		const physx::PxQuat q = dyn->getCMassLocalPose().q;
+		return Basis(Quaternion(q.x, q.y, q.z, q.w));
+	}
+	return Basis();
 }
 
 real_t PhysXDirectBodyState3D::get_inverse_mass() const {
@@ -107,14 +139,14 @@ void PhysXDirectBodyState3D::set_linear_velocity(const Vector3 &p_velocity) {
 }
 
 Vector3 PhysXDirectBodyState3D::get_linear_velocity() const {
-	 if (!body) {
-        return Vector3();
-    }
+	if (!body) {
+		return Vector3();
+	}
 	// Kinematic bodies have no simulated velocity; the body derives it from
-    // the per-step pose delta (see PhysXBody3D::_update_kinematic_velocity).
-    if (body->get_mode() == PhysicsServer3D::BODY_MODE_KINEMATIC) {
-        return body->get_kinematic_linear_velocity();
-    }
+	// the per-step pose delta (see PhysXBody3D::_update_kinematic_velocity).
+	if (body->get_mode() == PhysicsServer3D::BODY_MODE_KINEMATIC) {
+		return body->get_kinematic_linear_velocity();
+	}
 
 	if (const physx::PxRigidDynamic *dyn = _dyn(body)) {
 		physx::PxVec3 v = dyn->getLinearVelocity();
@@ -130,14 +162,14 @@ void PhysXDirectBodyState3D::set_angular_velocity(const Vector3 &p_velocity) {
 }
 
 Vector3 PhysXDirectBodyState3D::get_angular_velocity() const {
-	 if (!body) {
-        return Vector3();
-    }
+	if (!body) {
+		return Vector3();
+	}
 	// Kinematic bodies have no simulated velocity; the body derives it from
-    // the per-step pose delta (see PhysXBody3D::_update_kinematic_velocity).
-    if (body->get_mode() == PhysicsServer3D::BODY_MODE_KINEMATIC) {
-        return body->get_kinematic_angular_velocity();
-    }
+	// the per-step pose delta (see PhysXBody3D::_update_kinematic_velocity).
+	if (body->get_mode() == PhysicsServer3D::BODY_MODE_KINEMATIC) {
+		return body->get_kinematic_angular_velocity();
+	}
 	if (const physx::PxRigidDynamic *dyn = _dyn(body)) {
 		physx::PxVec3 v = dyn->getAngularVelocity();
 		return Vector3(v.x, v.y, v.z);
@@ -178,19 +210,67 @@ Vector3 PhysXDirectBodyState3D::get_velocity_at_local_position(const Vector3 &p_
 // Forces / impulses
 // ---------------------------------------------------------------------------
 
-void PhysXDirectBodyState3D::apply_central_impulse(const Vector3 &p_impulse) { if (body) body->apply_central_impulse(p_impulse); }
-void PhysXDirectBodyState3D::apply_impulse(const Vector3 &p_impulse, const Vector3 &p_position) { if (body) body->apply_impulse(p_impulse, p_position); }
-void PhysXDirectBodyState3D::apply_torque_impulse(const Vector3 &p_impulse) { if (body) body->apply_torque_impulse(p_impulse); }
-void PhysXDirectBodyState3D::apply_central_force(const Vector3 &p_force) { if (body) body->apply_central_force(p_force); }
-void PhysXDirectBodyState3D::apply_force(const Vector3 &p_force, const Vector3 &p_position) { if (body) body->apply_force(p_force, p_position); }
-void PhysXDirectBodyState3D::apply_torque(const Vector3 &p_torque) { if (body) body->apply_torque(p_torque); }
-void PhysXDirectBodyState3D::add_constant_central_force(const Vector3 &p_force) { if (body) body->add_constant_central_force(p_force); }
-void PhysXDirectBodyState3D::add_constant_force(const Vector3 &p_force, const Vector3 &p_position) { if (body) body->add_constant_force(p_force, p_position); }
-void PhysXDirectBodyState3D::add_constant_torque(const Vector3 &p_torque) { if (body) body->add_constant_torque(p_torque); }
-void PhysXDirectBodyState3D::set_constant_force(const Vector3 &p_force) { if (body) body->set_constant_force(p_force); }
-Vector3 PhysXDirectBodyState3D::get_constant_force() const { return body ? body->get_constant_force() : Vector3(); }
-void PhysXDirectBodyState3D::set_constant_torque(const Vector3 &p_torque) { if (body) body->set_constant_torque(p_torque); }
-Vector3 PhysXDirectBodyState3D::get_constant_torque() const { return body ? body->get_constant_torque() : Vector3(); }
+void PhysXDirectBodyState3D::apply_central_impulse(const Vector3 &p_impulse) {
+	if (body) {
+		body->apply_central_impulse(p_impulse);
+	}
+}
+void PhysXDirectBodyState3D::apply_impulse(const Vector3 &p_impulse, const Vector3 &p_position) {
+	if (body) {
+		body->apply_impulse(p_impulse, p_position);
+	}
+}
+void PhysXDirectBodyState3D::apply_torque_impulse(const Vector3 &p_impulse) {
+	if (body) {
+		body->apply_torque_impulse(p_impulse);
+	}
+}
+void PhysXDirectBodyState3D::apply_central_force(const Vector3 &p_force) {
+	if (body) {
+		body->apply_central_force(p_force);
+	}
+}
+void PhysXDirectBodyState3D::apply_force(const Vector3 &p_force, const Vector3 &p_position) {
+	if (body) {
+		body->apply_force(p_force, p_position);
+	}
+}
+void PhysXDirectBodyState3D::apply_torque(const Vector3 &p_torque) {
+	if (body) {
+		body->apply_torque(p_torque);
+	}
+}
+void PhysXDirectBodyState3D::add_constant_central_force(const Vector3 &p_force) {
+	if (body) {
+		body->add_constant_central_force(p_force);
+	}
+}
+void PhysXDirectBodyState3D::add_constant_force(const Vector3 &p_force, const Vector3 &p_position) {
+	if (body) {
+		body->add_constant_force(p_force, p_position);
+	}
+}
+void PhysXDirectBodyState3D::add_constant_torque(const Vector3 &p_torque) {
+	if (body) {
+		body->add_constant_torque(p_torque);
+	}
+}
+void PhysXDirectBodyState3D::set_constant_force(const Vector3 &p_force) {
+	if (body) {
+		body->set_constant_force(p_force);
+	}
+}
+Vector3 PhysXDirectBodyState3D::get_constant_force() const {
+	return body ? body->get_constant_force() : Vector3();
+}
+void PhysXDirectBodyState3D::set_constant_torque(const Vector3 &p_torque) {
+	if (body) {
+		body->set_constant_torque(p_torque);
+	}
+}
+Vector3 PhysXDirectBodyState3D::get_constant_torque() const {
+	return body ? body->get_constant_torque() : Vector3();
+}
 
 // ---------------------------------------------------------------------------
 // Sleep
@@ -213,10 +293,22 @@ bool PhysXDirectBodyState3D::is_sleeping() const {
 // Collision
 // ---------------------------------------------------------------------------
 
-void PhysXDirectBodyState3D::set_collision_layer(uint32_t p_layer) { if (body) body->set_collision_layer(p_layer); }
-uint32_t PhysXDirectBodyState3D::get_collision_layer() const { return body ? body->get_collision_layer() : 0; }
-void PhysXDirectBodyState3D::set_collision_mask(uint32_t p_mask) { if (body) body->set_collision_mask(p_mask); }
-uint32_t PhysXDirectBodyState3D::get_collision_mask() const { return body ? body->get_collision_mask() : 0; }
+void PhysXDirectBodyState3D::set_collision_layer(uint32_t p_layer) {
+	if (body) {
+		body->set_collision_layer(p_layer);
+	}
+}
+uint32_t PhysXDirectBodyState3D::get_collision_layer() const {
+	return body ? body->get_collision_layer() : 0;
+}
+void PhysXDirectBodyState3D::set_collision_mask(uint32_t p_mask) {
+	if (body) {
+		body->set_collision_mask(p_mask);
+	}
+}
+uint32_t PhysXDirectBodyState3D::get_collision_mask() const {
+	return body ? body->get_collision_mask() : 0;
+}
 
 // ---------------------------------------------------------------------------
 // Contacts (read from the body's per-step buffer)

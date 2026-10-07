@@ -35,7 +35,7 @@ layout(set = 0, binding = 3, std430) restrict buffer HeightOut { float height_ou
 layout(set = 0, binding = 4, std430) restrict buffer Spheres { vec4 spheres[]; };
 layout(set = 0, binding = 5, std430) restrict buffer Impulses { vec4 impulses[]; };
 
-// Still-water depth per ripple cell (R16F, metres); <= 0 is dry land. From
+// Still-water depth per ripple cell (R16F, meters); <= 0 is dry land. From
 // the seabed (PhysXWaterSurface3D::seabed_from_floor) and/or the
 // surface_mesh footprint, or the constant depth everywhere. Uploaded once
 // per configure(). Read with texelFetch only.

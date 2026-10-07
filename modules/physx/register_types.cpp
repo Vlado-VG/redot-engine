@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  register_types.cpp                                                    */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file register_types.cpp
  * @brief Module entry point — registers PhysX as a selectable 3D physics backend.
@@ -10,38 +42,38 @@
 
 #include "register_types.h"
 
-#include "core/object/class_db.h"
 #include "core/config/project_settings.h"
+#include "core/object/class_db.h"
 
-#include "physx_server.h"
-#include "physx_project_settings.h"
-#include "servers/physics_3d/physics_server_3d_wrap_mt.h"
-#include "objects/physx_direct_body_state_3d.h"
+#include "cloth/physx_skinned_cloth_3d.h"
 #include "nodes/physx_chunk_emitter_3d.h"
 #include "nodes/physx_cloth_3d.h"
-#include "cloth/physx_skinned_cloth_3d.h"
-#include "water/physx_water_surface_3d.h"
-#include "water/physx_buoyancy_3d.h"
-#include "water/physx_boat_3d.h"
-#include "water/physx_water_wake_3d.h"
-#include "water/physx_water_spray_3d.h"
-#include "water/water_ripple_probe.h"
-#include "nodes/physx_granular_3d.h"
-#include "nodes/physx_particle_fluid_3d.h"
 #include "nodes/physx_gas_3d.h"
 #include "nodes/physx_gas_emitter_3d.h"
+#include "nodes/physx_granular_3d.h"
+#include "nodes/physx_particle_fluid_3d.h"
+#include "objects/physx_direct_body_state_3d.h"
+#include "physx_project_settings.h"
+#include "physx_server.h"
+#include "servers/physics_3d/physics_server_3d_wrap_mt.h"
+#include "water/physx_boat_3d.h"
+#include "water/physx_buoyancy_3d.h"
+#include "water/physx_water_spray_3d.h"
+#include "water/physx_water_surface_3d.h"
+#include "water/physx_water_wake_3d.h"
+#include "water/water_ripple_probe.h"
 
 // Node-level vehicle stack (PxVehicle2 compositions behind plain Node3D
 // authoring): PhysXVehicle3D + PhysXVehicleWheel3D, PhysXMotorcycle3D,
 // PhysXTank3D, and the headless *Probe bridges used by the GDScript tests.
 // Coexists with the server-RID vehicle API (physx_vehicle_server.h).
-#include "vehicles/physx_vehicle_3d.h"
-#include "vehicles/physx_vehicle_wheel_3d.h"
 #include "vehicles/physx_motorcycle_3d.h"
-#include "vehicles/physx_tank_3d.h"
-#include "vehicles/physx_vehicle_probe.h"
 #include "vehicles/physx_motorcycle_probe.h"
+#include "vehicles/physx_tank_3d.h"
 #include "vehicles/physx_tank_probe.h"
+#include "vehicles/physx_vehicle_3d.h"
+#include "vehicles/physx_vehicle_probe.h"
+#include "vehicles/physx_vehicle_wheel_3d.h"
 
 #ifdef GODOT_PHYSX_BLAST
 #include "blast/physx_blast_asset.h"
@@ -51,17 +83,17 @@
 
 #ifdef GODOT_PHYSX_FLOW
 #include "flow/flow_runtime.h"
-#include "flow/physx_flow_simulation_3d.h"
-#include "flow/physx_flow_emitter_3d.h"
 #include "flow/physx_flow_collider_3d.h"
+#include "flow/physx_flow_emitter_3d.h"
+#include "flow/physx_flow_simulation_3d.h"
 #if defined(GODOT_PHYSX_BLAST)
 #include "flow/physx_flow_blast_bridge_3d.h"
 #endif
 #endif
 
 #ifdef TOOLS_ENABLED
-#include "editor/physx_editor_plugin.h"
 #include "editor/physx_cloth_paint_plugin.h"
+#include "editor/physx_editor_plugin.h"
 #ifdef GODOT_PHYSX_FLOW
 #include "editor/physx_flow_editor_plugin.h"
 #endif
@@ -74,7 +106,6 @@
  * registration; do not memdelete it here.
  */
 static PhysicsServer3D *create_physx_server() {
-
 #ifdef THREADS_ENABLED
 	bool run_on_separate_thread = GLOBAL_GET("physics/3d/run_on_separate_thread");
 #else

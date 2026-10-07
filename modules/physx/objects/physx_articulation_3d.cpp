@@ -1,19 +1,51 @@
+/**************************************************************************/
+/*  physx_articulation_3d.cpp                                             */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_articulation_3d.cpp
  * @brief SKELETON implementation of the reduced-coordinate articulation wrapper.
  */
 
 #include "physx_articulation_3d.h"
-#include "physx_server.h"
 #include "../physx_conversions.h"
 #include "../spaces/physx_space_3d.h"
+#include "physx_server.h"
 
 #include "core/error/error_macros.h"
 #include "core/math/math_funcs.h"
 
+#include "../shapes/physx_shape_3d.h"
 #include "PxPhysicsAPI.h"
 #include "extensions/PxRigidBodyExt.h"
-#include "../shapes/physx_shape_3d.h"
 
 using namespace physx;
 
@@ -23,11 +55,16 @@ using namespace physx;
 //   drive_type: 0 FORCE, 1 ACCELERATION
 static PxArticulationJointType::Enum _map_joint_type(int p_type) {
 	switch (p_type) {
-		case 1: return PxArticulationJointType::ePRISMATIC;
-		case 2: return PxArticulationJointType::eREVOLUTE;
-		case 3: return PxArticulationJointType::eREVOLUTE_UNWRAPPED;
-		case 4: return PxArticulationJointType::eSPHERICAL;
-		default: return PxArticulationJointType::eFIX;
+		case 1:
+			return PxArticulationJointType::ePRISMATIC;
+		case 2:
+			return PxArticulationJointType::eREVOLUTE;
+		case 3:
+			return PxArticulationJointType::eREVOLUTE_UNWRAPPED;
+		case 4:
+			return PxArticulationJointType::eSPHERICAL;
+		default:
+			return PxArticulationJointType::eFIX;
 	}
 }
 

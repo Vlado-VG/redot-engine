@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  physx_body_3d.cpp                                                     */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_body_3d.cpp
  * @brief Implementation of PhysXBody3D — the PhysX rigid body wrapper.
@@ -9,16 +41,15 @@
  */
 
 #include "physx_body_3d.h"
-#include "physx_direct_body_state_3d.h"
-#include "../physx_conversions.h"
 #include "../joints/physx_joint_3d.h"
-#include "../vehicles/physx_vehicle_server.h"
-#include "../physx_server.h"
+#include "../physx_conversions.h"
 #include "../physx_project_settings.h"
+#include "../physx_server.h"
 #include "../spaces/physx_space_3d.h"
-#include "physx_area_3d.h"
+#include "../vehicles/physx_vehicle_server.h"
 #include "PxPhysicsAPI.h"
-
+#include "physx_area_3d.h"
+#include "physx_direct_body_state_3d.h"
 
 // ---------------------------------------------------------------------------
 // Overlap tracking (maintained by PhysXSimulationEventCallback)
@@ -46,7 +77,8 @@ void PhysXBody3D::remove_overlapping_area(PhysXArea3D *p_area) {
 	}
 }
 
-PhysXBody3D::PhysXBody3D() : PhysXShapedObject3D(OBJECT_TYPE_BODY) {
+PhysXBody3D::PhysXBody3D() :
+		PhysXShapedObject3D(OBJECT_TYPE_BODY) {
 	_create_actor();
 }
 
@@ -277,7 +309,7 @@ void PhysXBody3D::set_mode(PhysicsServer3D::BodyMode p_mode) {
 			space->ensure_synced();
 		}
 		physx::PxTransform cached_pose(physx::PxIdentity);
-		// Velocity is only meaningful on the old dynamic actor; statics have
+		// Velocity is only meaningful on the old dynamic actor; statistics have
 		// none. Cache it now (before _destroy_actor releases the old actor) so
 		// a dynamic→static→dynamic round-trip preserves momentum.
 		physx::PxVec3 cached_lin_vel(0, 0, 0);
@@ -355,7 +387,6 @@ void PhysXBody3D::set_mode(PhysicsServer3D::BodyMode p_mode) {
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-
 
 void PhysXBody3D::set_state(PhysicsServer3D::BodyState p_state, const Variant &p_value) {
 	if (!px_actor) {
@@ -526,44 +557,77 @@ void PhysXBody3D::set_param(PhysicsServer3D::BodyParameter p_param, const Varian
 	// reload) must not dirty the actor for nothing.
 	switch (p_param) {
 		case PhysicsServer3D::BODY_PARAM_BOUNCE:
-			if ((real_t)p_value == bounce) return;
+			if ((real_t)p_value == bounce) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_FRICTION:
-			if ((real_t)p_value == friction) return;
+			if ((real_t)p_value == friction) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_MASS:
-			if ((real_t)p_value == mass) return;
+			if ((real_t)p_value == mass) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE:
-			if ((real_t)p_value == gravity_scale) return;
+			if ((real_t)p_value == gravity_scale) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP:
-			if ((real_t)p_value == linear_damp) return;
+			if ((real_t)p_value == linear_damp) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP:
-			if ((real_t)p_value == angular_damp) return;
+			if ((real_t)p_value == angular_damp) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_INERTIA:
-			if (inertia_set && Vector3(p_value) == inertia_override) return;
+			if (inertia_set && Vector3(p_value) == inertia_override) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_CENTER_OF_MASS:
-			if (center_of_mass_set && Vector3(p_value) == center_of_mass_override) return;
+			if (center_of_mass_set && Vector3(p_value) == center_of_mass_override) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP_MODE:
-			if ((PhysicsServer3D::BodyDampMode)(int)p_value == linear_damp_mode) return;
+			if ((PhysicsServer3D::BodyDampMode)(int)p_value == linear_damp_mode) {
+				return;
+			}
 			break;
 		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP_MODE:
-			if ((PhysicsServer3D::BodyDampMode)(int)p_value == angular_damp_mode) return;
+			if ((PhysicsServer3D::BodyDampMode)(int)p_value == angular_damp_mode) {
+				return;
+			}
 			break;
-		default: break;
+		default:
+			break;
 	}
 	switch (p_param) {
-		case PhysicsServer3D::BODY_PARAM_BOUNCE: bounce = p_value; break;
-		case PhysicsServer3D::BODY_PARAM_FRICTION: friction = p_value; break;
-		case PhysicsServer3D::BODY_PARAM_MASS: mass = p_value; break;
-		case PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE: gravity_scale = p_value; break;
-		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP: linear_damp = p_value; break;
-		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP: angular_damp = p_value; break;
+		case PhysicsServer3D::BODY_PARAM_BOUNCE:
+			bounce = p_value;
+			break;
+		case PhysicsServer3D::BODY_PARAM_FRICTION:
+			friction = p_value;
+			break;
+		case PhysicsServer3D::BODY_PARAM_MASS:
+			mass = p_value;
+			break;
+		case PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE:
+			gravity_scale = p_value;
+			break;
+		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP:
+			linear_damp = p_value;
+			break;
+		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP:
+			angular_damp = p_value;
+			break;
 		case PhysicsServer3D::BODY_PARAM_INERTIA: {
 			inertia_set = true;
 			inertia_override = p_value;
@@ -586,7 +650,8 @@ void PhysXBody3D::set_param(PhysicsServer3D::BodyParameter p_param, const Varian
 		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP_MODE:
 			angular_damp_mode = (PhysicsServer3D::BodyDampMode)(int)p_value;
 			break;
-		default: break;
+		default:
+			break;
 	}
 	// Mass properties (setMassAndUpdateInertia re-derives the inertia tensor
 	// and center of mass from the shapes) are only recomputed for the
@@ -606,17 +671,22 @@ void PhysXBody3D::set_param(PhysicsServer3D::BodyParameter p_param, const Varian
 
 Variant PhysXBody3D::get_param(PhysicsServer3D::BodyParameter p_param) const {
 	switch (p_param) {
-		case PhysicsServer3D::BODY_PARAM_BOUNCE: return bounce;
-		case PhysicsServer3D::BODY_PARAM_FRICTION: return friction;
+		case PhysicsServer3D::BODY_PARAM_BOUNCE:
+			return bounce;
+		case PhysicsServer3D::BODY_PARAM_FRICTION:
+			return friction;
 		case PhysicsServer3D::BODY_PARAM_MASS: {
 			if (physx::PxRigidDynamic *dyn = get_px_dynamic()) {
 				return (real_t)dyn->getMass();
 			}
 			return mass;
 		}
-		case PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE: return gravity_scale;
-		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP: return linear_damp;
-		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP: return angular_damp;
+		case PhysicsServer3D::BODY_PARAM_GRAVITY_SCALE:
+			return gravity_scale;
+		case PhysicsServer3D::BODY_PARAM_LINEAR_DAMP:
+			return linear_damp;
+		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP:
+			return angular_damp;
 		case PhysicsServer3D::BODY_PARAM_INERTIA: {
 			if (physx::PxRigidDynamic *dyn = get_px_dynamic()) {
 				const physx::PxVec3 i = dyn->getMassSpaceInertiaTensor();
@@ -635,7 +705,8 @@ Variant PhysXBody3D::get_param(PhysicsServer3D::BodyParameter p_param) const {
 			return linear_damp_mode;
 		case PhysicsServer3D::BODY_PARAM_ANGULAR_DAMP_MODE:
 			return angular_damp_mode;
-		default: return Variant();
+		default:
+			return Variant();
 	}
 }
 
@@ -767,9 +838,7 @@ physx::PxMaterial *PhysXBody3D::_get_shape_material() {
 physx::PxRigidDynamicLockFlags PhysXBody3D::_effective_lock_flags() const {
 	physx::PxRigidDynamicLockFlags effective = axis_lock_flags;
 	if (mode == PhysicsServer3D::BODY_MODE_RIGID_LINEAR) {
-		effective |= physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X
-                   | physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y
-                   | physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
+		effective |= physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X | physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y | physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
 	}
 	return effective;
 }
@@ -845,7 +914,7 @@ void PhysXBody3D::_update_kinematic_velocity(float p_step) {
 	if (mode != PhysicsServer3D::BODY_MODE_KINEMATIC || !px_actor || p_step <= 0.0f) {
 		return;
 	}
-     const physx::PxTransform pose = px_actor->getGlobalPose();
+	const physx::PxTransform pose = px_actor->getGlobalPose();
 
 	if (has_previous_kinematic_pose) {
 		const physx::PxVec3 dp = pose.p - previous_kinematic_pose.p;
@@ -1014,13 +1083,26 @@ void PhysXBody3D::set_axis_velocity(const Vector3 &p_axis_velocity) {
 void PhysXBody3D::set_axis_lock(PhysicsServer3D::BodyAxis p_axis, bool p_lock) {
 	physx::PxRigidDynamicLockFlag::Enum flag;
 	switch (p_axis) {
-		case PhysicsServer3D::BODY_AXIS_LINEAR_X:  flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_X;  break;
-		case PhysicsServer3D::BODY_AXIS_LINEAR_Y:  flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Y;  break;
-		case PhysicsServer3D::BODY_AXIS_LINEAR_Z:  flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Z;  break;
-		case PhysicsServer3D::BODY_AXIS_ANGULAR_X: flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X; break;
-		case PhysicsServer3D::BODY_AXIS_ANGULAR_Y: flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y; break;
-		case PhysicsServer3D::BODY_AXIS_ANGULAR_Z: flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z; break;
-		default: return;
+		case PhysicsServer3D::BODY_AXIS_LINEAR_X:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_X;
+			break;
+		case PhysicsServer3D::BODY_AXIS_LINEAR_Y:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Y;
+			break;
+		case PhysicsServer3D::BODY_AXIS_LINEAR_Z:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Z;
+			break;
+		case PhysicsServer3D::BODY_AXIS_ANGULAR_X:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X;
+			break;
+		case PhysicsServer3D::BODY_AXIS_ANGULAR_Y:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y;
+			break;
+		case PhysicsServer3D::BODY_AXIS_ANGULAR_Z:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
+			break;
+		default:
+			return;
 	}
 	if (p_lock) {
 		axis_lock_flags |= flag;
@@ -1038,13 +1120,26 @@ void PhysXBody3D::set_axis_lock(PhysicsServer3D::BodyAxis p_axis, bool p_lock) {
 bool PhysXBody3D::is_axis_locked(PhysicsServer3D::BodyAxis p_axis) const {
 	physx::PxRigidDynamicLockFlag::Enum flag;
 	switch (p_axis) {
-		case PhysicsServer3D::BODY_AXIS_LINEAR_X:  flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_X;  break;
-		case PhysicsServer3D::BODY_AXIS_LINEAR_Y:  flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Y;  break;
-		case PhysicsServer3D::BODY_AXIS_LINEAR_Z:  flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Z;  break;
-		case PhysicsServer3D::BODY_AXIS_ANGULAR_X: flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X; break;
-		case PhysicsServer3D::BODY_AXIS_ANGULAR_Y: flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y; break;
-		case PhysicsServer3D::BODY_AXIS_ANGULAR_Z: flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z; break;
-		default: return false;
+		case PhysicsServer3D::BODY_AXIS_LINEAR_X:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_X;
+			break;
+		case PhysicsServer3D::BODY_AXIS_LINEAR_Y:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Y;
+			break;
+		case PhysicsServer3D::BODY_AXIS_LINEAR_Z:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_LINEAR_Z;
+			break;
+		case PhysicsServer3D::BODY_AXIS_ANGULAR_X:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_X;
+			break;
+		case PhysicsServer3D::BODY_AXIS_ANGULAR_Y:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Y;
+			break;
+		case PhysicsServer3D::BODY_AXIS_ANGULAR_Z:
+			flag = physx::PxRigidDynamicLockFlag::eLOCK_ANGULAR_Z;
+			break;
+		default:
+			return false;
 	}
 	// Report the effective state so mode-derived locks (RIGID_LINEAR locks all
 	// angular axes) are visible to the getter.
@@ -1104,7 +1199,6 @@ void PhysXBody3D::set_omit_force_integration(bool p_enable) {
 	omit_force_integration = p_enable;
 	// PhysX has no direct "custom integrator" flag; the force-integration
 	// callback is consulted in on_pre_step / on_post_step to emulate it.
-
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,7 +1207,9 @@ void PhysXBody3D::set_omit_force_integration(bool p_enable) {
 
 void PhysXBody3D::set_shape_disabled(int p_shape_idx, bool p_disabled) {
 	ERR_FAIL_INDEX(p_shape_idx, get_shape_count());
-	if (p_disabled == shapes[p_shape_idx].disabled) return;
+	if (p_disabled == shapes[p_shape_idx].disabled) {
+		return;
+	}
 
 	// The eSIMULATION_SHAPE/eSCENE_QUERY_SHAPE flag writes below mutate the
 	// scene's broadphase pair state — forbidden while a solve is in flight
@@ -1136,11 +1232,11 @@ void PhysXBody3D::set_shape_disabled(int p_shape_idx, bool p_disabled) {
 				(dyn->getRigidBodyFlags() & physx::PxRigidBodyFlag::eKINEMATIC) ||
 				!shapes[p_shape_idx].shareable_shape ||
 				(shapes[p_shape_idx].shareable_shape->is_convex() &&
-				shapes[p_shape_idx].shareable_shape->get_type() != PhysicsServer3D::SHAPE_SEPARATION_RAY);
+						shapes[p_shape_idx].shareable_shape->get_type() != PhysicsServer3D::SHAPE_SEPARATION_RAY);
 		shapes[p_shape_idx].px_shape->setFlag(
-			physx::PxShapeFlag::eSIMULATION_SHAPE, !p_disabled && sim_allowed);
+				physx::PxShapeFlag::eSIMULATION_SHAPE, !p_disabled && sim_allowed);
 		shapes[p_shape_idx].px_shape->setFlag(
-			physx::PxShapeFlag::eSCENE_QUERY_SHAPE, !p_disabled);
+				physx::PxShapeFlag::eSCENE_QUERY_SHAPE, !p_disabled);
 	}
 }
 
@@ -1185,7 +1281,9 @@ void PhysXBody3D::set_shape(int p_shape_idx, PhysXShape3D *p_shape) {
  * 7. Applies linear/angular damping overrides from areas.
  */
 void PhysXBody3D::on_pre_step(float p_step) {
-	if (!px_actor) return;
+	if (!px_actor) {
+		return;
+	}
 
 	physx::PxRigidDynamic *dyn = get_px_dynamic();
 	if (!dyn) {
@@ -1209,7 +1307,7 @@ void PhysXBody3D::on_pre_step(float p_step) {
 	// moved exclusively via setKinematicTarget(). We still clear contacts and
 	// run the custom integrator below so CharacterBody3D gets its state sync.
 	const bool is_simulated = (mode != PhysicsServer3D::BODY_MODE_KINEMATIC &&
-                               mode != PhysicsServer3D::BODY_MODE_STATIC);
+			mode != PhysicsServer3D::BODY_MODE_STATIC);
 
 	// --- Resolve area overrides in priority order (highest first) ---
 	// Sort a lightweight index list ascending by priority; iterate descending.
@@ -1220,7 +1318,9 @@ void PhysXBody3D::on_pre_step(float p_step) {
 	LocalVector<int> &order = _area_order_scratch;
 	if (n > 0) {
 		order.resize(n);
-		for (int i = 0; i < n; i++) order[i] = i;
+		for (int i = 0; i < n; i++) {
+			order[i] = i;
+		}
 		// Simple insertion sort — n is small (overlapping areas per body).
 		for (int i = 1; i < n; i++) {
 			int key = order[i];
@@ -1234,7 +1334,7 @@ void PhysXBody3D::on_pre_step(float p_step) {
 		}
 	}
 
-	const Vector3 body_pos = [&]{
+	const Vector3 body_pos = [&] {
 		const physx::PxVec3 p = dyn->getGlobalPose().p;
 		return Vector3(p.x, p.y, p.z);
 	}();
@@ -1250,15 +1350,15 @@ void PhysXBody3D::on_pre_step(float p_step) {
 			// Computed inside the getter so DISABLED-mode areas (and the
 			// point-gravity math) are skipped entirely.
 			gravity_done = physx_apply_area_override(total_gravity, area->get_gravity_override_mode(),
-					[&]{ return physx_area_gravity_at(*area, body_pos); });
+					[&] { return physx_area_gravity_at(*area, body_pos); });
 		}
 		if (!linear_done) {
 			linear_done = physx_apply_area_override(total_linear_damp, area->get_linear_damp_override_mode(),
-					[&]{ return area->get_linear_damp(); });
+					[&] { return area->get_linear_damp(); });
 		}
 		if (!angular_done) {
 			angular_done = physx_apply_area_override(total_angular_damp, area->get_angular_damp_override_mode(),
-					[&]{ return area->get_angular_damp(); });
+					[&] { return area->get_angular_damp(); });
 		}
 	}
 
@@ -1279,19 +1379,33 @@ void PhysXBody3D::on_pre_step(float p_step) {
 	// channel not resolved above. Mirrors godot_physics_3d::integrate_forces.
 	if (space && space->get_default_area()) {
 		const PhysXArea3D *def = space->get_default_area();
-		if (!gravity_done)  total_gravity     += physx_area_gravity_at(*def, body_pos);
-		if (!linear_done)   total_linear_damp += def->get_linear_damp();
-		if (!angular_done)  total_angular_damp+= def->get_angular_damp();
+		if (!gravity_done) {
+			total_gravity += physx_area_gravity_at(*def, body_pos);
+		}
+		if (!linear_done) {
+			total_linear_damp += def->get_linear_damp();
+		}
+		if (!angular_done) {
+			total_angular_damp += def->get_angular_damp();
+		}
 	}
 
 	// Apply the body's own damp mode (after areas + default).
 	switch (linear_damp_mode) {
-		case PhysicsServer3D::BODY_DAMP_MODE_COMBINE:  total_linear_damp  += linear_damp; break;
-		case PhysicsServer3D::BODY_DAMP_MODE_REPLACE:  total_linear_damp   = linear_damp; break;
+		case PhysicsServer3D::BODY_DAMP_MODE_COMBINE:
+			total_linear_damp += linear_damp;
+			break;
+		case PhysicsServer3D::BODY_DAMP_MODE_REPLACE:
+			total_linear_damp = linear_damp;
+			break;
 	}
 	switch (angular_damp_mode) {
-		case PhysicsServer3D::BODY_DAMP_MODE_COMBINE:  total_angular_damp += angular_damp; break;
-		case PhysicsServer3D::BODY_DAMP_MODE_REPLACE:  total_angular_damp  = angular_damp; break;
+		case PhysicsServer3D::BODY_DAMP_MODE_COMBINE:
+			total_angular_damp += angular_damp;
+			break;
+		case PhysicsServer3D::BODY_DAMP_MODE_REPLACE:
+			total_angular_damp = angular_damp;
+			break;
 	}
 
 	// --- Apply gravity ---
@@ -1332,17 +1446,17 @@ void PhysXBody3D::on_pre_step(float p_step) {
 				const Vector3 delta = (total_gravity * (float)gravity_scale) - scene_gravity;
 				if (!delta.is_zero_approx()) {
 					dyn->addForce(physx::PxVec3((float)delta.x, (float)delta.y, (float)delta.z),
-                                  physx::PxForceMode::eACCELERATION);
+							physx::PxForceMode::eACCELERATION);
 				}
 			}
 
 			if (!constant_force.is_zero_approx()) {
 				dyn->addForce(physx::PxVec3((float)constant_force.x, (float)constant_force.y, (float)constant_force.z),
-                              physx::PxForceMode::eFORCE);
+						physx::PxForceMode::eFORCE);
 			}
 			if (!constant_torque.is_zero_approx()) {
 				dyn->addTorque(physx::PxVec3((float)constant_torque.x, (float)constant_torque.y, (float)constant_torque.z),
-                               physx::PxForceMode::eFORCE);
+						physx::PxForceMode::eFORCE);
 			}
 		}
 
@@ -1361,7 +1475,7 @@ void PhysXBody3D::on_pre_step(float p_step) {
 		// bodies can sleep.
 		if (!total_wind.is_zero_approx()) {
 			dyn->addForce(physx::PxVec3((float)total_wind.x, (float)total_wind.y, (float)total_wind.z),
-                          physx::PxForceMode::eFORCE);
+					physx::PxForceMode::eFORCE);
 		}
 	}
 
@@ -1467,4 +1581,3 @@ void PhysXBody3D::shape_changed(PhysXShape3D *p_shape) {
 		static_cast<physx::PxRigidDynamic *>(px_actor)->wakeUp();
 	}
 }
-

@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  physx_soft_volume_3d.cpp                                              */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_soft_volume_3d.cpp
  * @brief GPU soft body volume implementation (PxDeformableVolume on CUDA).
@@ -349,7 +381,7 @@ void PhysXSoftVolume3D::set_pins(const Vector<int> &p_welded_indices, const Vect
 		return;
 	}
 	const uint32_t sim_nv = base_inv_mass.size();
-if (!sim_pos_scratch) {
+	if (!sim_pos_scratch) {
 		sim_pos_scratch = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
 	}
 	PxVec4 *sp = static_cast<PxVec4 *>(sim_pos_scratch);
@@ -385,7 +417,7 @@ void PhysXSoftVolume3D::add_central_impulse(const Vector3 &p_impulse) {
 	}
 	const uint32_t sim_nv = base_inv_mass.size();
 	const PxVec3 dv = physx_to_px(p_impulse / total_mass);
-if (!sim_vel_scratch) {
+	if (!sim_vel_scratch) {
 		sim_vel_scratch = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
 	}
 	PxVec4 *sv = static_cast<PxVec4 *>(sim_vel_scratch);
@@ -414,7 +446,7 @@ void PhysXSoftVolume3D::add_point_impulse(uint32_t p_welded_index, const Vector3
 	}
 	const uint32_t sim_nv = base_inv_mass.size();
 	const PxVec3 dv = physx_to_px(p_impulse * base_inv_mass[s]);
-if (!sim_vel_scratch) {
+	if (!sim_vel_scratch) {
 		sim_vel_scratch = PX_EXT_PINNED_MEMORY_ALLOC(PxVec4, *cuda, sim_nv);
 	}
 	PxVec4 *sv = static_cast<PxVec4 *>(sim_vel_scratch);

@@ -1,3 +1,37 @@
+/**************************************************************************/
+/*  physx_vehicle_server.h                                                */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
 /**
  * @file physx_vehicle_3d.h
  * @brief Wrapper for PhysX vehicle2 - owns vehicle state, borrows chassis body.
@@ -36,18 +70,18 @@
 #ifndef PHYSX_VEHICLE_3D_H
 #define PHYSX_VEHICLE_3D_H
 
-#include "physx_rid_owner.h"
-#include "objects/physx_body_3d.h"
-#include "spaces/physx_space_3d.h"
+#include "core/string/ustring.h"
 #include "core/templates/local_vector.h"
 #include "core/variant/variant.h"
-#include "core/string/ustring.h"
+#include "objects/physx_body_3d.h"
+#include "physx_rid_owner.h"
+#include "spaces/physx_space_3d.h"
 
 namespace physx {
-	class PxPhysics;
-	class PxRigidDynamic;
-	class PxRigidActor;
-}
+class PxPhysics;
+class PxRigidDynamic;
+class PxRigidActor;
+} //namespace physx
 
 class PhysXServer3D;
 class PhysXSpace3D;
@@ -74,13 +108,13 @@ class PhysXSpace3D;
  */
 struct WheelTelemetry {
 	bool in_contact = false;
-	Vector3 contact_point;			// world space
-	Vector3 contact_normal;			// world space
-	RID contact_body_rid;			// resolved from hit actor's PhysXActorUserData
+	Vector3 contact_point; // world space
+	Vector3 contact_normal; // world space
+	RID contact_body_rid; // resolved from hit actor's PhysXActorUserData
 	float rpm = 0.f;
-	float skid = 0.f;				// longitudinal tire slip ratio
-	float skid_lateral = 0.f;		// lateral tire slip ratio
-	float rotation = 0.f;			// wheel angular position (for render)
+	float skid = 0.f; // longitudinal tire slip ratio
+	float skid_lateral = 0.f; // lateral tire slip ratio
+	float rotation = 0.f; // wheel angular position (for render)
 };
 
 /**
@@ -91,10 +125,10 @@ struct WheelTelemetry {
  * and steer response components.
  */
 struct WheelFlags {
-	bool steer = false;			// this wheel receives steering input.
-	bool traction = true;		// this wheel is driven (engine torque / direct drive).
-	bool brake = true;			// this wheel receives brake input.
-	bool front = false;			// front axle (affects default steer/drive assignment).
+	bool steer = false; // this wheel receives steering input.
+	bool traction = true; // this wheel is driven (engine torque / direct drive).
+	bool brake = true; // this wheel receives brake input.
+	bool front = false; // front axle (affects default steer/drive assignment).
 };
 
 class PhysXVehicleServer : public PhysXRIDOwner {
@@ -194,9 +228,9 @@ private:
 
 	// --- tuning cache: written by server (vehicle_set_response_params), applied
 	// in _update_response_params(); -1 = built-in default ---
-	float tune_drive_torque = -1.0f;     // DirectDrive: per-wheel drive torque at full throttle (Nm).
-	float tune_max_steer_angle = -1.0f;  // steer lock (rad).
-	float tune_brake_torque = -1.0f;     // main brake channel torque (Nm).
+	float tune_drive_torque = -1.0f; // DirectDrive: per-wheel drive torque at full throttle (Nm).
+	float tune_max_steer_angle = -1.0f; // steer lock (rad).
+	float tune_brake_torque = -1.0f; // main brake channel torque (Nm).
 	float tune_handbrake_torque = -1.0f; // handbrake channel torque (Nm).
 
 	// --- Ackermann steering (vehicle_set_ackermann_params) ---
@@ -206,9 +240,9 @@ private:
 	// wheel suspension attachments unless overridden. Applied to steer-flagged
 	// wheels in write_commands(); per-wheel steer mode (P9) bypasses it.
 	bool ackermann_enabled = false;
-	float ackermann_percent = 100.0f;      // 0 = parallel steer, 100 = pure Ackermann.
+	float ackermann_percent = 100.0f; // 0 = parallel steer, 100 = pure Ackermann.
 	float tune_ackermann_wheelbase = -1.0f; // <0 = derive from wheel attachments.
-	float tune_ackermann_track = -1.0f;     // <0 = derive from steered-axle pair.
+	float tune_ackermann_track = -1.0f; // <0 = derive from steered-axle pair.
 
 	// --- 2-wheeler balance assist (vehicle_set_balance_params) ---
 	// Dynamic roll stabilization for motorcycles: a PD controller on the
@@ -216,13 +250,13 @@ private:
 	// the bike steers into its own fall, plus an optional low-speed corrective
 	// torque for when steering has no lateral authority (near standstill).
 	bool balance_enabled = false;
-	float balance_kp = 10.0f;              // lean-angle gain (steer rad per lean rad).
-	float balance_kd = 1.5f;               // roll-rate gain (steer rad per rad/s).
+	float balance_kp = 10.0f; // lean-angle gain (steer rad per lean rad).
+	float balance_kd = 1.5f; // roll-rate gain (steer rad per rad/s).
 	float balance_max_steer_assist = 0.3f; // cap on the steer augmentation (rad).
 	float balance_low_speed_torque = 0.0f; // corrective torque scale (Nm/rad) below ~3 m/s; 0 = off.
-	float balance_lean_angle = 0.0f;       // telemetry: signed chassis roll (rad, + = tips right).
-	float balance_roll_rate = 0.0f;        // telemetry: roll rate (rad/s).
-	float balance_steer_assist = 0.0f;     // telemetry: steer augmentation this step (rad).
+	float balance_lean_angle = 0.0f; // telemetry: signed chassis roll (rad, + = tips right).
+	float balance_roll_rate = 0.0f; // telemetry: roll rate (rad/s).
+	float balance_steer_assist = 0.0f; // telemetry: steer augmentation this step (rad).
 
 	// --- telemetry cache: filled in post_step(), read by server getters ---
 	LocalVector<WheelTelemetry> wheel_telemetry;
@@ -278,11 +312,11 @@ private:
 	// --- lifecycle (mirror PhysXJoint3D::create_px_joint / adopt / release) ---
 	static void _init_shared_state(Vehicle2State *p_state, physx::PxRigidDynamic &p_chassis, int p_wheel_count);
 	static Vehicle2State *build_direct_drive(physx::PxPhysics &p_physics,
-	                                         physx::PxRigidDynamic &p_chassis,
-	                                         int p_wheel_count);
+			physx::PxRigidDynamic &p_chassis,
+			int p_wheel_count);
 	static Vehicle2State *build_engine_drive(physx::PxPhysics &p_physics,
-	                                         physx::PxRigidDynamic &p_chassis,
-	                                         int p_wheel_count);
+			physx::PxRigidDynamic &p_chassis,
+			int p_wheel_count);
 	void release();
 	// Re-seed throttle/steer/brake response params from WheelFlags (drive/steer
 	// intent). Called after build, after a wheel-count change, and after

@@ -56,11 +56,11 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	ivec4 box_blocks_cells; // xyz box size in BLOCKS, w unused
 	vec4 hash_maxb_time_pad; // x hash slot count (pow2), y block-pool capacity, z time (seconds, for emitter jitter)
 	// x = turbulence strength (extra curl-noise velocity, m/s), y = turbulence
-	// scale (spatial frequency, 1/metres -- higher = finer wrinkles), zw
+	// scale (spatial frequency, 1/meters -- higher = finer wrinkles), zw
 	// unused. See curl_noise3()'s header comment for why this exists.
 	vec4 turb_strength_scale_pad;
 	// Analytic collider catalog (mirrors MPMFluidSolver's, minus rotation --
-	// axis-aligned box only, v1): c0 = xyz world centre/point, w = shape
+	// axis-aligned box only, v1): c0 = xyz world center/point, w = shape
 	// (0=sphere, 1=box, 2=plane; -1 = unused slot). c1 = shape params: sphere
 	// x=radius, box xyz=half-extents, plane xyz=unit outward normal.
 	vec4 colliders_c0[MAX_GAS_COLLIDERS];
@@ -76,7 +76,7 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	// x = divergence (m/s outward-radial speed added on top of velocity --
 	// Flow's NvFlowEmitterSphereParams.divergence; this is what a burst/
 	// explosion emitter wants instead of one fixed jet direction), y = swirl
-	// (m/s tangential speed around world +Y through the emitter centre, for
+	// (m/s tangential speed around world +Y through the emitter center, for
 	// directly authoring rotation instead of relying only on vorticity
 	// confinement amplifying incidental curl), zw unused.
 	vec4 emitter_extra[MAX_GAS_EMITTERS];

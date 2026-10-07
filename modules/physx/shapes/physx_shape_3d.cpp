@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  physx_shape_3d.cpp                                                    */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_shape_3d.cpp
  * @brief Shared shape resource implementation (owner tracking, geometry creation).
@@ -7,16 +39,16 @@
 #include "objects/physx_shaped_object_3d.h"
 
 // PhysX
+#include "PxMaterial.h"
 #include "PxPhysics.h"
 #include "PxShape.h"
-#include "PxMaterial.h"
 #include "geometry/PxBoxGeometry.h"
-#include "geometry/PxSphereGeometry.h"
 #include "geometry/PxCapsuleGeometry.h"
 #include "geometry/PxConvexMeshGeometry.h"
+#include "geometry/PxGeometryHelpers.h"
 #include "geometry/PxHeightFieldGeometry.h"
 #include "geometry/PxPlaneGeometry.h"
-#include "geometry/PxGeometryHelpers.h"
+#include "geometry/PxSphereGeometry.h"
 
 // ---------------------------------------------------------------------------
 // Owner tracking — shapes are shared; we need to notify all owners on change.
@@ -92,7 +124,6 @@ PhysXShape3D::~PhysXShape3D() {
 // ---------------------------------------------------------------------------
 
 physx::PxShape *PhysXShape3D::create_shape(physx::PxPhysics &p_physics, const physx::PxVec3 &p_scale, const physx::PxMaterial *p_material, physx::PxShapeFlags p_flags) {
-
 	// Generate the concrete geometry (box, sphere, capsule, etc.).
 	physx::PxGeometryHolder geom_holder;
 	if (!get_physx_geometry(geom_holder, p_scale)) {
@@ -108,11 +139,11 @@ physx::PxShape *PhysXShape3D::create_shape(physx::PxPhysics &p_physics, const ph
 			return nullptr;
 		}
 	}
-	
+
 	// Create Shape
 	// In PhysX 5, createShape is thread-safe
 	physx::PxShape *shape = p_physics.createShape(geom_holder.any(), *mat, true, p_flags);
-	
+
 	if (!shape) {
 		ERR_PRINT("PhysX: createShape failed.");
 		return nullptr;
@@ -121,7 +152,7 @@ physx::PxShape *PhysXShape3D::create_shape(physx::PxPhysics &p_physics, const ph
 	// Apply the coordinate alignment for Capsules/Planes (scale-dependent for
 	// heightfields / separation rays — the attach-time scale is the same one
 	// the geometry received).
-    shape->setLocalPose(get_local_pose(p_scale));
+	shape->setLocalPose(get_local_pose(p_scale));
 
 	// Apply the contact offset (from the margin) and store a back-pointer
 	// for reverse lookups in query results and simulation callbacks.

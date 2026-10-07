@@ -1,3 +1,35 @@
+/**************************************************************************/
+/*  physx_vehicle_server.cpp                                              */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_vehicle_3d.cpp
  * @brief Implementation of PhysXVehicleServer — vehicle2 wrapper.
@@ -27,20 +59,20 @@
 
 #include "physx_vehicle_shared.h" // shared frame/gravity/clamp conventions
 
-#include "physx_server.h"
-#include "spaces/physx_space_3d.h"
 #include "objects/physx_body_3d.h"
+#include "physx_server.h"
 #include "shapes/physx_user_data.h"
 #include "spaces/physx_query_filter_callback.h"
+#include "spaces/physx_space_3d.h"
 
 #include "PxPhysicsAPI.h"
 #include "vehicle/PxVehicleAPI.h"
 #include "vehicle/physxConstraints/PxVehiclePhysXConstraintHelpers.h"
 
-#include "vehicle/wheel/PxVehicleWheelParams.h"
 #include "vehicle/suspension/PxVehicleSuspensionParams.h"
 #include "vehicle/suspension/PxVehicleSuspensionStates.h"
 #include "vehicle/tire/PxVehicleTireParams.h"
+#include "vehicle/wheel/PxVehicleWheelParams.h"
 
 // Per-wheel cap on (ground material -> friction) mappings in the tire grip
 // table (vehicle_set_wheel_params "surface_frictions").
@@ -80,16 +112,21 @@ static void _set_wheel_param_defaults(physx::PxVehicleWheelParams &p_wp,
 	p_tp.latStiffY = 18000.0f;
 	p_tp.longStiff = 10000.0f;
 	p_tp.camberStiff = 0.0f;
-	p_tp.frictionVsSlip[0][0] = 0.0f; p_tp.frictionVsSlip[0][1] = 1.0f;
-	p_tp.frictionVsSlip[1][0] = 0.1f; p_tp.frictionVsSlip[1][1] = 1.0f;
-	p_tp.frictionVsSlip[2][0] = 1.0f; p_tp.frictionVsSlip[2][1] = 1.0f;
+	p_tp.frictionVsSlip[0][0] = 0.0f;
+	p_tp.frictionVsSlip[0][1] = 1.0f;
+	p_tp.frictionVsSlip[1][0] = 0.1f;
+	p_tp.frictionVsSlip[1][1] = 1.0f;
+	p_tp.frictionVsSlip[2][0] = 1.0f;
+	p_tp.frictionVsSlip[2][1] = 1.0f;
 	// Seed from the SCENE gravity when available (VEH-5): the hardcoded 9.81
 	// mis-tuned the load-dependent tire stiffness on any scene with custom
 	// gravity. The caller (build_direct_drive/build_engine_drive) patches this
 	// up with the actual scene value right after the defaults run.
 	p_tp.restLoad = p_sfp.sprungMass * 9.81f;
-	p_tp.loadFilter[0][0] = 0.0f; p_tp.loadFilter[0][1] = 0.0f;
-	p_tp.loadFilter[1][0] = 3.0f; p_tp.loadFilter[1][1] = 3.0f;
+	p_tp.loadFilter[0][0] = 0.0f;
+	p_tp.loadFilter[0][1] = 0.0f;
+	p_tp.loadFilter[1][0] = 3.0f;
+	p_tp.loadFilter[1][1] = 3.0f;
 }
 
 // ============================================================================
@@ -219,7 +256,8 @@ struct PhysXVehicleServer::Vehicle2State {
 
 class PhysXVehicleServer::BeginComponent : public physx::PxVehiclePhysXActorBeginComponent {
 public:
-	explicit BeginComponent(Vehicle2State *s) : m_s(s) {}
+	explicit BeginComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForPhysXActorBeginComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleCommandState *&commands,
@@ -261,7 +299,8 @@ private:
 
 class PhysXVehicleServer::CommandResponseComponent : public physx::PxVehicleDirectDriveCommandResponseComponent {
 public:
-	explicit CommandResponseComponent(Vehicle2State *s) : m_s(s) {}
+	explicit CommandResponseComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForDirectDriveCommandResponseComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			physx::PxVehicleSizedArrayData<const physx::PxVehicleBrakeCommandResponseParams> &brakeResponseParams,
@@ -293,7 +332,8 @@ private:
 
 class PhysXVehicleServer::ActuationComponent : public physx::PxVehicleDirectDriveActuationStateComponent {
 public:
-	explicit ActuationComponent(Vehicle2State *s) : m_s(s) {}
+	explicit ActuationComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForDirectDriveActuationStateComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			physx::PxVehicleArrayData<const physx::PxReal> &brakeResponseStates,
@@ -311,7 +351,8 @@ private:
 
 class PhysXVehicleServer::RoadGeometryComponent : public physx::PxVehiclePhysXRoadGeometrySceneQueryComponent {
 public:
-	explicit RoadGeometryComponent(Vehicle2State *s) : m_s(s) {}
+	explicit RoadGeometryComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForPhysXRoadGeometrySceneQueryComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehiclePhysXRoadGeometryQueryParams *&roadGeomParams,
@@ -339,7 +380,8 @@ private:
 
 class PhysXVehicleServer::SuspensionComponent : public physx::PxVehicleSuspensionComponent {
 public:
-	explicit SuspensionComponent(Vehicle2State *s) : m_s(s) {}
+	explicit SuspensionComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForSuspensionComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleRigidBodyParams *&rigidBodyParams,
@@ -379,7 +421,8 @@ private:
 
 class PhysXVehicleServer::TireComponent : public physx::PxVehicleTireComponent {
 public:
-	explicit TireComponent(Vehicle2State *s) : m_s(s) {}
+	explicit TireComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForTireComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			physx::PxVehicleArrayData<const physx::PxReal> &steerResponseStates,
@@ -427,7 +470,8 @@ private:
 
 class PhysXVehicleServer::DirectDrivetrainComponent : public physx::PxVehicleDirectDrivetrainComponent {
 public:
-	explicit DirectDrivetrainComponent(Vehicle2State *s) : m_s(s) {}
+	explicit DirectDrivetrainComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForDirectDrivetrainComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			physx::PxVehicleArrayData<const physx::PxReal> &brakeResponseStates,
@@ -453,7 +497,8 @@ private:
 
 class PhysXVehicleServer::EngineDriveCommandResponseComponent : public physx::PxVehicleEngineDriveCommandResponseComponent {
 public:
-	explicit EngineDriveCommandResponseComponent(Vehicle2State *s) : m_s(s) {}
+	explicit EngineDriveCommandResponseComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForEngineDriveCommandResponseComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			physx::PxVehicleSizedArrayData<const physx::PxVehicleBrakeCommandResponseParams> &brakeResponseParams,
@@ -499,7 +544,8 @@ private:
 
 class PhysXVehicleServer::FourWheelDriveDifferentialStateComponent : public physx::PxVehicleFourWheelDriveDifferentialStateComponent {
 public:
-	explicit FourWheelDriveDifferentialStateComponent(Vehicle2State *s) : m_s(s) {}
+	explicit FourWheelDriveDifferentialStateComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForFourWheelDriveDifferentialStateComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleFourWheelDriveDifferentialParams *&differentialParams,
@@ -519,7 +565,8 @@ private:
 
 class PhysXVehicleServer::EngineDriveActuationStateComponent : public physx::PxVehicleEngineDriveActuationStateComponent {
 public:
-	explicit EngineDriveActuationStateComponent(Vehicle2State *s) : m_s(s) {}
+	explicit EngineDriveActuationStateComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForEngineDriveActuationStateComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleGearboxParams *&gearboxParams,
@@ -545,7 +592,8 @@ private:
 
 class PhysXVehicleServer::EngineDrivetrainComponent : public physx::PxVehicleEngineDrivetrainComponent {
 public:
-	explicit EngineDrivetrainComponent(Vehicle2State *s) : m_s(s) {}
+	explicit EngineDrivetrainComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForEngineDrivetrainComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			physx::PxVehicleArrayData<const physx::PxVehicleWheelParams> &wheelParams,
@@ -587,7 +635,8 @@ private:
 
 class PhysXVehicleServer::ConstraintComponent : public physx::PxVehiclePhysXConstraintComponent {
 public:
-	explicit ConstraintComponent(Vehicle2State *s) : m_s(s) {}
+	explicit ConstraintComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForPhysXConstraintComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleRigidBodyState *&rigidBodyState,
@@ -621,7 +670,8 @@ private:
 // component writes back an unchanged state and the vehicle never moves.
 class PhysXVehicleServer::RigidBodyComponent : public physx::PxVehicleRigidBodyComponent {
 public:
-	explicit RigidBodyComponent(Vehicle2State *s) : m_s(s) {}
+	explicit RigidBodyComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForRigidBodyComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleRigidBodyParams *&rigidBodyParams,
@@ -643,7 +693,8 @@ private:
 
 class PhysXVehicleServer::EndComponent : public physx::PxVehiclePhysXActorEndComponent {
 public:
-	explicit EndComponent(Vehicle2State *s) : m_s(s) {}
+	explicit EndComponent(Vehicle2State *s) :
+			m_s(s) {}
 	void getDataForPhysXActorEndComponent(
 			const physx::PxVehicleAxleDescription *&axleDescription,
 			const physx::PxVehicleRigidBodyState *&rigidBodyState,
@@ -723,7 +774,9 @@ void PhysXVehicleServer::Vehicle2State::allocate_arrays(int p_n) {
 }
 
 void PhysXVehicleServer::Vehicle2State::free_arrays() {
-#define _DEL(a) delete[] a; a = nullptr;
+#define _DEL(a) \
+	delete[] a; \
+	a = nullptr;
 	_DEL(wheel_params)
 	_DEL(suspension_params)
 	_DEL(suspension_force_params)
@@ -759,7 +812,9 @@ void PhysXVehicleServer::Vehicle2State::free_arrays() {
 void PhysXVehicleServer::Vehicle2State::free_components() {
 	delete road_geometry_filter;
 	road_geometry_filter = nullptr;
-#define _DELC(c) delete c; c = nullptr;
+#define _DELC(c) \
+	delete c;    \
+	c = nullptr;
 	_DELC(comp_begin)
 	_DELC(comp_cmd_response)
 	_DELC(comp_actuation)
@@ -915,11 +970,21 @@ bool PhysXVehicleServer::adopt(physx::PxRigidDynamic *p_chassis, PhysXBody3D *p_
 		}
 	}
 	if (archetype == ARCHETYPE_ENGINE_DRIVE) {
-		if (!cached_engine_params.is_empty()) set_engine_params(cached_engine_params);
-		if (!cached_clutch_params.is_empty()) set_clutch_params(cached_clutch_params);
-		if (!cached_gearbox_params.is_empty()) set_gearbox_params(cached_gearbox_params);
-		if (!cached_autobox_params.is_empty()) set_autobox_params(cached_autobox_params);
-		if (!cached_differential_params.is_empty()) set_differential_params(cached_differential_params);
+		if (!cached_engine_params.is_empty()) {
+			set_engine_params(cached_engine_params);
+		}
+		if (!cached_clutch_params.is_empty()) {
+			set_clutch_params(cached_clutch_params);
+		}
+		if (!cached_gearbox_params.is_empty()) {
+			set_gearbox_params(cached_gearbox_params);
+		}
+		if (!cached_autobox_params.is_empty()) {
+			set_autobox_params(cached_autobox_params);
+		}
+		if (!cached_differential_params.is_empty()) {
+			set_differential_params(cached_differential_params);
+		}
 	}
 	_apply_cached_anti_roll();
 	_regroup_axles_from_poses();
@@ -1313,11 +1378,21 @@ void PhysXVehicleServer::_rebuild() {
 		}
 	}
 	if (archetype == ARCHETYPE_ENGINE_DRIVE && v2) {
-		if (!cached_engine_params.is_empty()) set_engine_params(cached_engine_params);
-		if (!cached_clutch_params.is_empty()) set_clutch_params(cached_clutch_params);
-		if (!cached_gearbox_params.is_empty()) set_gearbox_params(cached_gearbox_params);
-		if (!cached_autobox_params.is_empty()) set_autobox_params(cached_autobox_params);
-		if (!cached_differential_params.is_empty()) set_differential_params(cached_differential_params);
+		if (!cached_engine_params.is_empty()) {
+			set_engine_params(cached_engine_params);
+		}
+		if (!cached_clutch_params.is_empty()) {
+			set_clutch_params(cached_clutch_params);
+		}
+		if (!cached_gearbox_params.is_empty()) {
+			set_gearbox_params(cached_gearbox_params);
+		}
+		if (!cached_autobox_params.is_empty()) {
+			set_autobox_params(cached_autobox_params);
+		}
+		if (!cached_differential_params.is_empty()) {
+			set_differential_params(cached_differential_params);
+		}
 	}
 	_apply_cached_anti_roll();
 
@@ -1779,12 +1854,22 @@ void PhysXVehicleServer::apply_wheel_params(int p_idx, const Dictionary &p_param
 	physx::PxVehicleTireForceParams &tp = v2->tire_params[p_idx];
 	WheelFlags &wf = wheel_flags[p_idx];
 
-	if (p_params.has("radius")) wp.radius = (float)(double)p_params["radius"];
-	if (p_params.has("wheel_mass")) wp.mass = (float)(double)p_params["wheel_mass"];
-	if (p_params.has("wheel_moi")) wp.moi = (float)(double)p_params["wheel_moi"];
-	if (p_params.has("wheel_damping")) wp.dampingRate = (float)(double)p_params["wheel_damping"];
+	if (p_params.has("radius")) {
+		wp.radius = (float)(double)p_params["radius"];
+	}
+	if (p_params.has("wheel_mass")) {
+		wp.mass = (float)(double)p_params["wheel_mass"];
+	}
+	if (p_params.has("wheel_moi")) {
+		wp.moi = (float)(double)p_params["wheel_moi"];
+	}
+	if (p_params.has("wheel_damping")) {
+		wp.dampingRate = (float)(double)p_params["wheel_damping"];
+	}
 
-	if (p_params.has("suspension_travel")) sp.suspensionTravelDist = (float)(double)p_params["suspension_travel"];
+	if (p_params.has("suspension_travel")) {
+		sp.suspensionTravelDist = (float)(double)p_params["suspension_travel"];
+	}
 	if (p_params.has("local_pose")) {
 		physx::PxTransform shape_pose = _to_px_transform((Transform3D)p_params["local_pose"]);
 		// vehicle2's rigid-body frame is the chassis CENTER-OF-MASS frame,
@@ -1803,17 +1888,28 @@ void PhysXVehicleServer::apply_wheel_params(int p_idx, const Dictionary &p_param
 		v2->wheel_local_poses[p_idx].localPose = shape_pose;
 	}
 
-	if (p_params.has("suspension_stiffness")) sfp.stiffness = (float)(double)p_params["suspension_stiffness"];
-	if (p_params.has("suspension_damping")) sfp.damping = (float)(double)p_params["suspension_damping"];
-	if (p_params.has("suspension_sprung_mass")) sfp.sprungMass = (float)(double)p_params["suspension_sprung_mass"];
+	if (p_params.has("suspension_stiffness")) {
+		sfp.stiffness = (float)(double)p_params["suspension_stiffness"];
+	}
+	if (p_params.has("suspension_damping")) {
+		sfp.damping = (float)(double)p_params["suspension_damping"];
+	}
+	if (p_params.has("suspension_sprung_mass")) {
+		sfp.sprungMass = (float)(double)p_params["suspension_sprung_mass"];
+	}
 
 	if (p_params.has("tire_friction")) {
 		const float f = (float)(double)p_params["tire_friction"];
-		tp.frictionVsSlip[0][0] = 0.0f; tp.frictionVsSlip[0][1] = f;
-		tp.frictionVsSlip[1][0] = 0.1f; tp.frictionVsSlip[1][1] = f;
-		tp.frictionVsSlip[2][0] = 1.0f; tp.frictionVsSlip[2][1] = f;
+		tp.frictionVsSlip[0][0] = 0.0f;
+		tp.frictionVsSlip[0][1] = f;
+		tp.frictionVsSlip[1][0] = 0.1f;
+		tp.frictionVsSlip[1][1] = f;
+		tp.frictionVsSlip[2][0] = 1.0f;
+		tp.frictionVsSlip[2][1] = f;
 	}
-	if (p_params.has("tire_long_stiffness")) tp.longStiff = (float)(double)p_params["tire_long_stiffness"];
+	if (p_params.has("tire_long_stiffness")) {
+		tp.longStiff = (float)(double)p_params["tire_long_stiffness"];
+	}
 
 	if (p_params.has("surface_friction_default")) {
 		// Friction used when the ground material has no explicit mapping.
@@ -1850,10 +1946,18 @@ void PhysXVehicleServer::apply_wheel_params(int p_idx, const Dictionary &p_param
 		v2->material_friction_params[p_idx].nbMaterialFrictions = n;
 	}
 
-	if (p_params.has("steer")) wf.steer = (bool)p_params["steer"];
-	if (p_params.has("traction")) wf.traction = (bool)p_params["traction"];
-	if (p_params.has("brake")) wf.brake = (bool)p_params["brake"];
-	if (p_params.has("front")) wf.front = (bool)p_params["front"];
+	if (p_params.has("steer")) {
+		wf.steer = (bool)p_params["steer"];
+	}
+	if (p_params.has("traction")) {
+		wf.traction = (bool)p_params["traction"];
+	}
+	if (p_params.has("brake")) {
+		wf.brake = (bool)p_params["brake"];
+	}
+	if (p_params.has("front")) {
+		wf.front = (bool)p_params["front"];
+	}
 
 	// Role flags may have changed -> re-seed the response multipliers.
 	_update_response_params();
@@ -1906,10 +2010,18 @@ void PhysXVehicleServer::set_gear_command(int p_gear) {
 // Tuned command-response limits; a negative entry reverts that channel to the
 // built-in default (see _update_response_params).
 void PhysXVehicleServer::set_response_params(const Dictionary &p_params) {
-	if (p_params.has("drive_torque")) tune_drive_torque = (float)(double)p_params["drive_torque"];
-	if (p_params.has("max_steer_angle")) tune_max_steer_angle = (float)(double)p_params["max_steer_angle"];
-	if (p_params.has("brake_torque")) tune_brake_torque = (float)(double)p_params["brake_torque"];
-	if (p_params.has("handbrake_torque")) tune_handbrake_torque = (float)(double)p_params["handbrake_torque"];
+	if (p_params.has("drive_torque")) {
+		tune_drive_torque = (float)(double)p_params["drive_torque"];
+	}
+	if (p_params.has("max_steer_angle")) {
+		tune_max_steer_angle = (float)(double)p_params["max_steer_angle"];
+	}
+	if (p_params.has("brake_torque")) {
+		tune_brake_torque = (float)(double)p_params["brake_torque"];
+	}
+	if (p_params.has("handbrake_torque")) {
+		tune_handbrake_torque = (float)(double)p_params["handbrake_torque"];
+	}
 	_update_response_params();
 }
 
@@ -2097,13 +2209,27 @@ void PhysXVehicleServer::set_engine_params(const Dictionary &p_params) {
 		return;
 	}
 	cached_engine_params = p_params;
-	if (p_params.has("moi")) v2->engine_params.moi = (float)(double)p_params["moi"];
-	if (p_params.has("peak_torque")) v2->engine_params.peakTorque = (float)(double)p_params["peak_torque"];
-	if (p_params.has("idle_omega")) v2->engine_params.idleOmega = (float)(double)p_params["idle_omega"];
-	if (p_params.has("max_omega")) v2->engine_params.maxOmega = (float)(double)p_params["max_omega"];
-	if (p_params.has("damping_full_throttle")) v2->engine_params.dampingRateFullThrottle = (float)(double)p_params["damping_full_throttle"];
-	if (p_params.has("damping_zero_throttle_clutch_engaged")) v2->engine_params.dampingRateZeroThrottleClutchEngaged = (float)(double)p_params["damping_zero_throttle_clutch_engaged"];
-	if (p_params.has("damping_zero_throttle_clutch_disengaged")) v2->engine_params.dampingRateZeroThrottleClutchDisengaged = (float)(double)p_params["damping_zero_throttle_clutch_disengaged"];
+	if (p_params.has("moi")) {
+		v2->engine_params.moi = (float)(double)p_params["moi"];
+	}
+	if (p_params.has("peak_torque")) {
+		v2->engine_params.peakTorque = (float)(double)p_params["peak_torque"];
+	}
+	if (p_params.has("idle_omega")) {
+		v2->engine_params.idleOmega = (float)(double)p_params["idle_omega"];
+	}
+	if (p_params.has("max_omega")) {
+		v2->engine_params.maxOmega = (float)(double)p_params["max_omega"];
+	}
+	if (p_params.has("damping_full_throttle")) {
+		v2->engine_params.dampingRateFullThrottle = (float)(double)p_params["damping_full_throttle"];
+	}
+	if (p_params.has("damping_zero_throttle_clutch_engaged")) {
+		v2->engine_params.dampingRateZeroThrottleClutchEngaged = (float)(double)p_params["damping_zero_throttle_clutch_engaged"];
+	}
+	if (p_params.has("damping_zero_throttle_clutch_disengaged")) {
+		v2->engine_params.dampingRateZeroThrottleClutchDisengaged = (float)(double)p_params["damping_zero_throttle_clutch_disengaged"];
+	}
 	if (p_params.has("torque_curve")) {
 		// Interleaved [x0,y0, x1,y1, ...] of (normalized omega, normalized torque).
 		v2->engine_params.torqueCurve.clear();
@@ -2121,8 +2247,12 @@ void PhysXVehicleServer::set_clutch_params(const Dictionary &p_params) {
 		return;
 	}
 	cached_clutch_params = p_params;
-	if (p_params.has("max_response")) v2->clutch_response_params.maxResponse = (float)(double)p_params["max_response"];
-	if (p_params.has("estimate_iterations")) v2->clutch_params.estimateIterations = (int)p_params["estimate_iterations"];
+	if (p_params.has("max_response")) {
+		v2->clutch_response_params.maxResponse = (float)(double)p_params["max_response"];
+	}
+	if (p_params.has("estimate_iterations")) {
+		v2->clutch_params.estimateIterations = (int)p_params["estimate_iterations"];
+	}
 	if (p_params.has("accuracy_mode")) {
 		v2->clutch_params.accuracyMode = ((int)p_params["accuracy_mode"] == 1)
 				? physx::PxVehicleClutchAccuracyMode::eBEST_POSSIBLE
@@ -2135,9 +2265,15 @@ void PhysXVehicleServer::set_gearbox_params(const Dictionary &p_params) {
 		return;
 	}
 	cached_gearbox_params = p_params;
-	if (p_params.has("neutral_gear")) v2->gearbox_params.neutralGear = (int)p_params["neutral_gear"];
-	if (p_params.has("final_ratio")) v2->gearbox_params.finalRatio = (float)(double)p_params["final_ratio"];
-	if (p_params.has("switch_time")) v2->gearbox_params.switchTime = (float)(double)p_params["switch_time"];
+	if (p_params.has("neutral_gear")) {
+		v2->gearbox_params.neutralGear = (int)p_params["neutral_gear"];
+	}
+	if (p_params.has("final_ratio")) {
+		v2->gearbox_params.finalRatio = (float)(double)p_params["final_ratio"];
+	}
+	if (p_params.has("switch_time")) {
+		v2->gearbox_params.switchTime = (float)(double)p_params["switch_time"];
+	}
 	if (p_params.has("ratios")) {
 		PackedFloat32Array ratios = p_params["ratios"];
 		const float *r = ratios.ptr();
@@ -2171,7 +2307,9 @@ void PhysXVehicleServer::set_autobox_params(const Dictionary &p_params) {
 			v2->autobox_params.downRatios[i] = v;
 		}
 	}
-	if (p_params.has("latency")) v2->autobox_params.latency = (float)(double)p_params["latency"];
+	if (p_params.has("latency")) {
+		v2->autobox_params.latency = (float)(double)p_params["latency"];
+	}
 }
 
 void PhysXVehicleServer::set_differential_params(const Dictionary &p_params) {
@@ -2182,13 +2320,27 @@ void PhysXVehicleServer::set_differential_params(const Dictionary &p_params) {
 	// Optional 4-wheel limited-slip biases/targets (0 = open). The per-wheel
 	// drive split (RWD/FWD/6x4) is handled in _update_response_params() from
 	// WheelFlags.traction, independent of these biases.
-	if (p_params.has("front_bias")) v2->diff_params.frontBias = (float)(double)p_params["front_bias"];
-	if (p_params.has("front_target")) v2->diff_params.frontTarget = (float)(double)p_params["front_target"];
-	if (p_params.has("rear_bias")) v2->diff_params.rearBias = (float)(double)p_params["rear_bias"];
-	if (p_params.has("rear_target")) v2->diff_params.rearTarget = (float)(double)p_params["rear_target"];
-	if (p_params.has("center_bias")) v2->diff_params.centerBias = (float)(double)p_params["center_bias"];
-	if (p_params.has("center_target")) v2->diff_params.centerTarget = (float)(double)p_params["center_target"];
-	if (p_params.has("rate")) v2->diff_params.rate = (float)(double)p_params["rate"];
+	if (p_params.has("front_bias")) {
+		v2->diff_params.frontBias = (float)(double)p_params["front_bias"];
+	}
+	if (p_params.has("front_target")) {
+		v2->diff_params.frontTarget = (float)(double)p_params["front_target"];
+	}
+	if (p_params.has("rear_bias")) {
+		v2->diff_params.rearBias = (float)(double)p_params["rear_bias"];
+	}
+	if (p_params.has("rear_target")) {
+		v2->diff_params.rearTarget = (float)(double)p_params["rear_target"];
+	}
+	if (p_params.has("center_bias")) {
+		v2->diff_params.centerBias = (float)(double)p_params["center_bias"];
+	}
+	if (p_params.has("center_target")) {
+		v2->diff_params.centerTarget = (float)(double)p_params["center_target"];
+	}
+	if (p_params.has("rate")) {
+		v2->diff_params.rate = (float)(double)p_params["rate"];
+	}
 	if (p_params.has("front_wheel_ids")) {
 		PackedInt32Array ids = p_params["front_wheel_ids"];
 		const int32_t *r = ids.ptr();

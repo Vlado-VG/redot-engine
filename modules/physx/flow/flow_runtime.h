@@ -2,9 +2,11 @@
 /*  flow_runtime.h                                                        */
 /**************************************************************************/
 /*                         This file is part of:                          */
-/*                             GODOT ENGINE                               */
-/*                        https://godotengine.org                         */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
 /**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
 /* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
 /* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
 /*                                                                        */
@@ -19,22 +21,21 @@
 /* The above copyright notice and this permission notice shall be         */
 /* included in all copies or substantial portions of the Software.        */
 /*                                                                        */
-/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,         */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
 /* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
-/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.*/
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
 /* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
 /* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
 /* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
-/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                  */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#ifndef FLOW_RUNTIME_H
-#define FLOW_RUNTIME_H
+#pragma once
 
 #ifdef GODOT_PHYSX_FLOW
 
-#include "core/templates/local_vector.h"
 #include "core/string/ustring.h"
+#include "core/templates/local_vector.h"
 
 // NvFlow C API (loaded entirely at runtime through NvFlowLoader -- nothing
 // links against nvflow*.lib; see SCsub).
@@ -154,12 +155,11 @@ public:
 	// Process-wide access for diagnostics; null when never created.
 	static FlowRuntime *get_singleton() { return singleton; }
 
-// Public ctor/dtor: instances exist only through acquire()/release(), but
-// memnew/memdelete (free templates) must be able to construct/destroy.
+	// Public ctor/dtor: instances exist only through acquire()/release(), but
+	// memnew/memdelete (free templates) must be able to construct/destroy.
 public:
 	FlowRuntime() = default;
 	~FlowRuntime();
 };
 
 #endif // GODOT_PHYSX_FLOW
-#endif // FLOW_RUNTIME_H

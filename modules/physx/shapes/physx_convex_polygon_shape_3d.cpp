@@ -1,7 +1,39 @@
+/**************************************************************************/
+/*  physx_convex_polygon_shape_3d.cpp                                     */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 #include "physx_convex_polygon_shape_3d.h"
 #include "../physx_server.h"
-#include <cooking/PxCooking.h>
 #include "core/templates/local_vector.h"
+#include <cooking/PxCooking.h>
 
 PhysXConvexPolygonShape3D::~PhysXConvexPolygonShape3D() {
 	_release_convex_mesh();
@@ -24,7 +56,7 @@ void PhysXConvexPolygonShape3D::set_data(const Variant &p_data) {
 	// Godot's ConvexPolygon data is just a PackedVector3Array of point cloud vertices,
 	// though sometimes it's wrapped in a dictionary depending on the server call context.
 	// We handle both just to be safe, but typically it is passed as a direct array or a dict with "points".
-	
+
 	PackedVector3Array new_points;
 
 	if (p_data.get_type() == Variant::DICTIONARY) {
@@ -65,12 +97,10 @@ bool PhysXConvexPolygonShape3D::get_physx_geometry(physx::PxGeometryHolder &hold
 	}
 
 	holder.storeAny(
-		physx::PxConvexMeshGeometry(
-			mirrored ? convex_mesh_mirrored : convex_mesh,
-			physx::PxMeshScale(
-					physx::PxVec3(physx::PxAbs(scale.x), physx::PxAbs(scale.y), physx::PxAbs(scale.z)))
-		)
-	);
+			physx::PxConvexMeshGeometry(
+					mirrored ? convex_mesh_mirrored : convex_mesh,
+					physx::PxMeshScale(
+							physx::PxVec3(physx::PxAbs(scale.x), physx::PxAbs(scale.y), physx::PxAbs(scale.z)))));
 
 	return true;
 }

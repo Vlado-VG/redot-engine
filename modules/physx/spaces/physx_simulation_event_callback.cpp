@@ -1,9 +1,41 @@
+/**************************************************************************/
+/*  physx_simulation_event_callback.cpp                                   */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 #include "physx_simulation_event_callback.h"
-#include "physx_space_3d.h"
-#include "../physx_server.h"
-#include "../objects/physx_body_3d.h"
 #include "../objects/physx_area_3d.h"
+#include "../objects/physx_body_3d.h"
+#include "../physx_server.h"
 #include "../shapes/physx_user_data.h"
+#include "physx_space_3d.h"
 
 #include "PxPhysicsAPI.h"
 #include "extensions/PxRigidBodyExt.h"
@@ -96,8 +128,8 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 		if (debug_contacts) {
 			for (physx::PxU32 c = 0; c < nb_contacts; c++) {
 				space->add_debug_contact(Vector3(contact_points[c].position.x,
-				                                 contact_points[c].position.y,
-				                                 contact_points[c].position.z));
+						contact_points[c].position.y,
+						contact_points[c].position.z));
 			}
 		}
 

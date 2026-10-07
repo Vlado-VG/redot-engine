@@ -1,3 +1,37 @@
+/**************************************************************************/
+/*  physx_server.h                                                        */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
+#pragma once
+
 /**
  * @file physx_server.h
  * @brief The PhysX-backed PhysicsServer3D implementation.
@@ -24,10 +58,10 @@
 #include "physx_rid_owner.h"
 #include "servers/physics_3d/physics_server_3d.h"
 
+#include "core/os/mutex.h"
+#include "core/templates/local_vector.h"
 #include <PxPhysicsAPI.h>
 #include <core/templates/rid_owner.h>
-#include "core/templates/local_vector.h"
-#include "core/os/mutex.h"
 
 class PhysXShape3D;
 class PhysXBody3D;
@@ -40,13 +74,13 @@ class PhysXGPUCloth3D;
 class PhysXGPUParticleFluid3D;
 class PhysXArticulation3D;
 namespace physx {
-	class PxFoundation;
-	class PxPhysics;
-	class PxPvd;
-	class PxPvdTransport;
-	class PxDefaultCpuDispatcher;
-	class PxCudaContextManager;
-}
+class PxFoundation;
+class PxPhysics;
+class PxPvd;
+class PxPvdTransport;
+class PxDefaultCpuDispatcher;
+class PxCudaContextManager;
+} //namespace physx
 
 class PhysXServer3D : public PhysicsServer3D {
 	GDCLASS(PhysXServer3D, PhysicsServer3D);
@@ -77,7 +111,7 @@ class PhysXServer3D : public PhysicsServer3D {
 	// ------------------------------------------------------------------
 	// PhysX SDK singletons (created in init(), released in finish()).
 	// ------------------------------------------------------------------
-	physx::PxCookingParams px_cooking_params { physx::PxTolerancesScale() };
+	physx::PxCookingParams px_cooking_params{ physx::PxTolerancesScale() };
 	physx::PxFoundation *px_foundation = nullptr;
 	physx::PxPhysics *px_physics = nullptr;
 	physx::PxPvd *px_debugger = nullptr;
@@ -126,10 +160,10 @@ private:
 	void _warn_module_api_separate_thread();
 
 public:
-	PhysXServer3D() {singleton_ptr = this;}
+	PhysXServer3D() { singleton_ptr = this; }
 	~PhysXServer3D() = default;
 
-	static PhysXServer3D *get_singleton() { return singleton_ptr;}
+	static PhysXServer3D *get_singleton() { return singleton_ptr; }
 
 	/// Raw space lookup by RID (World3D::get_space()) for scene-level nodes
 	/// that need this module's PxScene/PxPhysics directly -- the node-level
@@ -245,11 +279,11 @@ public:
 	// BODY API — dynamic/static/kinematic rigid bodies.
 	// Each setter resolves the RID → PhysXBody3D* and forwards the call.
 	// ------------------------------------------------------------------
-	PhysXBody3D* get_body(RID p_rid) const;
-	PhysXArea3D* get_area(RID p_rid) const;
-	PhysXShape3D* get_shape(RID p_rid) const;
-	PhysXJoint3D* get_joint(RID p_rid) const;
-	PhysXVehicleServer* get_vehicle(RID p_rid) const;
+	PhysXBody3D *get_body(RID p_rid) const;
+	PhysXArea3D *get_area(RID p_rid) const;
+	PhysXShape3D *get_shape(RID p_rid) const;
+	PhysXJoint3D *get_joint(RID p_rid) const;
+	PhysXVehicleServer *get_vehicle(RID p_rid) const;
 	virtual RID body_create() override;
 
 	virtual void body_set_space(RID p_body, RID p_space) override;

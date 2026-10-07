@@ -28,7 +28,7 @@ struct Particle {
 };
 
 // Analytic collider: a moving velocity boundary condition for the grid.
-//   c0: xyz = centre (world), w = shape (0 sphere, 1 box, 2 plane, 3 capsule)
+//   c0: xyz = center (world), w = shape (0 sphere, 1 box, 2 plane, 3 capsule)
 //   c1: sphere x=radius | box xyz=half-extents | plane xyz=unit normal | capsule x=radius y=half-height
 //   c2: xyz = linear velocity
 //   c3: orientation quaternion (box / capsule; sphere and plane ignore it)

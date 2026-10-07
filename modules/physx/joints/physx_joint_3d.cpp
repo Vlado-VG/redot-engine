@@ -1,11 +1,43 @@
+/**************************************************************************/
+/*  physx_joint_3d.cpp                                                    */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_joint_3d.cpp
  * @brief Implementation of PhysXJoint3D — type-dispatched wrapper for PhysX joints.
  */
 
 #include "physx_joint_3d.h"
-#include "../physx_conversions.h"
 #include "../objects/physx_body_3d.h"
+#include "../physx_conversions.h"
 #include "../physx_server.h"
 #include "../spaces/physx_space_3d.h"
 
@@ -13,14 +45,14 @@
 #include "core/math/math_funcs.h"
 #include "core/string/print_string.h"
 
-#include "foundation/PxTransform.h"
-#include "foundation/PxMat33.h"
-#include "common/PxTolerancesScale.h"
 #include "PxPhysics.h"
-#include "extensions/PxRevoluteJoint.h"
-#include "extensions/PxPrismaticJoint.h"
+#include "common/PxTolerancesScale.h"
 #include "extensions/PxD6Joint.h"
 #include "extensions/PxJointLimit.h"
+#include "extensions/PxPrismaticJoint.h"
+#include "extensions/PxRevoluteJoint.h"
+#include "foundation/PxMat33.h"
+#include "foundation/PxTransform.h"
 
 // Godot's G6DOF motor is a pure velocity servo: accelerate toward the target
 // velocity with up to the force limit and no position term. A PxD6JointDrive
@@ -262,19 +294,27 @@ physx::PxJoint *PhysXJoint3D::_create() {
 // ---------------------------------------------------------------------------
 physx::PxD6Axis::Enum PhysXJoint3D::_px_linear_axis(Vector3::Axis p_axis) {
 	switch (p_axis) {
-		case Vector3::AXIS_X: return physx::PxD6Axis::eX;
-		case Vector3::AXIS_Y: return physx::PxD6Axis::eY;
-		case Vector3::AXIS_Z: return physx::PxD6Axis::eZ;
-		default: return physx::PxD6Axis::eX;
+		case Vector3::AXIS_X:
+			return physx::PxD6Axis::eX;
+		case Vector3::AXIS_Y:
+			return physx::PxD6Axis::eY;
+		case Vector3::AXIS_Z:
+			return physx::PxD6Axis::eZ;
+		default:
+			return physx::PxD6Axis::eX;
 	}
 }
 
 physx::PxD6Axis::Enum PhysXJoint3D::_px_angular_axis(Vector3::Axis p_axis) {
 	switch (p_axis) {
-		case Vector3::AXIS_X: return physx::PxD6Axis::eTWIST;
-		case Vector3::AXIS_Y: return physx::PxD6Axis::eSWING1;
-		case Vector3::AXIS_Z: return physx::PxD6Axis::eSWING2;
-		default: return physx::PxD6Axis::eTWIST;
+		case Vector3::AXIS_X:
+			return physx::PxD6Axis::eTWIST;
+		case Vector3::AXIS_Y:
+			return physx::PxD6Axis::eSWING1;
+		case Vector3::AXIS_Z:
+			return physx::PxD6Axis::eSWING2;
+		default:
+			return physx::PxD6Axis::eTWIST;
 	}
 }
 
@@ -282,29 +322,74 @@ physx::PxD6Axis::Enum PhysXJoint3D::_px_angular_axis(Vector3::Axis p_axis) {
 // joint is dormant (no PxJoint yet), so nothing a node configures is lost.
 static void _store_g6dof_param(G6DOFJointAxisParams &p, PhysicsServer3D::G6DOFJointAxisParam p_param, real_t p_value) {
 	switch (p_param) {
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LOWER_LIMIT: p.linear_lower_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_UPPER_LIMIT: p.linear_upper_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LIMIT_SOFTNESS: p.linear_limit_softness = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_RESTITUTION: p.linear_restitution = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_DAMPING: p.linear_damping = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_TARGET_VELOCITY: p.linear_motor_target_velocity = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_FORCE_LIMIT: p.linear_motor_force_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_STIFFNESS: p.linear_spring_stiffness = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_DAMPING: p.linear_spring_damping = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_EQUILIBRIUM_POINT: p.linear_spring_equilibrium_point = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LOWER_LIMIT: p.angular_lower_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_UPPER_LIMIT: p.angular_upper_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LIMIT_SOFTNESS: p.angular_limit_softness = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_RESTITUTION: p.angular_restitution = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_DAMPING: p.angular_damping = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_FORCE_LIMIT: p.angular_force_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_ERP: p.angular_erp = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_TARGET_VELOCITY: p.angular_motor_target_velocity = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_FORCE_LIMIT: p.angular_motor_force_limit = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_STIFFNESS: p.angular_spring_stiffness = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_DAMPING: p.angular_spring_damping = (float)p_value; break;
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_EQUILIBRIUM_POINT: p.angular_spring_equilibrium_point = (float)p_value; break;
-		default: break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LOWER_LIMIT:
+			p.linear_lower_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_UPPER_LIMIT:
+			p.linear_upper_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LIMIT_SOFTNESS:
+			p.linear_limit_softness = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_RESTITUTION:
+			p.linear_restitution = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_DAMPING:
+			p.linear_damping = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_TARGET_VELOCITY:
+			p.linear_motor_target_velocity = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_FORCE_LIMIT:
+			p.linear_motor_force_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_STIFFNESS:
+			p.linear_spring_stiffness = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_DAMPING:
+			p.linear_spring_damping = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_EQUILIBRIUM_POINT:
+			p.linear_spring_equilibrium_point = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LOWER_LIMIT:
+			p.angular_lower_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_UPPER_LIMIT:
+			p.angular_upper_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LIMIT_SOFTNESS:
+			p.angular_limit_softness = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_RESTITUTION:
+			p.angular_restitution = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_DAMPING:
+			p.angular_damping = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_FORCE_LIMIT:
+			p.angular_force_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_ERP:
+			p.angular_erp = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_TARGET_VELOCITY:
+			p.angular_motor_target_velocity = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_FORCE_LIMIT:
+			p.angular_motor_force_limit = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_STIFFNESS:
+			p.angular_spring_stiffness = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_DAMPING:
+			p.angular_spring_damping = (float)p_value;
+			break;
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_EQUILIBRIUM_POINT:
+			p.angular_spring_equilibrium_point = (float)p_value;
+			break;
+		default:
+			break;
 	}
 }
 
@@ -326,7 +411,6 @@ physx::PxJoint *PhysXJoint3D::create_px_joint(physx::PxPhysics &p_physics,
 		const physx::PxTransform &p_local_a,
 		physx::PxRigidActor *p_body_b,
 		const physx::PxTransform &p_local_b) {
-
 	physx::PxJoint *px_joint = nullptr;
 
 	switch (p_type) {
@@ -763,8 +847,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 
 	switch (p_param) {
 		// Linear limit upper
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_UPPER:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_UPPER: {
 			slider_params.linear_limit_upper = (float)p_value;
 			slider_limit_enabled = true;
 			if (prismatic) {
@@ -775,8 +858,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			break;
 		}
 		// Linear limit lower
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_LOWER:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_LOWER: {
 			slider_params.linear_limit_lower = (float)p_value;
 			slider_limit_enabled = true;
 			if (prismatic) {
@@ -787,8 +869,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			break;
 		}
 		// Linear limit softness
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_SOFTNESS:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_SOFTNESS: {
 			slider_params.linear_limit_softness = (float)p_value;
 			if (prismatic) {
 				physx::PxJointLinearLimitPair limit = _slider_limit();
@@ -797,8 +878,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			break;
 		}
 		// Linear limit restitution
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_RESTITUTION:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_RESTITUTION: {
 			slider_params.linear_limit_restitution = (float)p_value;
 			if (prismatic) {
 				physx::PxJointLinearLimitPair limit = _slider_limit();
@@ -807,8 +887,7 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			break;
 		}
 		// Linear limit damping
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_DAMPING:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_LIMIT_DAMPING: {
 			slider_params.linear_limit_damping = (float)p_value;
 			if (prismatic) {
 				physx::PxJointLinearLimitPair limit = _slider_limit();
@@ -817,105 +896,88 @@ void PhysXJoint3D::set_slider_param(PhysicsServer3D::SliderJointParam p_param, r
 			break;
 		}
 		// Angular limit upper
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_UPPER:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_UPPER: {
 			slider_params.angular_limit_upper = (float)p_value;
 			// PhysX prismatic joint has no angular limits — store for round-trip.
 			break;
 		}
 		// Angular limit lower
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_LOWER:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_LOWER: {
 			slider_params.angular_limit_lower = (float)p_value;
 			break;
 		}
 		// Angular limit softness
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_SOFTNESS:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_SOFTNESS: {
 			slider_params.angular_limit_softness = (float)p_value;
 			break;
 		}
 		// Angular limit restitution
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_RESTITUTION:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_RESTITUTION: {
 			slider_params.angular_limit_restitution = (float)p_value;
 			break;
 		}
 		// Angular limit damping
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_DAMPING:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_LIMIT_DAMPING: {
 			slider_params.angular_limit_damping = (float)p_value;
 			break;
 		}
 		// Linear motion softness
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_MOTION_SOFTNESS:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_MOTION_SOFTNESS: {
 			slider_params.linear_motion_softness = (float)p_value;
 			break;
 		}
 		// Linear motion restitution
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_MOTION_RESTITUTION:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_MOTION_RESTITUTION: {
 			slider_params.linear_motion_restitution = (float)p_value;
 			break;
 		}
 		// Linear motion damping
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_MOTION_DAMPING:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_MOTION_DAMPING: {
 			slider_params.linear_motion_damping = (float)p_value;
 			break;
 		}
 		// Linear orthogonal softness
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_ORTHOGONAL_SOFTNESS:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_ORTHOGONAL_SOFTNESS: {
 			slider_params.linear_orthogonal_softness = (float)p_value;
 			break;
 		}
 		// Linear orthogonal restitution
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_ORTHOGONAL_RESTITUTION:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_ORTHOGONAL_RESTITUTION: {
 			slider_params.linear_orthogonal_restitution = (float)p_value;
 			break;
 		}
 		// Linear orthogonal damping
-		case PhysicsServer3D::SLIDER_JOINT_LINEAR_ORTHOGONAL_DAMPING:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_LINEAR_ORTHOGONAL_DAMPING: {
 			slider_params.linear_orthogonal_damping = (float)p_value;
 			break;
 		}
 		// Angular motion softness
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_MOTION_SOFTNESS:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_MOTION_SOFTNESS: {
 			slider_params.angular_motion_softness = (float)p_value;
 			break;
 		}
 		// Angular motion restitution
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_MOTION_RESTITUTION:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_MOTION_RESTITUTION: {
 			slider_params.angular_motion_restitution = (float)p_value;
 			break;
 		}
 		// Angular motion damping
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_MOTION_DAMPING:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_MOTION_DAMPING: {
 			slider_params.angular_motion_damping = (float)p_value;
 			break;
 		}
 		// Angular orthogonal softness
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_ORTHOGONAL_SOFTNESS:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_ORTHOGONAL_SOFTNESS: {
 			slider_params.angular_orthogonal_softness = (float)p_value;
 			break;
 		}
 		// Angular orthogonal restitution
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_ORTHOGONAL_RESTITUTION:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_ORTHOGONAL_RESTITUTION: {
 			slider_params.angular_orthogonal_restitution = (float)p_value;
 			break;
 		}
 		// Angular orthogonal damping
-		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_ORTHOGONAL_DAMPING:
-		{
+		case PhysicsServer3D::SLIDER_JOINT_ANGULAR_ORTHOGONAL_DAMPING: {
 			slider_params.angular_orthogonal_damping = (float)p_value;
 			break;
 		}
@@ -1161,39 +1223,33 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 
 	switch (p_param) {
 		// Linear limits
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LOWER_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LOWER_LIMIT: {
 			g6dof_flags[p_axis].linear_limit = true;
 			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_UPPER_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_UPPER_LIMIT: {
 			g6dof_flags[p_axis].linear_limit = true;
 			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear limit softness
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LIMIT_SOFTNESS:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_LIMIT_SOFTNESS: {
 			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear restitution
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_RESTITUTION:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_RESTITUTION: {
 			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear damping
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_DAMPING:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_DAMPING: {
 			_apply_g6dof_linear_limit(d6, p_axis);
 			break;
 		}
 		// Linear motor target velocity — accumulate into cached drive velocity
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_TARGET_VELOCITY:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_TARGET_VELOCITY: {
 			cached_g6dof_lin_drive_vel[p_axis] = params.linear_motor_target_velocity;
 			d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
 			// Velocity servo: zero stiffness, large damping (see
@@ -1207,8 +1263,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Linear motor force limit
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_FORCE_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_MOTOR_FORCE_LIMIT: {
 			g6dof_lin_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.linear_motor_force_limit };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = 0.0f;
@@ -1218,8 +1273,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Linear spring stiffness
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_STIFFNESS:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_STIFFNESS: {
 			g6dof_lin_drives[p_axis] = { true, params.linear_spring_stiffness, params.linear_spring_damping, PX_MAX_F32 };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.linear_spring_stiffness;
@@ -1231,8 +1285,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Linear spring damping
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_DAMPING:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_DAMPING: {
 			g6dof_lin_drives[p_axis] = { true, params.linear_spring_stiffness, params.linear_spring_damping, PX_MAX_F32 };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.linear_spring_stiffness;
@@ -1242,21 +1295,18 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Linear spring equilibrium point
-		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_EQUILIBRIUM_POINT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_LINEAR_SPRING_EQUILIBRIUM_POINT: {
 			_apply_g6dof_drive_position();
 			break;
 		}
 		// Angular limits
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LOWER_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LOWER_LIMIT: {
 			g6dof_flags[p_axis].angular_limit = true;
 			_apply_g6dof_angular_limit(d6, p_axis);
 			d6->setMotion(ang_axis, physx::PxD6Motion::eLIMITED);
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_UPPER_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_UPPER_LIMIT: {
 			// Mirror the lower-limit case: setting a limit bound marks the axis
 			// limited so the constraint is live now AND survives a wrapper
 			// rebuild (the cache is the source of truth for _apply_params).
@@ -1269,39 +1319,33 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Angular limit softness
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LIMIT_SOFTNESS:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_LIMIT_SOFTNESS: {
 			_apply_g6dof_angular_limit(d6, p_axis);
 			break;
 		}
 		// Angular restitution
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_RESTITUTION:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_RESTITUTION: {
 			_apply_g6dof_angular_limit(d6, p_axis);
 			break;
 		}
 		// Angular damping
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_DAMPING:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_DAMPING: {
 			_apply_g6dof_angular_limit(d6, p_axis);
 			break;
 		}
 		// Angular force limit (max torque for motor/limit correction)
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_FORCE_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_FORCE_LIMIT: {
 			// PxD6Joint doesn't have a direct max torque parameter for limits.
 			// This is stored for round-trip but has no effect on the solver.
 			break;
 		}
 		// Angular ERP (error reduction parameter for positional drift)
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_ERP:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_ERP: {
 			// PxD6Joint doesn't have an ERP parameter — stored for round-trip.
 			break;
 		}
 		// Angular motor target velocity — accumulate into cached drive velocity
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_TARGET_VELOCITY:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_TARGET_VELOCITY: {
 			cached_g6dof_ang_drive_vel[p_axis] = params.angular_motor_target_velocity;
 			d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
 			// Velocity servo (see G6DOF_MOTOR_DAMPING).
@@ -1314,8 +1358,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Angular motor force limit
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_FORCE_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_FORCE_LIMIT: {
 			g6dof_ang_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.angular_motor_force_limit };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = 0.0f;
@@ -1325,8 +1368,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Angular spring stiffness
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_STIFFNESS:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_STIFFNESS: {
 			g6dof_ang_drives[p_axis] = { true, params.angular_spring_stiffness, params.angular_spring_damping, PX_MAX_F32 };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.angular_spring_stiffness;
@@ -1336,8 +1378,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Angular spring damping
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_DAMPING:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_DAMPING: {
 			g6dof_ang_drives[p_axis] = { true, params.angular_spring_stiffness, params.angular_spring_damping, PX_MAX_F32 };
 			physx::PxD6JointDrive drive;
 			drive.stiffness = params.angular_spring_stiffness;
@@ -1347,8 +1388,7 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 			break;
 		}
 		// Angular spring equilibrium point
-		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_EQUILIBRIUM_POINT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_SPRING_EQUILIBRIUM_POINT: {
 			_apply_g6dof_drive_position();
 			break;
 		}
@@ -1421,8 +1461,7 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 	physx::PxD6Drive::Enum ang_drive = static_cast<physx::PxD6Drive::Enum>(ang_axis);
 
 	switch (p_flag) {
-		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_LIMIT: {
 			flags.linear_limit = p_enable;
 			// Godot semantics: the flag alone governs the axis — enabled means
 			// limited (while the range is valid, see _apply_g6dof_linear_limit),
@@ -1432,16 +1471,14 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 			}
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_LIMIT:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_LIMIT: {
 			flags.angular_limit = p_enable;
 			if (d6) {
 				d6->setMotion(ang_axis, p_enable ? physx::PxD6Motion::eLIMITED : physx::PxD6Motion::eFREE);
 			}
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_SPRING:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_ANGULAR_SPRING: {
 			flags.angular_spring = p_enable;
 			g6dof_ang_drives[p_axis] = { p_enable, params.angular_spring_stiffness, params.angular_spring_damping, PX_MAX_F32 };
 			if (d6) {
@@ -1454,8 +1491,7 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 			}
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_SPRING:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_SPRING: {
 			flags.linear_spring = p_enable;
 			g6dof_lin_drives[p_axis] = { p_enable, params.linear_spring_stiffness, params.linear_spring_damping, PX_MAX_F32 };
 			if (d6) {
@@ -1468,8 +1504,7 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 			}
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_MOTOR:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_MOTOR: {
 			flags.angular_motor = p_enable;
 			// Update cached angular drive velocity for this axis
 			cached_g6dof_ang_drive_vel[p_axis] = params.angular_motor_target_velocity;
@@ -1484,8 +1519,7 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 			}
 			break;
 		}
-		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_MOTOR:
-		{
+		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_LINEAR_MOTOR: {
 			flags.linear_motor = p_enable;
 			// Update cached linear drive velocity for this axis
 			cached_g6dof_lin_drive_vel[p_axis] = params.linear_motor_target_velocity;

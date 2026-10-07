@@ -1,42 +1,74 @@
+/**************************************************************************/
+/*  physx_server.cpp                                                      */
+/**************************************************************************/
+/*                         This file is part of:                          */
+/*                             REDOT ENGINE                               */
+/*                        https://redotengine.org                         */
+/**************************************************************************/
+/* Copyright (c) 2024-present Redot Engine contributors                   */
+/*                                          (see REDOT_AUTHORS.md)        */
+/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
+/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
+/*                                                                        */
+/* Permission is hereby granted, free of charge, to any person obtaining  */
+/* a copy of this software and associated documentation files (the        */
+/* "Software"), to deal in the Software without restriction, including    */
+/* without limitation the rights to use, copy, modify, merge, publish,    */
+/* distribute, sublicense, and/or sell copies of the Software, and to     */
+/* permit persons to whom the Software is furnished to do so, subject to  */
+/* the following conditions:                                              */
+/*                                                                        */
+/* The above copyright notice and this permission notice shall be         */
+/* included in all copies or substantial portions of the Software.        */
+/*                                                                        */
+/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
+/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
+/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
+/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
+/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
+/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
+/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
+/**************************************************************************/
+
 /**
  * @file physx_server.cpp
  * @brief Implementation of PhysXServer3D —the PhysX-backed PhysicsServer3D.
  */
 
 #include "physx_server.h"
-#include "physx_project_settings.h"
-#include "shapes/physx_shape_3d.h"
-#include "shapes/physx_box_shape_3d.h"
-#include "shapes/physx_sphere_shape_3d.h"
-#include "shapes/physx_capsule_shape_3d.h"
-#include "shapes/physx_cylinder_shape_3d.h"
-#include "shapes/physx_world_boundary_shape_3d.h"
-#include "shapes/physx_separation_ray_shape_3d.h"
-#include "shapes/physx_convex_polygon_shape_3d.h"
-#include "shapes/physx_concave_polygon_shape_3d.h"
-#include "shapes/physx_heightmap_shape_3d.h"
-#include "shapes/physx_custom_shape_type.h"
-#include "spaces/physx_space_3d.h"
-#include "spaces/physx_direct_space_state_3d.h"
-#include "spaces/physx_filter_shader.h"
+#include "joints/physx_joint_3d.h"
+#include "objects/physx_area_3d.h"
+#include "objects/physx_articulation_3d.h"
 #include "objects/physx_body_3d.h"
 #include "objects/physx_direct_body_state_3d.h"
-#include "objects/physx_area_3d.h"
-#include "objects/physx_soft_body_3d.h"
 #include "objects/physx_gpu_cloth_3d.h"
 #include "objects/physx_gpu_particle_fluid_3d.h"
-#include "objects/physx_articulation_3d.h"
-#include "joints/physx_joint_3d.h"
+#include "objects/physx_soft_body_3d.h"
+#include "physx_project_settings.h"
+#include "shapes/physx_box_shape_3d.h"
+#include "shapes/physx_capsule_shape_3d.h"
+#include "shapes/physx_concave_polygon_shape_3d.h"
+#include "shapes/physx_convex_polygon_shape_3d.h"
+#include "shapes/physx_custom_shape_type.h"
+#include "shapes/physx_cylinder_shape_3d.h"
+#include "shapes/physx_heightmap_shape_3d.h"
+#include "shapes/physx_separation_ray_shape_3d.h"
+#include "shapes/physx_shape_3d.h"
+#include "shapes/physx_sphere_shape_3d.h"
+#include "shapes/physx_world_boundary_shape_3d.h"
+#include "spaces/physx_direct_space_state_3d.h"
+#include "spaces/physx_filter_shader.h"
+#include "spaces/physx_space_3d.h"
 #include "vehicles/physx_vehicle_server.h"
 
-#include "foundation/PxFoundation.h"
 #include "PxPhysics.h"
 #include "common/PxTolerancesScale.h"
-#include "extensions/PxExtensionsAPI.h"
 #include "extensions/PxDefaultCpuDispatcher.h"
+#include "extensions/PxExtensionsAPI.h"
 #include "foundation/PxAllocatorCallback.h"
 #include "foundation/PxErrorCallback.h"
 #include "foundation/PxErrors.h"
+#include "foundation/PxFoundation.h"
 #include "vehicle/PxVehicleAPI.h"
 
 #ifdef GODOT_PHYSX_GPU
@@ -291,18 +323,38 @@ RID PhysXServer3D::_make_shape() {
 	return rid;
 }
 
-RID PhysXServer3D::world_boundary_shape_create() { return _make_shape<PhysXWorldBoundaryShape3D>(); }
-RID PhysXServer3D::separation_ray_shape_create() { return _make_shape<PhysXSeparationRayShape3D>(); }
-RID PhysXServer3D::sphere_shape_create()         { return _make_shape<PhysXSphereShape3D>(); }
-RID PhysXServer3D::box_shape_create()            { return _make_shape<PhysXBoxShape3D>(); }
-RID PhysXServer3D::capsule_shape_create()        { return _make_shape<PhysXCapsuleShape3D>(); }
-RID PhysXServer3D::cylinder_shape_create()       { return _make_shape<PhysXCylinderShape3D>(); }
-RID PhysXServer3D::convex_polygon_shape_create() { return _make_shape<PhysXConvexPolygonShape3D>(); }
-RID PhysXServer3D::concave_polygon_shape_create() { return _make_shape<PhysXConcavePolygonShape3D>(); }
-RID PhysXServer3D::heightmap_shape_create()      { return _make_shape<PhysXHeightMapShape3D>(); }
-RID PhysXServer3D::custom_shape_create()         { return _make_shape<PhysXCustomShapeType>(); }
+RID PhysXServer3D::world_boundary_shape_create() {
+	return _make_shape<PhysXWorldBoundaryShape3D>();
+}
+RID PhysXServer3D::separation_ray_shape_create() {
+	return _make_shape<PhysXSeparationRayShape3D>();
+}
+RID PhysXServer3D::sphere_shape_create() {
+	return _make_shape<PhysXSphereShape3D>();
+}
+RID PhysXServer3D::box_shape_create() {
+	return _make_shape<PhysXBoxShape3D>();
+}
+RID PhysXServer3D::capsule_shape_create() {
+	return _make_shape<PhysXCapsuleShape3D>();
+}
+RID PhysXServer3D::cylinder_shape_create() {
+	return _make_shape<PhysXCylinderShape3D>();
+}
+RID PhysXServer3D::convex_polygon_shape_create() {
+	return _make_shape<PhysXConvexPolygonShape3D>();
+}
+RID PhysXServer3D::concave_polygon_shape_create() {
+	return _make_shape<PhysXConcavePolygonShape3D>();
+}
+RID PhysXServer3D::heightmap_shape_create() {
+	return _make_shape<PhysXHeightMapShape3D>();
+}
+RID PhysXServer3D::custom_shape_create() {
+	return _make_shape<PhysXCustomShapeType>();
+}
 
-void PhysXServer3D::shape_set_data(RID p_shape, const Variant &p_data){
+void PhysXServer3D::shape_set_data(RID p_shape, const Variant &p_data) {
 	PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
 	ERR_FAIL_NULL(shape);
 
@@ -310,13 +362,13 @@ void PhysXServer3D::shape_set_data(RID p_shape, const Variant &p_data){
 }
 
 Variant PhysXServer3D::shape_get_data(RID p_shape) const {
-    const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
-    ERR_FAIL_NULL_V(shape, Variant());
+	const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
+	ERR_FAIL_NULL_V(shape, Variant());
 
-    return shape->get_data();
+	return shape->get_data();
 }
 
-void PhysXServer3D::shape_set_margin(RID p_shape, real_t p_margin){
+void PhysXServer3D::shape_set_margin(RID p_shape, real_t p_margin) {
 	PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
 	ERR_FAIL_NULL(shape);
 
@@ -324,61 +376,61 @@ void PhysXServer3D::shape_set_margin(RID p_shape, real_t p_margin){
 }
 
 real_t PhysXServer3D::shape_get_margin(RID p_shape) const {
-    const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
-    ERR_FAIL_NULL_V(shape, 0.04f);
+	const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
+	ERR_FAIL_NULL_V(shape, 0.04f);
 
-    return shape->get_margin();
+	return shape->get_margin();
 }
 
 PhysicsServer3D::ShapeType PhysXServer3D::shape_get_type(RID p_shape) const {
-    const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
-    ERR_FAIL_NULL_V(shape, PhysicsServer3D::SHAPE_CUSTOM);
+	const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
+	ERR_FAIL_NULL_V(shape, PhysicsServer3D::SHAPE_CUSTOM);
 
-    return shape->get_type();
+	return shape->get_type();
 }
 
-void PhysXServer3D::shape_set_custom_solver_bias(RID p_shape, real_t p_bias){
+void PhysXServer3D::shape_set_custom_solver_bias(RID p_shape, real_t p_bias) {
 	PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
 	ERR_FAIL_NULL(shape);
 
 	shape->set_solver_bias((float)p_bias);
 }
 real_t PhysXServer3D::shape_get_custom_solver_bias(RID p_shape) const {
-    const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
-    ERR_FAIL_NULL_V(shape, 0.0);
+	const PhysXShape3D *shape = shape_owner.get_or_null(p_shape);
+	ERR_FAIL_NULL_V(shape, 0.0);
 
-    return shape->get_solver_bias();
+	return shape->get_solver_bias();
 }
 
 RID PhysXServer3D::space_create() {
-    // CORE-1: same degraded-boot discipline as body_create/area_create —
-    // the space's default area (created below) needs PxPhysics.
-    ERR_FAIL_NULL_V_MSG(px_physics, RID(),
-            "PhysX: space_create() called before PhysX initialization. "
-            "Check that init() succeeded and that PhysX DLLs/libs are available.");
-    PhysXSpace3D *space = memnew(PhysXSpace3D);
-    RID rid = space_owner.make_rid(space);
-    space->set_rid(rid);
-    _space_list.push_back(rid);
+	// CORE-1: same degraded-boot discipline as body_create/area_create —
+	// the space's default area (created below) needs PxPhysics.
+	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
+			"PhysX: space_create() called before PhysX initialization. "
+			"Check that init() succeeded and that PhysX DLLs/libs are available.");
+	PhysXSpace3D *space = memnew(PhysXSpace3D);
+	RID rid = space_owner.make_rid(space);
+	space->set_rid(rid);
+	_space_list.push_back(rid);
 
-    // Create the space's default area (priority -1). It provides the
-    // world-default gravity/damp and is the additive fallback for any
-    // gravity/damp channel not resolved by user areas.
-    RID area_id = area_create();
-    PhysXArea3D *def = area_owner.get_or_null(area_id);
-    ERR_FAIL_NULL_V(def, rid);
-    def->set_space(space);
-    def->set_param(PhysicsServer3D::AREA_PARAM_PRIORITY, -1);
-    // Seed with project-setting defaults so it matches the old scene gravity.
-    const real_t g = GLOBAL_GET("physics/3d/default_gravity");
-    def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY, g);
-    // Seed the direction from the project setting too -- the old hardcoded
-    // (0, -1, 0) fought a customized physics/3d/default_gravity_vector until
-    // World3D's area_set_param overwrote it a frame later.
-    def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY_VECTOR,
-            (Vector3)GLOBAL_GET("physics/3d/default_gravity_vector"));
-    space->set_default_area(def);
-    return rid;
+	// Create the space's default area (priority -1). It provides the
+	// world-default gravity/damp and is the additive fallback for any
+	// gravity/damp channel not resolved by user areas.
+	RID area_id = area_create();
+	PhysXArea3D *def = area_owner.get_or_null(area_id);
+	ERR_FAIL_NULL_V(def, rid);
+	def->set_space(space);
+	def->set_param(PhysicsServer3D::AREA_PARAM_PRIORITY, -1);
+	// Seed with project-setting defaults so it matches the old scene gravity.
+	const real_t g = GLOBAL_GET("physics/3d/default_gravity");
+	def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY, g);
+	// Seed the direction from the project setting too -- the old hardcoded
+	// (0, -1, 0) fought a customized physics/3d/default_gravity_vector until
+	// World3D's area_set_param overwrote it a frame later.
+	def->set_param(PhysicsServer3D::AREA_PARAM_GRAVITY_VECTOR,
+			(Vector3)GLOBAL_GET("physics/3d/default_gravity_vector"));
+	space->set_default_area(def);
+	return rid;
 }
 
 void PhysXServer3D::space_set_param(RID p_space, PhysicsServer3D::SpaceParameter p_param, real_t p_value) {
@@ -638,8 +690,8 @@ PhysXVehicleServer *PhysXServer3D::get_vehicle(RID p_rid) const {
 
 RID PhysXServer3D::body_create() {
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
-        "PhysX: body_create() called before PhysX initialization. "
-        "Check that init() succeeded and that PhysX DLLs/libs are available.");
+			"PhysX: body_create() called before PhysX initialization. "
+			"Check that init() succeeded and that PhysX DLLs/libs are available.");
 	PhysXBody3D *body = memnew(PhysXBody3D);
 	RID rid = body_owner.make_rid(body);
 	body->set_rid(rid);
@@ -717,9 +769,9 @@ void PhysXServer3D::body_set_shape_transform(RID p_body, int p_shape_idx, const 
 }
 
 void PhysXServer3D::body_set_shape_disabled(RID p_body, int p_shape_idx, bool p_disabled) {
-    PhysXBody3D *body = body_owner.get_or_null(p_body);
-    ERR_FAIL_NULL(body);
-    body->set_shape_disabled(p_shape_idx, p_disabled);
+	PhysXBody3D *body = body_owner.get_or_null(p_body);
+	ERR_FAIL_NULL(body);
+	body->set_shape_disabled(p_shape_idx, p_disabled);
 }
 
 int PhysXServer3D::body_get_shape_count(RID p_body) const {
@@ -1093,7 +1145,7 @@ RID PhysXServer3D::vehicle_create(int p_archetype) {
 	MutexLock lock(api_mutex);
 	_warn_module_api_separate_thread();
 	ERR_FAIL_NULL_V_MSG(px_physics, RID(),
-        "PhysX: vehicle_create() called before PhysX initialization.");
+			"PhysX: vehicle_create() called before PhysX initialization.");
 	PhysXVehicleServer *vehicle = memnew(PhysXVehicleServer);
 	RID rid = vehicle_owner.make_rid(vehicle);
 	vehicle->set_rid(rid);
@@ -2109,7 +2161,6 @@ int PhysXServer3D::cloth_get_mesh(RID p_cloth, PackedVector3Array &r_positions, 
 	return (int)tris;
 }
 
-
 RID PhysXServer3D::joint_create() {
 	PhysXJoint3D *joint = memnew(PhysXJoint3D());
 	RID rid = joint_owner.make_rid(joint);
@@ -2144,21 +2195,21 @@ void PhysXServer3D::joint_make_pin(RID p_joint, RID p_body_a, const Vector3 &p_l
 	// Fetch any in-flight solve BEFORE resolving pointers (see helper comment).
 	_physx_sync_spaces_for_joint(p_body_a, p_body_b);
 
-    PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
-    ERR_FAIL_NULL(joint);
+	PhysXJoint3D *joint = joint_owner.get_or_null(p_joint);
+	ERR_FAIL_NULL(joint);
 
-    // Resolve both bodies. body_a is required; body_b may be invalid, in which
-    // case the joint is anchored to the world frame (PhysX accepts a NULL actor
-    // for either side). This matches Godot's contract: a single-body joint pins
-    // the body to a fixed point in world space.
-    PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
-    ERR_FAIL_NULL_MSG(body_a, "PhysX: pin joint body_a is not a rigid body.");
-    PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
+	// Resolve both bodies. body_a is required; body_b may be invalid, in which
+	// case the joint is anchored to the world frame (PhysX accepts a NULL actor
+	// for either side). This matches Godot's contract: a single-body joint pins
+	// the body to a fixed point in world space.
+	PhysXBody3D *body_a = body_owner.get_or_null(p_body_a);
+	ERR_FAIL_NULL_MSG(body_a, "PhysX: pin joint body_a is not a rigid body.");
+	PhysXBody3D *body_b = p_body_b.is_valid() ? body_owner.get_or_null(p_body_b) : nullptr;
 
-    physx::PxTransform local_a(physx::PxVec3(p_local_a.x, p_local_a.y, p_local_a.z));
-    physx::PxTransform local_b(physx::PxVec3(p_local_b.x, p_local_b.y, p_local_b.z));
+	physx::PxTransform local_a(physx::PxVec3(p_local_a.x, p_local_a.y, p_local_a.z));
+	physx::PxTransform local_b(physx::PxVec3(p_local_b.x, p_local_b.y, p_local_b.z));
 
-    joint->make(PhysicsServer3D::JOINT_TYPE_PIN, PhysXJoint3D::JOINT_KIND_PIN, body_a, local_a, body_b, local_b);
+	joint->make(PhysicsServer3D::JOINT_TYPE_PIN, PhysXJoint3D::JOINT_KIND_PIN, body_a, local_a, body_b, local_b);
 }
 
 void PhysXServer3D::pin_joint_set_param(RID p_joint, PhysicsServer3D::PinJointParam p_param, real_t p_value) {
@@ -2775,16 +2826,36 @@ void PhysXServer3D::finish() {
 	// chassis PxRigidDynamic, and before spaces because release() calls
 	// space->unregister_vehicle(). Bodies/areas need their spaces alive when
 	// their destructors call _destroy_actor which accesses space->remove_actor().
-	for (const RID &r : joint_owner.get_owned_list()) free(r);
-	for (const RID &r : vehicle_owner.get_owned_list()) free(r);
-	for (const RID &r : body_owner.get_owned_list()) free(r);
-	for (const RID &r : area_owner.get_owned_list()) free(r);
-	for (const RID &r : soft_body_owner.get_owned_list()) free(r);
-	for (const RID &r : articulation_owner.get_owned_list()) free(r);
-	for (const RID &r : fluid_owner.get_owned_list()) free(r);
-	for (const RID &r : cloth_owner.get_owned_list()) free(r);
-	for (const RID &r : shape_owner.get_owned_list()) free(r);
-	for (const RID &r : space_owner.get_owned_list()) free(r);
+	for (const RID &r : joint_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : vehicle_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : body_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : area_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : soft_body_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : articulation_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : fluid_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : cloth_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : shape_owner.get_owned_list()) {
+		free(r);
+	}
+	for (const RID &r : space_owner.get_owned_list()) {
+		free(r);
+	}
 	_space_list.clear(); // each free() above already removed its entry
 
 	if (px_default_material) {
@@ -2876,13 +2947,13 @@ void PhysXServer3D::sync() {
 	// The engine calls sync() at the start of every physics tick, before
 	// scripts. In async stepping mode this fetches the solve that step()
 	// kicked last tick (per-space no-op when nothing is in flight); with the
-		// flag off the fetch already happened inline in step() and this is a no-op.
-		for (const RID &rid : _space_list) {
-			PhysXSpace3D *space = space_owner.get_or_null(rid);
-			if (space) {
-				space->sync();
-			}
+	// flag off the fetch already happened inline in step() and this is a no-op.
+	for (const RID &rid : _space_list) {
+		PhysXSpace3D *space = space_owner.get_or_null(rid);
+		if (space) {
+			space->sync();
 		}
+	}
 }
 
 void PhysXServer3D::end_sync() {
@@ -2984,4 +3055,3 @@ int PhysXServer3D::get_process_info(PhysicsServer3D::ProcessInfo p_process_info)
 			return 0;
 	}
 }
-
