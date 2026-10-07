@@ -13,6 +13,13 @@ def can_build(env, platform):
         "macos": "thirdparty/physx/lib/macos/universal",
         "linuxbsd": "thirdparty/physx/lib/linux/x86_64",
     }
+    # Windows: the vendored static libs are MSVC /MT builds. MinGW and
+    # llvm-mingw cannot link them (the lib's static-UCRT symbols duplicate
+    # the MinGW CRT, and its embedded /DEFAULTLIB directives demand MSVC-only
+    # import libs), so the module is MSVC-only on Windows -- same constraint
+    # as the upstream godot_physx integration (win.x86_64.vc143.mt).
+    if platform == "windows":
+        return os.path.isdir(lib_roots[platform]) and env.msvc
     if platform == "android":
         return os.path.isdir("thirdparty/physx/lib/android")
     if platform in lib_roots:

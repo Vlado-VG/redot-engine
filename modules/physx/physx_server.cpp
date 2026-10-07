@@ -35,7 +35,10 @@
  * @brief Implementation of PhysXServer3D —the PhysX-backed PhysicsServer3D.
  */
 
-#include "physx_server.h"
+#if defined(__linux__) && defined(GODOT_PHYSX_GPU)
+#include <dlfcn.h> // Godot patch: preload libcuda so the GPU runtime's cu* symbols resolve (see the GPU init below).
+#endif
+
 #include "joints/physx_joint_3d.h"
 #include "objects/physx_area_3d.h"
 #include "objects/physx_articulation_3d.h"
@@ -45,6 +48,7 @@
 #include "objects/physx_gpu_particle_fluid_3d.h"
 #include "objects/physx_soft_body_3d.h"
 #include "physx_project_settings.h"
+#include "physx_server.h"
 #include "shapes/physx_box_shape_3d.h"
 #include "shapes/physx_capsule_shape_3d.h"
 #include "shapes/physx_concave_polygon_shape_3d.h"
@@ -2747,17 +2751,29 @@ void PhysXServer3D::init() {
 	// run), so enhanced_determinism forces the CPU path even when a device is
 	// present. A GPU build without a usable CUDA device falls back to CPU.
 	if (!PhysXProjectSettings::enhanced_determinism) {
-		physx::PxCudaContextManagerDesc cuda_desc;
-		px_cuda_context = PxCreateCudaContextManager(*px_foundation, cuda_desc, PxGetProfilerCallback());
-		if (px_cuda_context && !px_cuda_context->contextIsValid()) {
-			px_cuda_context->release();
-			px_cuda_context = nullptr;
-		}
-		if (px_cuda_context) {
-			print_line(vformat("PhysX: CUDA context ready on device '%s' -> GPU dynamics available.", px_cuda_context->getDeviceName()));
-			gpu_dynamics_enabled = true;
-		} else {
-			WARN_PRINT("PhysX: no usable CUDA device; falling back to CPU simulation.");
+#if defined(__linux__)
+		// The prebuilt GPU runtime resolves the CUDA driver API through the
+		// process's global namespace instead of linking libcuda, so preload
+		// it; on machines without NVIDIA drivers this fails cleanly and the
+		// engine takes the CPU fallback rather than crashing on the first
+		// lazy cu* call.
+		if (dlopen("libcuda.so.1", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+			WARN_PRINT(vformat("PhysX: libcuda.so.1 could not be loaded (%s); falling back to CPU simulation.", dlerror()));
+		} else
+#endif
+		{
+			physx::PxCudaContextManagerDesc cuda_desc;
+			px_cuda_context = PxCreateCudaContextManager(*px_foundation, cuda_desc, PxGetProfilerCallback());
+			if (px_cuda_context && !px_cuda_context->contextIsValid()) {
+				px_cuda_context->release();
+				px_cuda_context = nullptr;
+			}
+			if (px_cuda_context) {
+				print_line(vformat("PhysX: CUDA context ready on device '%s' -> GPU dynamics available.", px_cuda_context->getDeviceName()));
+				gpu_dynamics_enabled = true;
+			} else {
+				WARN_PRINT("PhysX: no usable CUDA device; falling back to CPU simulation.");
+			}
 		}
 	} else {
 		print_verbose("PhysX: enhanced_determinism is set -> GPU dynamics disabled (the GPU solver is not deterministic).");

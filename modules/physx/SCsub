@@ -244,6 +244,10 @@ else:
 if physx_gpu and env["platform"] in ("linux", "linuxbsd"):
     gpu_so = thirdparty_dir.File("bin/linux/x86_64/release/libPhysXGpu_64.so")
     env.Append(LIBS=[gpu_so])
+    # The runtime's cudamanager calls the CUDA driver API directly; those
+    # cu* symbols resolve at runtime from the driver library, which the
+    # module dlopens (RTLD_GLOBAL) before creating the CUDA context.
+    env.Append(LINKFLAGS=["-Wl,--allow-shlib-undefined"])
     env.Command(
         File("#bin/libPhysXGpu_64.so"),
         gpu_so,
