@@ -9,14 +9,14 @@ Import("env_modules")
 # Create a clone for the module environment
 env_physx = env_modules.Clone()
 
-# The module was authored against MSVC; gcc/clang CI adds -Wshadow, which
-# its many nested single-letter loop variables don't satisfy (~34 sites).
-# Disable the warning for module sources rather than risk blind renames
-# that cannot be compile-verified on this port's target toolchains; engine
-# code outside the module keeps full warning strictness. Incremental
-# renames can retire this flag over time.
+# Ported-module warning relaxations for gcc/clang CI (MSVC unaffected):
+# - -Wshadow: the module's nested single-letter loop variables (~34 sites)
+#   need renames that can't be compile-verified here; engine code outside
+#   the module keeps full strictness. Incremental renames can retire this.
+# - -Wvirtual-inheritance: the PhysX SDK's PxSamplingExt.h defines
+#   PxTriangleMeshPoissonSampler with a direct virtual base by design.
 if not (env["platform"] == "windows" and not env["use_mingw"]):
-    env_physx.Append(CCFLAGS=["-Wno-shadow", "-Wno-error=shadow"])
+    env_physx.Append(CCFLAGS=["-Wno-shadow", "-Wno-error=shadow", "-Wno-virtual-inheritance"])
 
 # GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
 # which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /

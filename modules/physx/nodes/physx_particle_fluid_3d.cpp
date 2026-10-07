@@ -695,7 +695,7 @@ void PhysXParticleFluid3D::_make_fluid() {
 
 		// Foam/spray sprites: same world-space MultiMesh pattern as the PBD
 		// branch -- the Vulkan diffuse layer feeds it from the solver readback.
-		if (foam_enabled && get_world_3d() != nullptr) {
+		if (foam_enabled && get_world_3d().is_valid()) {
 			Ref<SphereMesh> foam_sphere;
 			foam_sphere.instantiate();
 			foam_sphere->set_radius(_effective_foam_size() * 0.5);

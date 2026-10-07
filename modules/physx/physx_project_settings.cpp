@@ -32,7 +32,7 @@
 
 /**
  * @file physx_project_settings.cpp
- * @brief Registers and reads the physics/physx_3d/* project settings.
+ * @brief Registers and reads the physics/physx_3d project settings (prefix physics/physx_3d/).
  */
 
 #include "physx_project_settings.h"
