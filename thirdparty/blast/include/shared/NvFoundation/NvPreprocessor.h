@@ -245,7 +245,7 @@ family shortcuts
 #define NV_WINDOWS_FAMILY (NV_WINRT || NV_WIN32 || NV_WIN64)
 #define NV_MICROSOFT_FAMILY (NV_XBOXONE || NV_X360 || NV_WINDOWS_FAMILY)
 #define NV_LINUX_FAMILY (NV_LINUX || NV_ANDROID)
-#define NV_APPLE_FAMILY (NV_IOS || NV_OSX)                  // equivalent to #if __APPLE__
+#define NV_APPLE_FAMILY (NV_IOS || NV_OSX) // equivalent to #if __APPLE__
 #define NV_UNIX_FAMILY (NV_LINUX_FAMILY || NV_APPLE_FAMILY) // shortcut for unix/posix platforms
 // architecture
 #define NV_INTEL_FAMILY (NV_X64 || NV_X86)
@@ -253,7 +253,7 @@ family shortcuts
 #define NV_P64_FAMILY (NV_X64 || NV_A64) // shortcut for 64-bit architectures
 
 // shortcut for PS3 PPU
-#define NV_PPU (NV_PS3&& NV_PPC)
+#define NV_PPU (NV_PS3 && NV_PPC)
 
 /**
 Assert macro
@@ -277,7 +277,7 @@ DLL export macros
 #endif
 #endif
 
-#if NV_UNIX_FAMILY&& __GNUC__ >= 4
+#if NV_UNIX_FAMILY && __GNUC__ >= 4
 #define NV_UNIX_EXPORT __attribute__((visibility("default")))
 #else
 #define NV_UNIX_EXPORT
@@ -346,7 +346,9 @@ Inline macro
 */
 #define NV_INLINE inline
 #if NV_MICROSOFT_FAMILY
+#if defined(_MSC_VER) // Godot patch: MSVC-only pragma
 #pragma inline_depth(255)
+#endif
 #endif
 
 /**
@@ -448,8 +450,8 @@ General defines
 #endif
 
 #define NV_OFFSETOF_BASE 0x100 // casting the null ptr takes a special-case code path, which we don't want
-#define NV_OFFSET_OF_RT(Class, Member)                                                                                 \
-    (reinterpret_cast<size_t>(&reinterpret_cast<Class*>(NV_OFFSETOF_BASE)->Member) - size_t(NV_OFFSETOF_BASE))
+#define NV_OFFSET_OF_RT(Class, Member) \
+	(reinterpret_cast<size_t>(&reinterpret_cast<Class *>(NV_OFFSETOF_BASE)->Member) - size_t(NV_OFFSETOF_BASE))
 
 // check that exactly one of NDEBUG and _DEBUG is defined
 #if !defined(NDEBUG) ^ defined(_DEBUG)
@@ -470,8 +472,7 @@ General defines
 // avoid unreferenced parameter warning
 // preferred solution: omit the parameter's name from the declaration
 template <class T>
-NV_CUDA_CALLABLE NV_INLINE void NV_UNUSED(T const&)
-{
+NV_CUDA_CALLABLE NV_INLINE void NV_UNUSED(T const &) {
 }
 
 // Ensure that the application hasn't tweaked the pack value to less than 8, which would break
@@ -480,22 +481,19 @@ NV_CUDA_CALLABLE NV_INLINE void NV_UNUSED(T const&)
 // Some GCC compilers need the compiler flag -malign-double to be set.
 // Apparently the apple-clang-llvm compiler doesn't support malign-double.
 #if NV_PS4 || NV_APPLE_FAMILY
-struct NvPackValidation
-{
-    char _;
-    long a;
+struct NvPackValidation {
+	char _;
+	long a;
 };
 #elif NV_ANDROID
-struct NvPackValidation
-{
-    char _;
-    double a;
+struct NvPackValidation {
+	char _;
+	double a;
 };
 #else
-struct NvPackValidation
-{
-    char _;
-    long long a;
+struct NvPackValidation {
+	char _;
+	long long a;
 };
 #endif
 #if !NV_APPLE_FAMILY
@@ -504,11 +502,10 @@ NV_COMPILE_TIME_ASSERT(NV_OFFSET_OF(NvPackValidation, a) == 8);
 
 // use in a cpp file to suppress LNK4221
 #if NV_VC
-#define NV_DUMMY_SYMBOL                                                                                                \
-    namespace                                                                                                          \
-    {                                                                                                                  \
-    char NvDummySymbol;                                                                                                \
-    }
+#define NV_DUMMY_SYMBOL \
+	namespace {         \
+	char NvDummySymbol; \
+	}
 #else
 #define NV_DUMMY_SYMBOL
 #endif
@@ -521,11 +518,11 @@ NV_COMPILE_TIME_ASSERT(NV_OFFSET_OF(NvPackValidation, a) == 8);
 
 // Macro for avoiding default assignment and copy, because doing this by inheritance can increase class size on some
 // platforms.
-#define NV_NOCOPY(Class)                                                                                               \
-    \
-protected:                                                                                                             \
-    Class(const Class&);                                                                                               \
-    Class& operator=(const Class&);
+#define NV_NOCOPY(Class)  \
+                          \
+protected:                \
+	Class(const Class &); \
+	Class &operator=(const Class &);
 
 #define NV_STRINGIZE_HELPER(X) #X
 #define NV_STRINGIZE(X) NV_STRINGIZE_HELPER(X)

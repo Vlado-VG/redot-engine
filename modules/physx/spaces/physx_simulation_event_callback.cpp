@@ -79,7 +79,7 @@ void PhysXSimulationEventCallback::onContact(const physx::PxContactPairHeader &p
 	// pointer, and the cross-referenced data (rid, shape index, velocity) is
 	// unreadable once the wrapper is freed, so such pairs are skipped whole.
 	const physx::PxU32 header_flags = pairHeader.flags;
-	if (header_flags & (physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_0 | physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_1)) {
+	if (header_flags & (physx::PxU32)(physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_0 | physx::PxContactPairHeaderFlag::eREMOVED_ACTOR_1)) {
 		return;
 	}
 
