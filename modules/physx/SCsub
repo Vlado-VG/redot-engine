@@ -225,7 +225,12 @@ if env["platform"] == "windows" and env.msvc:
 else:
     # File nodes: SCons passes them as direct link inputs (no -l mangling
     # of absolute paths) at the correct position after the module objects.
-    env.Append(LIBS=[physx_lib_path.File(lib + ".lib") for lib in physx_libs])
+    # Extensions are platform-specific: MinGW/llvm-mingw consume the
+    # MSVC-format "Name.lib" archives; Linux links "libName.a".
+    if env["platform"] == "windows":
+        env.Append(LIBS=[physx_lib_path.File(lib + ".lib") for lib in physx_libs])
+    else:
+        env.Append(LIBS=[physx_lib_path.File(f"lib{lib}.a") for lib in physx_libs])
 
 # Linux GPU dynamics: link NVIDIA's prebuilt runtime directly (it exports
 # the GPU entry points the CPU statics don't carry) and place it next to
