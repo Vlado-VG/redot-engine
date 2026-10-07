@@ -810,7 +810,7 @@ void PhysXDestructible3D::_spawn_intact() {
 }
 
 void PhysXDestructible3D::_spawn_piece(uint32_t p_chunk_index, const Transform3D &p_transform, const Vector3 &p_linear_velocity, bool p_physics) {
-	ERR_FAIL_INDEX(p_chunk_index, chunk_points.size());
+	ERR_FAIL_INDEX((int)p_chunk_index, chunk_points.size());
 	const PackedVector3Array &points = chunk_points[p_chunk_index];
 	const uint32_t tri_count = points.size() / 3;
 	ERR_FAIL_COND_MSG(points.size() < 4, vformat("PhysXDestructible3D: chunk %d has too few vertices for a convex hull.", p_chunk_index));
@@ -891,7 +891,7 @@ void PhysXDestructible3D::_spawn_piece(uint32_t p_chunk_index, const Transform3D
 }
 
 Vector3 PhysXDestructible3D::_chunk_centroid_local(uint32_t p_chunk_index) const {
-	ERR_FAIL_INDEX_V(p_chunk_index, chunk_points.size(), Vector3());
+	ERR_FAIL_INDEX_V((int)p_chunk_index, chunk_points.size(), Vector3());
 	const PackedVector3Array &points = chunk_points[p_chunk_index];
 	if (points.is_empty()) {
 		return Vector3();
