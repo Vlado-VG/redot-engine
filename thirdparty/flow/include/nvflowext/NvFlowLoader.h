@@ -37,7 +37,7 @@ static void* NvFlowLoadLibrary(const char* winName, const char* linuxName)
 }
 static void* NvFlowGetProcAddress(void* module, const char* name)
 {
-    return GetProcAddress((HMODULE)module, name);
+    return (void *)GetProcAddress((HMODULE)module, name); // Godot patch: explicit cast; clang rejects implicit FARPROC->void*
 }
 static void NvFlowFreeLibrary(void* module)
 {

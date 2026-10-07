@@ -9,6 +9,15 @@ Import("env_modules")
 # Create a clone for the module environment
 env_physx = env_modules.Clone()
 
+# The module was authored against MSVC; gcc/clang CI adds -Wshadow, which
+# its many nested single-letter loop variables don't satisfy (~34 sites).
+# Disable the warning for module sources rather than risk blind renames
+# that cannot be compile-verified on this port's target toolchains; engine
+# code outside the module keeps full warning strictness. Incremental
+# renames can retire this flag over time.
+if not (env["platform"] == "windows" and not env["use_mingw"]):
+    env_physx.Append(CCFLAGS=["-Wno-shadow", "-Wno-error=shadow"])
+
 # GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
 # which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /
 # eGPU-broadphase scene path. The CUDA-enabled PhysX SDK is required at build
