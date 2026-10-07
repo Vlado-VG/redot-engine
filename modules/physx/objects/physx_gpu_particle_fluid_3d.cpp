@@ -123,8 +123,15 @@ struct PhysXFluidIsosurface : public PxParticleSystemCallback {
 		const float rest_offset = 0.5f * p_spacing;
 		const float foam_rest = 0.5f * p_foam_spacing;
 
-		PxPhysicsGpu *gpu = PxGetPhysicsGpu();
-		ERR_FAIL_NULL(gpu);
+		// PxGetPhysicsGpu is exported by the GPU-enabled core library on
+		// Windows; the vendored Linux CPU libs and the prebuilt GPU runtime
+		// do not carry it, so the smoothed-isosurface helper is unavailable
+		// there and GPU fluids render their plain particle set instead.
+		PxPhysicsGpu *gpu = nullptr;
+#ifdef WINDOWS_ENABLED
+		gpu = PxGetPhysicsGpu();
+#endif
+		ERR_FAIL_NULL_MSG(gpu, "PhysX: smoothed particle isosurface needs PxGetPhysicsGpu (Windows-only in the vendored SDK runtime).");
 
 		// Moderately higher smoothing strength (default 0.5): the isosurface
 		// follows a neighbour-averaged position field so a disturbed pool's edge

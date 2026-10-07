@@ -47,25 +47,27 @@ jobs:
 
       - name: Write vendor preset
         run: |
-          # linux-clang-rd with GPU projects and GPU static libraries enabled;
-          # everything else matches the CPU vendor configuration.
-          cat > physx/buildtools/presets/public/linux-clang-rd-gpu.xml <<'EOF'
+          # CPU-only vendor preset: the GPU archive's cudamanager references the
+          # CUDA driver API directly (cuMemsetD8_v2...), which would make -lcuda
+          # a hard link requirement nobody on CI can satisfy; CPU-only libs are
+          # self-contained.
+          cat > physx/buildtools/presets/public/linux-clang-rd.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
-          <preset name="linux-clang-rd-gpu" comment="Linux clang PhysX SDK general settings (CUDA GPU)">
+          <preset name="linux-clang-rd" comment="Linux clang PhysX SDK general settings (CPU only)">
             <platform targetPlatform="linux" compiler="clang" />
             <CMakeSwitches>
               <cmakeSwitch name="PX_BUILDSNIPPETS" value="False" comment="Generate the snippets" />
               <cmakeSwitch name="PX_BUILDPVDRUNTIME" value="False" comment="Generate the OmniPVD project" />
               <cmakeSwitch name="PX_GENERATE_STATIC_LIBRARIES" value="True" comment="Generate static libs" />
-              <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS" value="True" comment="Generate the GPU projects" />
+              <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS" value="False" comment="Generate the GPU projects" />
               <cmakeSwitch name="PX_GENERATE_GPU_PROJECTS_ONLY" value="False" comment="Generate ONLY the GPU projects, if possible." />
-              <cmakeSwitch name="PX_GENERATE_GPU_STATIC_LIBRARIES" value="True" comment="Generate PhysXGPU static libraries" />
+              <cmakeSwitch name="PX_GENERATE_GPU_STATIC_LIBRARIES" value="False" comment="Generate PhysXGPU static libraries" />
               <cmakeSwitch name="PX_GENERATE_GPU_REDUCED_ARCHITECTURES" value="False" comment="Generate only a reduced number of GPU architectures for faster compilation" />
               <cmakeSwitch name="PX_SCALAR_MATH" value="False" comment="Disable SIMD math" />
               <cmakeSwitch name="PX_FLOAT_POINT_PRECISE_MATH" value="False" comment="Float point precise math" />
             </CMakeSwitches>
             <CMakeParams>
-              <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/linux-clang-rd-gpu/PhysX" comment="Install path relative to PhysX SDK root" />
+              <cmakeParam name="CMAKE_INSTALL_PREFIX" value="install/linux-clang-rd/PhysX" comment="Install path relative to PhysX SDK root" />
             </CMakeParams>
           </preset>
           EOF
@@ -73,13 +75,13 @@ jobs:
       - name: Generate build projects (packman pulls dependencies)
         run: |
           cd physx
-          ./generate_projects.sh linux-clang-rd-gpu
+          ./generate_projects.sh linux-clang-rd
 
       - name: Build checked and release configs
         run: |
           cd physx
-          cmake --build compiler/linux-clang-rd-gpu-checked -j"$(nproc)"
-          cmake --build compiler/linux-clang-rd-gpu-release -j"$(nproc)"
+          cmake --build compiler/linux-clang-rd-checked -j"$(nproc)"
+          cmake --build compiler/linux-clang-rd-release -j"$(nproc)"
 
       - name: Checkout engine repo (collection script)
         uses: actions/checkout@v4
@@ -93,5 +95,5 @@ jobs:
       - name: Upload SDK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: physx-sdk-linux-x86_64-gpu
+          name: physx-sdk-linux-x86_64
           path: out/

@@ -51,7 +51,8 @@ else:
 # GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
 # which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /
 # eGPU-broadphase scene path. The CUDA-enabled PhysX SDK is required at build
-# time; at run time Windows needs PhysXGpu_64.dll next to the binary -- without
+# time; at run time the platform's PhysXGpu runtime must sit next to the
+# binary (PhysXGpu_64.dll on Windows, libPhysXGpu_64.so on Linux) -- without
 # a usable CUDA device the server logs a warning and simulates on the CPU. Opt
 # out with `physx_gpu=no` -- GODOT_PHYSX_GPU is then not defined, so the server
 # never touches CUDA (the GPU fluid object still compiles but stays inert, and
@@ -65,18 +66,21 @@ physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False
 # the GPU fluid/cloth object code needs them to compile. GODOT_PHYSX_GPU only
 # gates whether OUR code creates a CUDA context.
 #
-# GPU is Windows-only: the Linux GPU archive's cudamanager references the CUDA
-# driver API directly (cuMemsetD8_v2, cuStreamSynchronize, ...), which makes
-# -lcuda (a driver/stub library) a hard link requirement -- unlike Windows,
-# where PhysXGpu is a runtime DLL. CI has no CUDA toolkit, so Linux builds
-# CPU-only (wrappers' CPU fallbacks take over). To enable Linux GPU later:
-# vendor NVIDIA's stub libcuda.so into the link env and re-extend the platform
-# list below plus the PhysXGpu_static_64 insertion in the lib list.
+# GPU platforms: Windows (PhysXGpu_64.dll runtime) and Linux (NVIDIA's
+# prebuilt libPhysXGpu_64.so runtime, vendored under bin/linux). The Linux
+# route mirrors Windows: the static CPU libs stay self-contained and the
+# closed-source runtime provides the GPU entry points (PxCreatePhysXGpu,
+# PxCreateCudaContextManager, ...) at link time from the .so directly --
+# it carries NO libcuda dependency itself (the driver is contacted at
+# runtime), so engines built this way still boot on non-NVIDIA machines
+# and take the CPU fallback. Building the GPU libs from source instead
+# (the linux-clang-rd-gpu preset) drags the CUDA driver API into the link
+# (-lcuda), which CI cannot satisfy; that route stays closed.
 physx_defines = [
     "PX_PHYSX_STATIC_LIB",
 ]
 
-if physx_gpu and env["platform"] == "windows":
+if physx_gpu and env["platform"] in ("windows", "linux", "linuxbsd"):
     physx_defines.append("GODOT_PHYSX_GPU")
 elif physx_gpu:
     print(f"physx: physx_gpu=yes has no GPU wiring for platform '{env['platform']}'; building CPU-only.")
@@ -194,8 +198,11 @@ if env["platform"] != "windows":
         "PhysXCharacterKinematic_static_64",
         "PhysXCooking_static_64",
         "PhysXExtensions_static_64",
-        "PhysXPvdSDK_static_64",
+        # PhysX's objects reference pvdsdk symbols (NpPvdSceneClient ->
+        # PvdUserRenderer), so the PVD SDK must link AFTER PhysX for the
+        # single-pass GNU/MinGW linkers; MSVC is order-insensitive.
         "PhysX_static_64",
+        "PhysXPvdSDK_static_64",
         "PhysXCommon_static_64",
         "PhysXFoundation_static_64",
     ]
@@ -205,13 +212,37 @@ if env["platform"] != "windows":
     # hard link requirement. Re-enable PhysXGpu_static_64 here only with a
     # driver/stub library available to the link environment.
 
-# Prebuilt PhysX libraries use plain ".lib" names. On Windows, SCons would
-# otherwise append $LIBSUFFIX (e.g. ".windows.editor.x86_64.lib") to env.LIBS
-# entries, producing names like "PhysX_static_64.lib.windows.editor.x86_64.lib".
-if env["platform"] == "windows":
+# Prebuilt PhysX libraries use plain ".lib" names. MSVC's linker resolves
+# them from LIBPATH (SCons would otherwise append $LIBSUFFIX to env.LIBS
+# entries, producing names like "PhysX_static_64.lib.windows.editor.x86_64.lib").
+# The non-MSVC Windows toolchains (MinGW gcc, llvm-mingw cross) treat bare
+# "Name.lib" arguments as files, so they get absolute paths instead.
+from methods import using_msvc
+
+if env["platform"] == "windows" and using_msvc(env):
     env.Append(LINKFLAGS=[lib + ".lib" for lib in physx_libs])
 else:
-    env.Append(LIBS=physx_libs)
+    env.Append(
+        LIBS=[physx_lib_path.File(lib + ".lib").abspath if env["platform"] == "windows" else lib for lib in physx_libs]
+    )
+
+# Linux GPU dynamics: link NVIDIA's prebuilt runtime directly (it exports
+# the GPU entry points the CPU statics don't carry) and place it next to
+# the binary; the engine's $ORIGIN rpath finds it there. The runtime has
+# no libcuda dependency itself, so non-NVIDIA machines keep booting with
+# the CPU fallback. Only linked when GODOT_PHYSX_GPU is defined. NVIDIA
+# ships a single config-agnostic runtime for Linux (unlike the per-config
+# Windows DLLs), so it lives once under bin/linux/x86_64/release and both
+# SDK configurations link the same file; a checked/ sibling can take over
+# if NVIDIA ever ships one.
+if physx_gpu and env["platform"] in ("linux", "linuxbsd"):
+    gpu_so = thirdparty_dir.File("bin/linux/x86_64/release/libPhysXGpu_64.so")
+    env.Append(LIBS=[gpu_so.abspath])
+    env.Command(
+        File("#bin/libPhysXGpu_64.so"),
+        gpu_so,
+        Copy("$TARGET", "$SOURCE"),
+    )
 
 # Copy the SDK's runtime DLLs next to the built engine binary so the runtime
 # DLL version always matches the linked SDK configuration. PhysX 5.11 ships
@@ -298,8 +329,14 @@ if blast_enabled and env["platform"] == "windows":
     # the shaders extension (pre-built radial/falloff damage programs). NvBlastTk/
     # serialization/stress aren't linked -- nothing in the module uses them.
     blast_libs = ["NvBlast", "NvBlastGlobals", "NvBlastExtAuthoring", "NvBlastExtShaders"]
-    env.PrependUnique(LIBPATH=[blast_dir.Dir("lib/windows/x86_64/release").abspath])
-    env.Append(LINKFLAGS=[x + ".lib" for x in blast_libs])
+    blast_lib_path = blast_dir.Dir("lib/windows/x86_64/release")
+    env.PrependUnique(LIBPATH=[blast_lib_path.abspath])
+    # Bare .lib names resolve via LIBPATH for MSVC only (see the PhysX block).
+    env.Append(
+        LINKFLAGS=[x + ".lib" for x in blast_libs]
+        if using_msvc(env)
+        else [blast_lib_path.File(x + ".lib").abspath for x in blast_libs]
+    )
     # Copy the full runtime DLL set: NvBlastExtAuthoring.dll may pull in the
     # other NvBlast DLLs at load time, and a missing one fails the engine load.
     blast_dll_dir = blast_dir.Dir("bin/windows/x86_64/release")
