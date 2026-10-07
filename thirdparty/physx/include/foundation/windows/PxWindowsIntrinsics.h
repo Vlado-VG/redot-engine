@@ -17,24 +17,34 @@
 #endif
 
 // Godot patch: MSVC-only pragmas guarded; gcc/clang (MinGW, cross
-// builds) would flood -Wunknown-pragmas on them.
+// builds) would flood -Wunknown-pragmas on them. The includes stay
+// UNCONDITIONAL -- intrin.h defines __m128 etc. on MinGW/clang too,
+// and swallowing it broke the whole SIMD typedef chain downstream.
 #if defined(_MSC_VER)
 #pragma intrinsic(memcmp)
 #pragma intrinsic(memcpy)
 #pragma intrinsic(memset)
+#endif
 
+#if defined(_MSC_VER)
 #pragma warning(push)
 //'symbol' is not defined as a preprocessor macro, replacing with '0' for 'directives'
 #pragma warning(disable : 4668)
 #if PX_VC == 10
 #pragma warning(disable : 4987) // nonstandard extension used: 'throw (...)'
 #endif
+#endif
 #include <intrin.h>
+#if defined(_MSC_VER)
 #pragma warning(pop)
+#endif
 
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4985) // 'symbol name': attributes not present on previous declaration
+#endif
 #include <math.h>
+#if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
 

@@ -51,13 +51,11 @@ else:
 # GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
 # which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /
 # eGPU-broadphase scene path. The CUDA-enabled PhysX SDK is required at build
-# time; at run time Windows needs PhysXGpu_64.dll next to the binary, while
-# Linux embeds the kernels in the static archive and only asks the NVIDIA
-# driver (dlopen'd) for a context -- without a usable CUDA device the server
-# logs a warning and simulates on the CPU. Opt out with `physx_gpu=no` --
-# GODOT_PHYSX_GPU is then not defined, so the server never touches CUDA (the
-# GPU fluid object still compiles but stays inert, and the cloth node falls
-# back to its CPU solver).
+# time; at run time Windows needs PhysXGpu_64.dll next to the binary -- without
+# a usable CUDA device the server logs a warning and simulates on the CPU. Opt
+# out with `physx_gpu=no` -- GODOT_PHYSX_GPU is then not defined, so the server
+# never touches CUDA (the GPU fluid object still compiles but stays inert, and
+# the cloth node falls back to its CPU solver).
 physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False")
 
 # 1. PhysX Defines
@@ -67,17 +65,18 @@ physx_gpu = ARGUMENTS.get("physx_gpu", "yes") not in ("no", "0", "false", "False
 # the GPU fluid/cloth object code needs them to compile. GODOT_PHYSX_GPU only
 # gates whether OUR code creates a CUDA context.
 #
-# GPU platforms: Windows (PhysXGpu_64.dll runtime) and Linux (kernels embedded
-# in the aggregated libPhysXGpu_static_64.a; no cudart link-time dependency --
-# the driver API is dlopen'd, so machines without NVIDIA drivers keep loading
-# the engine and take the CPU fallback). Other platforms build CPU-only; the
-# wrappers' CPU fallbacks take over. Linux GPU linking itself is newly wired
-# and still runtime-unvalidated.
+# GPU is Windows-only: the Linux GPU archive's cudamanager references the CUDA
+# driver API directly (cuMemsetD8_v2, cuStreamSynchronize, ...), which makes
+# -lcuda (a driver/stub library) a hard link requirement -- unlike Windows,
+# where PhysXGpu is a runtime DLL. CI has no CUDA toolkit, so Linux builds
+# CPU-only (wrappers' CPU fallbacks take over). To enable Linux GPU later:
+# vendor NVIDIA's stub libcuda.so into the link env and re-extend the platform
+# list below plus the PhysXGpu_static_64 insertion in the lib list.
 physx_defines = [
     "PX_PHYSX_STATIC_LIB",
 ]
 
-if physx_gpu and env["platform"] in ("windows", "linux", "linuxbsd"):
+if physx_gpu and env["platform"] == "windows":
     physx_defines.append("GODOT_PHYSX_GPU")
 elif physx_gpu:
     print(f"physx: physx_gpu=yes has no GPU wiring for platform '{env['platform']}'; building CPU-only.")
@@ -201,14 +200,10 @@ if env["platform"] != "windows":
         "PhysXFoundation_static_64",
     ]
 
-    # Linux GPU dynamics: the SDK's aggregated CUDA archive (the separate
-    # per-domain Gpu libs from the Windows layout are combined into one).
-    # Its symbols reference Common/Foundation further down the list; kernels
-    # are embedded, so nothing else is needed at link time. PhysXGpu is only
-    # referenced when GODOT_PHYSX_GPU is defined -- with physx_gpu=no the
-    # unreferenced archive is skipped by the linker.
-    if physx_gpu and env["platform"] in ("linux", "linuxbsd"):
-        physx_libs.insert(physx_libs.index("PhysX_static_64") + 1, "PhysXGpu_static_64")
+    # Linux links CPU-only (see the GPU note above): the GPU archive's
+    # cudamanager references the CUDA driver API directly, making -lcuda a
+    # hard link requirement. Re-enable PhysXGpu_static_64 here only with a
+    # driver/stub library available to the link environment.
 
 # Prebuilt PhysX libraries use plain ".lib" names. On Windows, SCons would
 # otherwise append $LIBSUFFIX (e.g. ".windows.editor.x86_64.lib") to env.LIBS
