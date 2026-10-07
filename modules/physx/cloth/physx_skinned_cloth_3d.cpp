@@ -70,16 +70,6 @@ void vertex() {
 	NORMAL = normalize(texelFetch(cloth_normals, px, 0).xyz * normal_sign);
 }
 
-void fragment() {
-	vec4 c = texture(albedo_texture, UV) * albedo_color;
-	ALBEDO = c.rgb;
-	ROUGHNESS = roughness;
-	// Single-layer cloth shows both sides (capes, open hems): light the back
-	// faces from their own side.
-	if (!FRONT_FACING) {
-		NORMAL = -NORMAL;
-	}
-}
 )";
 
 // Body capsules between consecutive bones, by humanoid-profile name or the
@@ -113,12 +103,6 @@ int find_bone_any(Skeleton3D *p_skeleton, const char *const p_names[2]) {
 		}
 	}
 	return -1;
-}
-
-uint32_t float_bits_u(float p_f) {
-	uint32_t u;
-	memcpy(&u, &p_f, 4);
-	return u;
 }
 
 float bits_as_float(uint32_t p_u) {

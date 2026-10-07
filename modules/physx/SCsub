@@ -9,14 +9,37 @@ Import("env_modules")
 # Create a clone for the module environment
 env_physx = env_modules.Clone()
 
-# Ported-module warning relaxations for gcc/clang CI (MSVC unaffected):
-# - -Wshadow: the module's nested single-letter loop variables (~34 sites)
-#   need renames that can't be compile-verified here; engine code outside
-#   the module keeps full strictness. Incremental renames can retire this.
-# - -Wvirtual-inheritance: the PhysX SDK's PxSamplingExt.h defines
-#   PxTriangleMeshPoissonSampler with a direct virtual base by design.
-if not (env["platform"] == "windows" and not env["use_mingw"]):
-    env_physx.Append(CCFLAGS=["-Wno-shadow", "-Wno-error=shadow", "-Wno-virtual-inheritance"])
+# Ported-module warning relaxations, keyed by compiler family.
+# Rationale: the module and the vendored NVIDIA headers were authored
+# against MSVC; the CI's gcc/clang flag set is stricter in places that
+# are vendor-header style, not module bugs. Engine code outside the
+# module keeps full warning strictness everywhere.
+if env["platform"] == "windows" and not env["use_mingw"]:
+    # MSVC: NvFlowLoader.h carries unreferenced static helpers (C4505).
+    env_physx.Append(CCFLAGS=["/wd4505"])
+else:
+    env_physx.Append(
+        CCFLAGS=[
+            # Nested single-letter loop variables (~34 sites) need renames
+            # that cannot be compile-verified on this port's toolchains;
+            # incremental renames can retire this flag.
+            "-Wno-shadow",
+            "-Wno-error=shadow",
+            # NvFlow.h brace-initialized descriptors and NvFlowExt.h
+            # default_init macros; ANY module TU can include these headers
+            # (register_types.cpp pulls flow_runtime.h), so the taming cannot
+            # live on a per-directory environment.
+            "-Wno-missing-field-initializers",
+            "-Wno-missing-braces",
+        ]
+    )
+    # gcc-only: the SDK's PxSamplingExt.h defines PxTriangleMeshPoissonSampler
+    # with a direct virtual base by design. Clang has no such warning and
+    # rejects the unknown -Wno-* option outright, so scope it to gcc.
+    from methods import using_gcc
+
+    if using_gcc(env):
+        env_physx.Append(CCFLAGS=["-Wno-virtual-inheritance"])
 
 # GPU dynamics: enabled by default (physx_gpu=yes). It defines GODOT_PHYSX_GPU,
 # which enables the CUDA context manager at init() and the eENABLE_GPU_DYNAMICS /
@@ -296,27 +319,11 @@ if blast_enabled and env["platform"] == "windows":
         )
 
 # The NVIDIA SDK headers (NvFlow.h, NvFlowExt.h, NvFlowLoader.h, Blast) carry
-# style-level warnings -- clang/gcc -Wmissing-field-initializers and
-# -Wmissing-braces on their brace-initialized descriptors and default_init
-# macros, MSVC C4505 on unreferenced static helpers -- that the CI's werror
-# turns fatal. Compile the NVIDIA-header-consuming sources (blast, flow)
-# with those warnings tamed rather than patching the vendor headers.
-env_nvidia = env_physx.Clone()
-if env["platform"] == "windows" and not env["use_mingw"]:
-    env_nvidia.Append(CCFLAGS=["/wd4505"])
-else:
-    env_nvidia.Append(
-        CCFLAGS=[
-            "-Wno-missing-field-initializers",
-            "-Wno-missing-braces",
-            "-Wno-error",
-            "-Wno-error=missing-field-initializers",
-            "-Wno-error=missing-braces",
-        ]
-    )
-
+# style-level warnings that the CI's werror turns fatal; the taming now lives
+# on env_physx (see the relaxations block at the top) because any module TU
+# can reach those headers through includes.
 if blast_enabled and env["platform"] == "windows":
-    env_nvidia.add_source_files(env.modules_sources, "blast/*.cpp")
+    env_physx.add_source_files(env.modules_sources, "blast/*.cpp")
 elif blast_enabled and env["platform"] != "windows":
     print(
         "physx: blast=yes has no library wiring for platform '{}' yet; building without Blast.".format(env["platform"])
@@ -326,7 +333,7 @@ elif blast_enabled and env["platform"] != "windows":
 # Windows-only for now (prebuilt DLLs), but flow/*.cpp are fully guarded and
 # compile empty elsewhere.
 if flow_enabled:
-    env_nvidia.add_source_files(env.modules_sources, "flow/*.cpp")
+    env_physx.add_source_files(env.modules_sources, "flow/*.cpp")
 
 # MLS-MPM compute-fluid shaders (cross-vendor fallback for the PhysX GPU path).
 # Every pass #include's mpm_fluid_inc.glsl, which GLSL_HEADER does not see, so

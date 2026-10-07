@@ -121,7 +121,7 @@ static PhysicsServer3D *create_physx_server() {
 
 void initialize_physx_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
-		// Register the physics/physx_3d/* settings before the server factory
+		// Register the physics/physx_3d settings before the server factory
 		// runs, so init() reads the user's values (not the defaults).
 		PhysXProjectSettings::register_settings();
 

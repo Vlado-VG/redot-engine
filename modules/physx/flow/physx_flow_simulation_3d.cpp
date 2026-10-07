@@ -185,7 +185,7 @@ bool PhysXFlowSimulation3D::_build_server_shape_mesh(const RID &p_shape_rid, Cac
 	PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 	const PhysicsServer3D::ShapeType type = ps->shape_get_type(p_shape_rid);
 	// Data layouts follow THIS fork's PhysXServer3D::shape_get_data contract
-	// (verified against modules/physx/shapes/*.cpp): box = half-extents,
+	// (verified against modules/physx/shapes sources): box = half-extents,
 	// convex = raw point array, concave = {faces: triangle soup}, capsule /
 	// cylinder = {height, radius}.
 	switch (type) {

@@ -93,7 +93,7 @@ bool FlowRuntime::_init() {
 	ERR_FAIL_COND_V(initialized, false);
 	initialized = true;
 
-	// The Flow device settings live under physics/physx_3d/flow/* (registered
+	// The Flow device settings live under physics/physx_3d/flow (registered
 	// with all module settings at SERVERS init). Read just these three keys
 	// here -- GLOBAL_GET falls back to the registered defaults if the runtime
 	// is somehow created before registration (e.g. headless tests).

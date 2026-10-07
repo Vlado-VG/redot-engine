@@ -359,7 +359,10 @@ struct A {
 This declaration style is parsed correctly by Visual Assist.
 */
 #ifndef PX_ALIGN
-	#if PX_WINDOWS_FAMILY
+	// Godot patch: MinGW gcc ignores __declspec(align) (warning + lost
+	// alignment, an ABI mismatch vs the MSVC-built libraries), so let the
+	// GCC attribute branch win over the Windows branch there.
+	#if PX_WINDOWS_FAMILY && !PX_GCC_FAMILY
 		#define PX_ALIGN(alignment, decl) __declspec(align(alignment)) decl
 		#define PX_ALIGN_PREFIX(alignment) __declspec(align(alignment))
 		#define PX_ALIGN_SUFFIX(alignment)
