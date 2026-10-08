@@ -1,10 +1,16 @@
-# Redot Engine
+# Redot Engine LTS — NVIDIA PhysX Edition
 
 <p align="center">
   <a href="https://redotengine.org/">
     <img src="logo_outlined.png" width="400" alt="Redot Engine logo">
   </a>
 </p>
+
+**This repository is the home of the Redot PhysX project: the Redot Engine
+LTS with the NVIDIA PhysX 5 physics module fully integrated** — GPU
+rigid-body dynamics, GPU particles and fluids (with whitewater foam), cloth,
+gas, vehicles, water, Blast destruction and NVIDIA Flow — for Windows and
+Linux.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Redot-Engine/redot-engine)
 
@@ -45,8 +51,14 @@ codebase of both through a more genuinely community-driven model than Godot.
 
 ### Binary downloads
 
-Official binaries for the Redot editor and the export templates can be found
-[on the Redot website](https://redotengine.org/download) and on the [GitHub page](https://github.com/Redot-Engine/redot-engine).
+PhysX-enabled editor and export-template builds are published on this
+repository's [Releases page](https://github.com/Vlado-VG/redot-physx/releases).
+Windows binaries are code-signed through the
+[SignPath Foundation](https://signpath.org/). Checksums for every artifact
+are published alongside the downloads.
+
+Vanilla Redot binaries (without the PhysX module) can be found
+[on the Redot website](https://redotengine.org/download).
 
 ### Compiling from source
 
