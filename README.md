@@ -53,8 +53,8 @@ codebase of both through a more genuinely community-driven model than Godot.
 
 PhysX-enabled editor and export-template builds are published on this
 repository's [Releases page](https://github.com/Vlado-VG/redotplusplus/releases).
-Windows binaries are code-signed through the
-[SignPath Foundation](https://signpath.org/). Checksums for every artifact
+Windows binaries will be code-signed through the
+[SignPath Foundation](https://signpath.org/) in future builds. Checksums for every artifact
 are published alongside the downloads.
 
 Vanilla Redot binaries (without the PhysX module) can be found
