@@ -2763,9 +2763,26 @@ void PhysXServer3D::init() {
 		if (cuda_driver == nullptr) {
 			WARN_PRINT(vformat("PhysX: libcuda.so.1 could not be loaded (%s); falling back to CPU simulation.", dlerror()));
 		} else {
-			void *gpu_runtime = dlopen("libPhysXGpu_64.so", RTLD_NOW | RTLD_GLOBAL);
+			// The shipped layout places the runtime next to the engine binary;
+			// a bare-name dlopen does not search the executable's directory, so
+			// try the binary-relative path first and the system search path last.
+			const String exe_dir = OS::get_singleton()->get_executable_path().get_base_dir();
+			const String runtime_paths[2] = {
+				exe_dir.path_join("libPhysXGpu_64.so"),
+				"libPhysXGpu_64.so",
+			};
+			void *gpu_runtime = nullptr;
+			String load_error;
+			for (const String &runtime_path : runtime_paths) {
+				gpu_runtime = dlopen(runtime_path.utf8().get_data(), RTLD_NOW | RTLD_GLOBAL);
+				if (gpu_runtime != nullptr) {
+					break;
+				}
+				const char *load_err = dlerror();
+				load_error = load_err != nullptr ? String::utf8(load_err) : String();
+			}
 			if (gpu_runtime == nullptr) {
-				WARN_PRINT(vformat("PhysX: libPhysXGpu_64.so could not be loaded (%s); falling back to CPU simulation.", dlerror()));
+				WARN_PRINT(vformat("PhysX: libPhysXGpu_64.so could not be loaded (%s); falling back to CPU simulation.", load_error));
 			} else {
 				using PxCudaContextManagerCreateFn = physx::PxCudaContextManager *(*)(const physx::PxFoundation &, const physx::PxCudaContextManagerDesc &, physx::PxProfilerCallback *);
 				PxCudaContextManagerCreateFn create_cuda_context =
