@@ -285,6 +285,9 @@ void PhysXFlowCollider3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_enabled", "enabled"), &PhysXFlowCollider3D::set_enabled);
 	ClassDB::bind_method(D_METHOD("get_enabled"), &PhysXFlowCollider3D::get_enabled);
 	ClassDB::bind_method(D_METHOD("set_shape", "shape"), &PhysXFlowCollider3D::set_shape);
+	BIND_ENUM_CONSTANT(SHAPE_BOX);
+	BIND_ENUM_CONSTANT(SHAPE_SPHERE);
+	BIND_ENUM_CONSTANT(SHAPE_SHAPE3D);
 	ClassDB::bind_method(D_METHOD("get_shape"), &PhysXFlowCollider3D::get_shape);
 	ClassDB::bind_method(D_METHOD("set_size", "size"), &PhysXFlowCollider3D::set_size);
 	ClassDB::bind_method(D_METHOD("get_size"), &PhysXFlowCollider3D::get_size);

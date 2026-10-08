@@ -40,6 +40,8 @@ void PhysXFlowEmitter3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_enabled", "enabled"), &PhysXFlowEmitter3D::set_enabled);
 	ClassDB::bind_method(D_METHOD("get_enabled"), &PhysXFlowEmitter3D::get_enabled);
 	ClassDB::bind_method(D_METHOD("set_shape", "shape"), &PhysXFlowEmitter3D::set_shape);
+	BIND_ENUM_CONSTANT(SHAPE_SPHERE);
+	BIND_ENUM_CONSTANT(SHAPE_BOX);
 	ClassDB::bind_method(D_METHOD("get_shape"), &PhysXFlowEmitter3D::get_shape);
 	ClassDB::bind_method(D_METHOD("set_radius", "radius"), &PhysXFlowEmitter3D::set_radius);
 	ClassDB::bind_method(D_METHOD("get_radius"), &PhysXFlowEmitter3D::get_radius);
