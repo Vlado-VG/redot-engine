@@ -364,7 +364,7 @@ jobs:
           path: bin
 
   release:
-    needs: [build-linux, build-linux-editor-mono, build-linux-template-mono, build-windows, build-windows-editor-mono, build-windows-template-mono, build-macos-x64, build-macos-arm64, build-macos-x64-template, build-macos-arm64-template]
+    needs: [build-linux, build-linux-template, build-linux-editor-mono, build-linux-template-mono, build-windows, build-windows-template, build-windows-editor-mono, build-windows-template-mono, build-macos-x64, build-macos-arm64, build-macos-x64-template, build-macos-arm64-template]
     runs-on: ubuntu-latest
     permissions:
       contents: write
