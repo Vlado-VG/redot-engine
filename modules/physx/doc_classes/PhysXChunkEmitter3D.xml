@@ -35,6 +35,10 @@
 		</method>
 	</methods>
 	<members>
+		<member name="angular_damp" type="float" setter="set_angular_damp" getter="get_angular_damp" default="0.0">
+		</member>
+		<member name="bounce" type="float" setter="set_bounce" getter="get_bounce" default="0.0">
+		</member>
 		<member name="chunk_count" type="int" setter="set_chunk_count" getter="get_chunk_count" default="14">
 			Chunks spawned per [method spawn_at] call, unless overridden by its [code]count[/code] argument.
 		</member>
@@ -68,6 +72,8 @@
 		<member name="emitting" type="bool" setter="set_emitting" getter="is_emitting" default="false">
 			When [code]true[/code], continuously spawns chunks from the node's own position at [member emission_rate], instead of (or alongside) calling [method spawn_at] for one-off bursts.
 		</member>
+		<member name="friction" type="float" setter="set_friction" getter="get_friction" default="0.5">
+		</member>
 		<member name="impulse_max" type="float" setter="set_impulse_max" getter="get_impulse_max" default="8.0">
 			Upper bound of a chunk's initial speed, in m/s.
 		</member>
@@ -77,8 +83,12 @@
 		<member name="lifetime" type="float" setter="set_lifetime" getter="get_lifetime" default="5.0">
 			Seconds a chunk lives before it is recycled, even if [member max_active] has not been reached.
 		</member>
+		<member name="linear_damp" type="float" setter="set_linear_damp" getter="get_linear_damp" default="0.0">
+		</member>
 		<member name="max_active" type="int" setter="set_max_active" getter="get_max_active" default="200">
 			Hard cap on chunks alive at once, across every burst and continuous emission from this emitter. Once reached, the oldest chunks are freed to make room for new ones.
+		</member>
+		<member name="shrink_time" type="float" setter="set_shrink_time" getter="get_shrink_time" default="0.0">
 		</member>
 		<member name="spin_impulse" type="float" setter="set_spin_impulse" getter="get_spin_impulse" default="6.0">
 			Upper bound of a chunk's random initial angular velocity, in rad/s.

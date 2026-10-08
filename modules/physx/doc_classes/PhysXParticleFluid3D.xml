@@ -19,6 +19,11 @@
 				Removes every particle.
 			</description>
 		</method>
+		<method name="get_foam_positions" qualifiers="const">
+			<return type="PackedVector3Array" />
+			<description>
+			</description>
+		</method>
 		<method name="get_live_foam_count" qualifiers="const">
 			<return type="int" />
 			<description>
@@ -48,6 +53,11 @@
 			<param index="0" name="world_aabb" type="AABB" />
 			<description>
 				Returns the fraction (0 to 1) of the given world-space box currently filled with fluid, estimated from the number of particles inside it. A cheap probe for script-side buoyancy: PhysX PBD collides rigid bodies with the fluid but does not float or sink them by density, so apply your own buoyant force based on this value.
+			</description>
+		</method>
+		<method name="is_mpm_available" qualifiers="const">
+			<return type="bool" />
+			<description>
 			</description>
 		</method>
 		<method name="spawn">

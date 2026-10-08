@@ -13,19 +13,7 @@
 	<tutorials>
 	</tutorials>
 	<methods>
-		<method name="reset_simulation">
-			<return type="void" />
-			<description>
-				Clears the sparse grid (all allocated blocks, all channels) and restarts the simulation clock. Transient emitters are dropped.
-			</description>
-		</method>
-		<method name="step_once">
-			<return type="void" />
-			<description>
-				Advances exactly one 1/60 s step while [member paused]. No effect while unpaused (the simulation already steps every tick).
-			</description>
-		</method>
-		<method name="add_transient_emitter" qualifiers="void">
+		<method name="add_transient_emitter">
 			<return type="void" />
 			<param index="0" name="world_position" type="Vector3" />
 			<param index="1" name="radius" type="float" />
@@ -36,18 +24,6 @@
 			<param index="6" name="lifetime" type="float" default="1.5" />
 			<description>
 				Spawns a one-shot world-space emitter (a puff) that decays over [param lifetime] seconds of simulated time. This is the generic event-adapter target: [PhysXFlowBlastBridge3D] forwards destruction events here, and scripts may call it for impacts, explosions, torches, etc. The puff spreads as it fades.
-			</description>
-		</method>
-		<method name="is_flow_available" qualifiers="const">
-			<return type="bool" />
-			<description>
-				True when the shared Flow runtime initialized successfully (a GPU/CPU device was created and nvflow.dll loaded). False means the node is inert; see [method get_diagnostics] for the reason.
-			</description>
-		</method>
-		<method name="get_diagnostics" qualifiers="const">
-			<return type="Dictionary" />
-			<description>
-				Live diagnostics: [code]available[/code], [code]unavailable_reason[/code], [code]backend[/code] ("vulkan"/"cpu"), [code]simulations[/code], [code]active_blocks[/code], [member max_blocks], [code]frames_simulated[/code], [code]sim_time[/code], [code]device_memory_mb[/code], [code]readback_memory_mb[/code], and the last step's CPU timings in microseconds ([code]last_submit_usec[/code], [code]last_flush_usec[/code], [code]last_decode_usec[/code]).
 			</description>
 		</method>
 		<method name="get_active_block_count" qualifiers="const">
@@ -68,6 +44,17 @@
 				World-space size of the last decoded volume. Zero until the first readback completes.
 			</description>
 		</method>
+		<method name="get_diagnostics" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Live diagnostics: [code]available[/code], [code]unavailable_reason[/code], [code]backend[/code] ("vulkan"/"cpu"), [code]simulations[/code], [code]active_blocks[/code], [member max_blocks], [code]frames_simulated[/code], [code]sim_time[/code], [code]device_memory_mb[/code], [code]readback_memory_mb[/code], and the last step's CPU timings in microseconds ([code]last_submit_usec[/code], [code]last_flush_usec[/code], [code]last_decode_usec[/code]).
+			</description>
+		</method>
+		<method name="get_frame_count" qualifiers="const">
+			<return type="int" />
+			<description>
+			</description>
+		</method>
 		<method name="get_last_max_smoke" qualifiers="const">
 			<return type="float" />
 			<description>
@@ -80,85 +67,63 @@
 				Highest temperature in the last decoded frame.
 			</description>
 		</method>
+		<method name="get_texture_update_count" qualifiers="const">
+			<return type="int" />
+			<description>
+			</description>
+		</method>
+		<method name="is_flow_available" qualifiers="const">
+			<return type="bool" />
+			<description>
+				True when the shared Flow runtime initialized successfully (a GPU/CPU device was created and nvflow.dll loaded). False means the node is inert; see [method get_diagnostics] for the reason.
+			</description>
+		</method>
+		<method name="reset_simulation">
+			<return type="void" />
+			<description>
+				Clears the sparse grid (all allocated blocks, all channels) and restarts the simulation clock. Transient emitters are dropped.
+			</description>
+		</method>
+		<method name="step_once">
+			<return type="void" />
+			<description>
+				Advances exactly one 1/60 s step while [member paused]. No effect while unpaused (the simulation already steps every tick).
+			</description>
+		</method>
 	</methods>
 	<members>
-		<member name="enabled" type="bool" setter="set_enabled" getter="get_enabled" default="true">
-			Disabling also resets the simulation.
-		</member>
-		<member name="paused" type="bool" setter="set_paused" getter="get_paused" default="false">
-			Freezes the solver (existing density keeps rendering). Combine with [member simulate_when_paused] or [method step_once] for scrubbing workflows.
-		</member>
-		<member name="max_blocks" type="int" setter="set_max_blocks" getter="get_max_blocks" default="4096">
-			Sparse block budget (allocation cap). Changing it recreates the grid (clears the simulation).
-		</member>
-		<member name="cell_size" type="float" setter="set_cell_size" getter="get_cell_size" default="0.25">
-			Voxel edge in meters. 0 requests the SDK's auto cell size, which currently fails to allocate without a seeded size (measured on Flow 2.2.0) -- prefer a real value.
-		</member>
-		<member name="steps_per_second" type="float" setter="set_steps_per_second" getter="get_steps_per_second" default="60.0">
-			Fixed-rate solver frequency; the grid accumulates engine delta time and runs whole steps ([member max_steps_per_simulate] caps catch-up per tick).
-		</member>
-		<member name="time_scale" type="float" setter="set_time_scale" getter="get_time_scale" default="1.0">
-			Scales simulated time (slow motion / fast forward).
-		</member>
-		<member name="max_steps_per_simulate" type="int" setter="set_max_steps_per_simulate" getter="get_max_steps_per_simulate" default="4">
-			Catch-up cap: at most this many solver steps per engine tick, so a hitch cannot stall the frame.
-		</member>
-		<member name="velocity_substeps" type="int" setter="set_velocity_substeps" getter="get_velocity_substeps" default="1">
-			Velocity-solver substeps per step (quality knob for fast-moving colliders).
-		</member>
 		<member name="block_min_lifetime" type="int" setter="set_block_min_lifetime" getter="get_block_min_lifetime" default="4">
 			Seconds an inactive sparse block stays allocated before being reclaimed (hysteresis against flicker).
-		</member>
-		<member name="simulate_when_paused" type="bool" setter="set_simulate_when_paused" getter="get_simulate_when_paused" default="false">
-			Keeps simulating while [member paused] (emitters keep injecting) -- for editor preview.
-		</member>
-		<member name="combustion_enabled" type="bool" setter="set_combustion_enabled" getter="get_combustion_enabled" default="true">
-			Toggles the fuel-burn-temperature-smoke reaction; off = pure advected smoke.
-		</member>
-		<member name="gravity" type="Vector3" setter="set_gravity" getter="get_gravity" default="Vector3(0, -100, 0)">
-			Buoyancy reference gravity inside the solver (Flow's own units; [member buoyancy_per_temp] works against this). Redot's world gravity does not automatically apply -- a Flow volume is its own world.
-		</member>
-		<member name="buoyancy_per_temp" type="float" setter="set_buoyancy_per_temp" getter="get_buoyancy_per_temp" default="2.0">
-			Upward force per unit temperature (drives plume rise).
 		</member>
 		<member name="buoyancy_per_smoke" type="float" setter="set_buoyancy_per_smoke" getter="get_buoyancy_per_smoke" default="0.0">
 			Additional buoyancy per unit smoke density.
 		</member>
-		<member name="cooling_rate" type="float" setter="set_cooling_rate" getter="get_cooling_rate" default="1.5">
-			Exponential temperature cooling rate.
+		<member name="buoyancy_per_temp" type="float" setter="set_buoyancy_per_temp" getter="get_buoyancy_per_temp" default="2.0">
+			Upward force per unit temperature (drives plume rise).
 		</member>
-		<member name="smoke_fade" type="float" setter="set_smoke_fade" getter="get_smoke_fade" default="0.65">
-			Smoke dissipation per second (0 = immortal smoke).
-		</member>
-		<member name="temperature_fade" type="float" setter="set_temperature_fade" getter="get_temperature_fade" default="0.0">
-			Extra temperature dissipation on top of [member cooling_rate].
-		</member>
-		<member name="fuel_fade" type="float" setter="set_fuel_fade" getter="get_fuel_fade" default="0.0">
-			Fuel dissipation per second.
-		</member>
-		<member name="vorticity" type="float" setter="set_vorticity" getter="get_vorticity" default="0.6">
-			Vorticity confinement strength (curl reinstatement; higher = curlier plumes).
-		</member>
-		<member name="pressure_projection" type="bool" setter="set_pressure_projection" getter="get_pressure_projection" default="true">
-			Pressure projection (divergence-free velocity). Off is cheaper but lets emitters push through walls.
-		</member>
-		<member name="emitters" type="Array" setter="set_emitters" getter="get_emitters" default="Array()">
-			NodePaths to [PhysXFlowEmitter3D] nodes (any other Node3D becomes a default smoke sphere at its position, aimed by its orientation).
-		</member>
-		<member name="colliders" type="Array" setter="set_colliders" getter="get_colliders" default="Array()">
-			NodePaths to colliders: [PhysXFlowCollider3D] nodes, physics bodies (server-side shape/transform/velocity consumed directly), or standalone CollisionShape3D nodes.
+		<member name="cell_size" type="float" setter="set_cell_size" getter="get_cell_size" default="0.25">
+			Voxel edge in meters. 0 requests the SDK's auto cell size, which currently fails to allocate without a seeded size (measured on Flow 2.2.0) -- prefer a real value.
 		</member>
 		<member name="collider_fallback_size" type="float" setter="set_collider_fallback_size" getter="get_collider_fallback_size" default="0.5">
 			Half-extent used for [member colliders] entries that resolve to a plain Node3D.
 		</member>
-		<member name="volumetric_render" type="bool" setter="set_volumetric_render" getter="get_volumetric_render" default="true">
-			Renders the readback volume through a child FogVolume (Forward+ only -- see [code]get_configuration_warnings[/code]).
+		<member name="colliders" type="NodePath[]" setter="set_colliders" getter="get_colliders" default="[]">
+			NodePaths to colliders: [PhysXFlowCollider3D] nodes, physics bodies (server-side shape/transform/velocity consumed directly), or standalone CollisionShape3D nodes.
 		</member>
-		<member name="fog_density" type="float" setter="set_fog_density" getter="get_fog_density" default="24.0">
-			Fog density multiplier applied to the smoke channel.
+		<member name="combustion_enabled" type="bool" setter="set_combustion_enabled" getter="get_combustion_enabled" default="true">
+			Toggles the fuel-burn-temperature-smoke reaction; off = pure advected smoke.
 		</member>
-		<member name="smoke_albedo" type="Color" setter="set_smoke_albedo" getter="get_smoke_albedo" default="Color(0.9, 0.9, 0.9, 1)">
-			Scattering color of the smoke.
+		<member name="cooling_rate" type="float" setter="set_cooling_rate" getter="get_cooling_rate" default="1.5">
+			Exponential temperature cooling rate.
+		</member>
+		<member name="debug_stats" type="bool" setter="set_debug_stats" getter="get_debug_stats" default="false">
+			Prints per-step sparse layout and readback statistics to the console (diagnostics only).
+		</member>
+		<member name="emitters" type="NodePath[]" setter="set_emitters" getter="get_emitters" default="[]">
+			NodePaths to [PhysXFlowEmitter3D] nodes (any other Node3D becomes a default smoke sphere at its position, aimed by its orientation).
+		</member>
+		<member name="enabled" type="bool" setter="set_enabled" getter="get_enabled" default="true">
+			Disabling also resets the simulation.
 		</member>
 		<member name="fire_emission" type="bool" setter="set_fire_emission" getter="get_fire_emission" default="true">
 			Emits light from the solver's colorized fire channels (RGB of the readback volume).
@@ -166,10 +131,53 @@
 		<member name="fire_emission_strength" type="float" setter="set_fire_emission_strength" getter="get_fire_emission_strength" default="6.0">
 			Emission intensity scale.
 		</member>
-		<member name="debug_stats" type="bool" setter="set_debug_stats" getter="get_debug_stats" default="false">
-			Prints per-step sparse layout and readback statistics to the console (diagnostics only).
+		<member name="fog_density" type="float" setter="set_fog_density" getter="get_fog_density" default="24.0">
+			Fog density multiplier applied to the smoke channel.
+		</member>
+		<member name="fuel_fade" type="float" setter="set_fuel_fade" getter="get_fuel_fade" default="0.0">
+			Fuel dissipation per second.
+		</member>
+		<member name="gravity" type="Vector3" setter="set_gravity" getter="get_gravity" default="Vector3(0, -100, 0)">
+			Buoyancy reference gravity inside the solver (Flow's own units; [member buoyancy_per_temp] works against this). Redot's world gravity does not automatically apply -- a Flow volume is its own world.
+		</member>
+		<member name="max_blocks" type="int" setter="set_max_blocks" getter="get_max_blocks" default="4096">
+			Sparse block budget (allocation cap). Changing it recreates the grid (clears the simulation).
+		</member>
+		<member name="max_steps_per_simulate" type="int" setter="set_max_steps_per_simulate" getter="get_max_steps_per_simulate" default="4">
+			Catch-up cap: at most this many solver steps per engine tick, so a hitch cannot stall the frame.
+		</member>
+		<member name="paused" type="bool" setter="set_paused" getter="get_paused" default="false">
+			Freezes the solver (existing density keeps rendering). Combine with [member simulate_when_paused] or [method step_once] for scrubbing workflows.
+		</member>
+		<member name="pressure_projection" type="bool" setter="set_pressure_projection" getter="get_pressure_projection" default="true">
+			Pressure projection (divergence-free velocity). Off is cheaper but lets emitters push through walls.
+		</member>
+		<member name="simulate_when_paused" type="bool" setter="set_simulate_when_paused" getter="get_simulate_when_paused" default="false">
+			Keeps simulating while [member paused] (emitters keep injecting) -- for editor preview.
+		</member>
+		<member name="smoke_albedo" type="Color" setter="set_smoke_albedo" getter="get_smoke_albedo" default="Color(0.9, 0.9, 0.9, 1)">
+			Scattering color of the smoke.
+		</member>
+		<member name="smoke_fade" type="float" setter="set_smoke_fade" getter="get_smoke_fade" default="0.65">
+			Smoke dissipation per second (0 = immortal smoke).
+		</member>
+		<member name="steps_per_second" type="float" setter="set_steps_per_second" getter="get_steps_per_second" default="60.0">
+			Fixed-rate solver frequency; the grid accumulates engine delta time and runs whole steps ([member max_steps_per_simulate] caps catch-up per tick).
+		</member>
+		<member name="temperature_fade" type="float" setter="set_temperature_fade" getter="get_temperature_fade" default="0.0">
+			Extra temperature dissipation on top of [member cooling_rate].
+		</member>
+		<member name="time_scale" type="float" setter="set_time_scale" getter="get_time_scale" default="1.0">
+			Scales simulated time (slow motion / fast forward).
+		</member>
+		<member name="velocity_substeps" type="int" setter="set_velocity_substeps" getter="get_velocity_substeps" default="1">
+			Velocity-solver substeps per step (quality knob for fast-moving colliders).
+		</member>
+		<member name="volumetric_render" type="bool" setter="set_volumetric_render" getter="get_volumetric_render" default="true">
+			Renders the readback volume through a child FogVolume (Forward+ only -- see [code]get_configuration_warnings[/code]).
+		</member>
+		<member name="vorticity" type="float" setter="set_vorticity" getter="get_vorticity" default="0.6">
+			Vorticity confinement strength (curl reinstatement; higher = curlier plumes).
 		</member>
 	</members>
-	<constants>
-	</constants>
 </class>

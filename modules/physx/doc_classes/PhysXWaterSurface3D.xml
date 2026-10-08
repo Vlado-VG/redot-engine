@@ -16,6 +16,36 @@
 				Removes the interactive sphere previously registered with [method submit_sphere] under [param owner].
 			</description>
 		</method>
+		<method name="get_caustics_half_extent" qualifiers="const">
+			<return type="float" />
+			<description>
+			</description>
+		</method>
+		<method name="get_caustics_light_right" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+			</description>
+		</method>
+		<method name="get_caustics_light_up" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+			</description>
+		</method>
+		<method name="get_caustics_origin" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+			</description>
+		</method>
+		<method name="get_caustics_texture" qualifiers="const">
+			<return type="Texture2D" />
+			<description>
+			</description>
+		</method>
+		<method name="get_caustics_tile_size" qualifiers="const">
+			<return type="Vector2" />
+			<description>
+			</description>
+		</method>
 		<method name="get_effective_fetch" qualifiers="const">
 			<return type="float" />
 			<description>
@@ -34,14 +64,6 @@
 			<param index="0" name="world_pos" type="Vector3" />
 			<description>
 				Returns the displaced water height at [param world_pos] including waves and interactive ripples.
-			</description>
-		</method>
-		<method name="sample_height_excluding_wake" qualifiers="const">
-			<return type="float" />
-			<param index="0" name="world_pos" type="Vector3" />
-			<param index="1" name="wake" type="int" />
-			<description>
-				Like [method sample_height], but ignores the interactive ripples owned by [param wake].
 			</description>
 		</method>
 		<method name="submit_impulse">
@@ -77,11 +99,11 @@
 		<member name="choppiness" type="float" setter="set_choppiness" getter="get_choppiness" default="1.0">
 			Horizontal sharpening of wave crests (Jacobian folding).
 		</member>
-		<member name="depth" type="float" setter="set_depth" getter="get_depth" default="3.0">
-			Simulation depth of the interactive ripple domain.
-		</member>
 		<member name="damping" type="float" setter="set_damping" getter="get_damping" default="0.08">
 			How quickly interactive ripples decay.
+		</member>
+		<member name="depth" type="float" setter="set_depth" getter="get_depth" default="3.0">
+			Simulation depth of the interactive ripple domain.
 		</member>
 		<member name="domain_size" type="Vector2" setter="set_domain_size" getter="get_domain_size" default="Vector2(20, 20)">
 			World-space extent of the interactive ripple simulation.
@@ -101,7 +123,7 @@
 		<member name="grid_resolution" type="int" setter="set_grid_resolution" getter="get_grid_resolution" default="96">
 			Simulation texture resolution of the interactive ripple domain.
 		</member>
-		<member name="normal_mode" type="int" setter="set_normal_mode" getter="get_normal_mode" default="0">
+		<member name="normal_mode" type="int" setter="set_normal_mode" getter="get_normal_mode" enum="PhysXWaterSurface3D.NormalMode" default="0">
 			Normal computation quality: per-pixel (exact) or per-vertex (cheaper).
 		</member>
 		<member name="ocean_domain_size" type="Vector2" setter="set_ocean_domain_size" getter="get_ocean_domain_size" default="Vector2(40, 40)">
@@ -159,4 +181,10 @@
 			Ocean wind speed driving wave size and [member fetch].
 		</member>
 	</members>
+	<constants>
+		<constant name="NORMAL_MODE_PER_PIXEL" value="0" enum="NormalMode">
+		</constant>
+		<constant name="NORMAL_MODE_PER_VERTEX" value="1" enum="NormalMode">
+		</constant>
+	</constants>
 </class>

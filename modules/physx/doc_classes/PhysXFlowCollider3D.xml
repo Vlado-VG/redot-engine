@@ -11,43 +11,43 @@
 	<tutorials>
 	</tutorials>
 	<methods>
-		<method name="get_estimated_linear_velocity" qualifiers="const">
-			<return type="Vector3" />
-			<description>
-				The last auto-estimated linear velocity (valid after the simulation stepped).
-			</description>
-		</method>
 		<method name="get_estimated_angular_velocity" qualifiers="const">
 			<return type="Vector3" />
 			<description>
 				The last auto-estimated angular velocity (valid after the simulation stepped).
 			</description>
 		</method>
+		<method name="get_estimated_linear_velocity" qualifiers="const">
+			<return type="Vector3" />
+			<description>
+				The last auto-estimated linear velocity (valid after the simulation stepped).
+			</description>
+		</method>
 	</methods>
 	<members>
+		<member name="auto_velocity" type="bool" setter="set_auto_velocity" getter="get_auto_velocity" default="true">
+			Estimate velocities by transform differencing (see the class description).
+		</member>
 		<member name="enabled" type="bool" setter="set_enabled" getter="get_enabled" default="true">
 			Disables the collider.
 		</member>
-		<member name="shape" type="int" setter="set_shape" getter="get_shape" enum="PhysXFlowCollider3D.Shape" default="0">
-			[constant SHAPE_BOX] (analytic, exact), [constant SHAPE_SPHERE] (cached icosphere mesh -- Flow has no native sphere collider), or [constant SHAPE_SHAPE3D] (mesh built from the referenced shape).
-		</member>
-		<member name="size" type="Vector3" setter="set_size" getter="get_size" default="Vector3(1, 1, 1)">
-			Box full size in meters, oriented by this node's transform ([constant SHAPE_BOX]).
-		</member>
-		<member name="radius" type="float" setter="set_radius" getter="get_radius" default="0.5">
-			Sphere radius in meters ([constant SHAPE_SPHERE]).
-		</member>
-		<member name="shape_source" type="NodePath" setter="set_shape_source" getter="get_shape_source" default="NodePath(&quot;&quot;)">
-			A [CollisionShape3D] to derive the collider mesh from ([constant SHAPE_SHAPE3D]). Convex shapes approximate via their bounding box, concave (trimesh) shapes voxelize exactly, other primitives fall back to a sphere of the shape's enclosing radius.
-		</member>
-		<member name="auto_velocity" type="bool" setter="set_auto_velocity" getter="get_auto_velocity" default="true">
-			Estimate velocities by transform differencing (see the class description).
+		<member name="manual_angular_velocity" type="Vector3" setter="set_manual_angular_velocity" getter="get_manual_angular_velocity" default="Vector3(0, 0, 0)">
+			World-space angular velocity (rad/s) used when [member auto_velocity] is off.
 		</member>
 		<member name="manual_linear_velocity" type="Vector3" setter="set_manual_linear_velocity" getter="get_manual_linear_velocity" default="Vector3(0, 0, 0)">
 			World-space linear velocity used when [member auto_velocity] is off.
 		</member>
-		<member name="manual_angular_velocity" type="Vector3" setter="set_manual_angular_velocity" getter="get_manual_angular_velocity" default="Vector3(0, 0, 0)">
-			World-space angular velocity (rad/s) used when [member auto_velocity] is off.
+		<member name="radius" type="float" setter="set_radius" getter="get_radius" default="0.5">
+			Sphere radius in meters ([constant SHAPE_SPHERE]).
+		</member>
+		<member name="shape" type="int" setter="set_shape" getter="get_shape" enum="PhysXFlowCollider3D.Shape" default="0">
+			[constant SHAPE_BOX] (analytic, exact), [constant SHAPE_SPHERE] (cached icosphere mesh -- Flow has no native sphere collider), or [constant SHAPE_SHAPE3D] (mesh built from the referenced shape).
+		</member>
+		<member name="shape_source" type="NodePath" setter="set_shape_source" getter="get_shape_source" default="NodePath(&quot;&quot;)">
+			A [CollisionShape3D] to derive the collider mesh from ([constant SHAPE_SHAPE3D]). Convex shapes approximate via their bounding box, concave (trimesh) shapes voxelize exactly, other primitives fall back to a sphere of the shape's enclosing radius.
+		</member>
+		<member name="size" type="Vector3" setter="set_size" getter="get_size" default="Vector3(1, 1, 1)">
+			Box full size in meters, oriented by this node's transform ([constant SHAPE_BOX]).
 		</member>
 	</members>
 	<constants>

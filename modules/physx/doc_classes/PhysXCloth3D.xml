@@ -10,6 +10,22 @@
 	<tutorials>
 	</tutorials>
 	<methods>
+		<method name="add_collision_exception">
+			<return type="void" />
+			<param index="0" name="body" type="RID" />
+			<description>
+			</description>
+		</method>
+		<method name="get_collision_exceptions" qualifiers="const">
+			<return type="Array" />
+			<description>
+			</description>
+		</method>
+		<method name="get_pinned_positions" qualifiers="const">
+			<return type="PackedVector3Array" />
+			<description>
+			</description>
+		</method>
 		<method name="get_vertex_count" qualifiers="const">
 			<return type="int" />
 			<description>
@@ -20,6 +36,12 @@
 			<return type="bool" />
 			<description>
 				Returns [code]true[/code] when the GPU deformable-surface path is in use rather than the CPU XPBD fallback.
+			</description>
+		</method>
+		<method name="remove_collision_exception">
+			<return type="void" />
+			<param index="0" name="body" type="RID" />
+			<description>
 			</description>
 		</method>
 		<method name="reset">
@@ -41,6 +63,8 @@
 		</member>
 		<member name="collision_friction" type="float" setter="set_friction" getter="get_friction" default="0.4">
 			Fraction of a vertex's sideways velocity removed while it is touching a surface, from 0 (frictionless) to 1. Higher values stop the cloth sliding and spinning once it settles.
+		</member>
+		<member name="collision_layer" type="int" setter="set_collision_layer" getter="get_collision_layer" default="1">
 		</member>
 		<member name="collision_mask" type="int" setter="set_collision_mask" getter="get_collision_mask" default="1">
 			Physics layers the cloth collides with.
