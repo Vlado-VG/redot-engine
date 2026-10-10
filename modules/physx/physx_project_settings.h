@@ -97,6 +97,14 @@ public:
 	// dispatcher is shared by every PxScene the server creates.
 	inline static int cpu_worker_threads = 0;
 
+	// physics/physx_3d/simulation/max_depenetration_velocity
+	//
+	// Caps how fast a depenetrating body may pop out of an overlap (m/s) —
+	// PxRigidDynamic::setMaxDepenetrationVelocity on every rigid body. Without
+	// the cap, bodies spawned interpenetrating (or grown into each other) can
+	// eject violently. 0 disables the cap (PhysX's unbounded default is 3.4e38).
+	inline static float max_depenetration_velocity = 4.0f;
+
 	// physics/physx_3d/simulation/async_step
 	//
 	// Optional async stepping (default OFF). When on, PhysXSpace3D::step()

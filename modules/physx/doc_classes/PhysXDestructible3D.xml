@@ -60,14 +60,20 @@
 		<member name="impact_strength" type="float" setter="set_impact_strength" getter="get_impact_strength" default="5.0">
 			Minimum impulse magnitude that counts as a damaging impact.
 		</member>
+		<member name="ignore_occlusion_culling" type="bool" setter="set_ignore_occlusion_culling" getter="get_ignore_occlusion_culling" default="false">
+			If [code]true[/code], the chunk pieces' render instances are never occlusion-culled, mirroring [member GeometryInstance3D.ignore_occlusion_culling]. Applied to every existing piece on set and to pieces spawned afterwards.
+		</member>
 		<member name="kill_y" type="float" setter="set_kill_y" getter="get_kill_y" default="-1000.0">
-			World-space Y below which detached chunks are freed.
+			World-space Y below which detached chunks are freed (and their Blast actors retired, so a later hit cannot re-spawn them).
 		</member>
 		<member name="mass" type="float" setter="set_mass" getter="get_mass" default="1.0">
 			Mass used for detached chunks when [member auto_mass] is off.
 		</member>
 		<member name="shatter_speed" type="float" setter="set_shatter_speed" getter="get_shatter_speed" default="8.0">
 			Impact speed above which an impact is treated as an immediate shatter.
+		</member>
+		<member name="transparency" type="float" setter="set_transparency" getter="get_transparency" default="0.0">
+			Opacity of the chunk pieces' render instances ([code]0.0[/code] = fully opaque, [code]1.0[/code] = fully transparent). Applied to every existing piece on set and to pieces spawned afterwards.
 		</member>
 	</members>
 	<signals>

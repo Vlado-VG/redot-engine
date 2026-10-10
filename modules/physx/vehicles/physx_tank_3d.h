@@ -35,6 +35,7 @@
 #include "core/math/vector3.h"
 #include "core/templates/local_vector.h"
 #include "scene/3d/node_3d.h"
+#include "scene/resources/physics_material.h"
 
 class PhysXVehicleWheel3D;
 
@@ -120,6 +121,11 @@ public:
 	uint32_t get_collision_layer() const { return collision_layer; }
 	void set_collision_mask(uint32_t p_mask);
 	uint32_t get_collision_mask() const { return collision_mask; }
+	// Chassis (hull) contact material, the property RigidBody3D/VehicleBody3D
+	// use. Applies to the hull box only; track grip is the wheels' own.
+	// Changes (here or to the assigned material) apply in place, no rebuild.
+	void set_physics_material_override(const Ref<PhysicsMaterial> &p_material);
+	Ref<PhysicsMaterial> get_physics_material_override() const { return physics_material_override; }
 
 	Vector3 get_linear_velocity() const;
 	Vector3 get_angular_velocity() const;
@@ -150,6 +156,7 @@ private:
 	real_t brake = 0.0f;
 	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
+	Ref<PhysicsMaterial> physics_material_override;
 
 	// Opaque pointer to the real VehicleTrack composition (kept out of this
 	// header so nothing outside physx_tank_3d.cpp needs vehicle/PxVehicleAPI.h).
@@ -176,6 +183,12 @@ private:
 	void _do_deferred_rebuild();
 	bool _build();
 	void _destroy();
+	// Effective chassis friction/bounce (SIGNED, Godot-style: negative =
+	// rough/absorbent), from physics_material_override or the no-override
+	// defaults. Written into the chassis actor's userData (read by the
+	// contact-modify combiner) and the chassis PxMaterial (GPU fallback).
+	void _chassis_material(real_t &r_friction, real_t &r_bounce) const;
+	void _chassis_material_changed();
 };
 
 VARIANT_ENUM_CAST(PhysXTank3D::CenterOfMassMode);

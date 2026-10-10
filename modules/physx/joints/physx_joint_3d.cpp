@@ -163,6 +163,20 @@ void PhysXJoint3D::body_removed(PhysXBody3D *p_body) {
 	}
 }
 
+void PhysXJoint3D::actor_invalidated(PhysXBody3D *p_body) {
+	if (p_body != body_a && p_body != body_b) {
+		return;
+	}
+	// The attached actor is about to be released and re-created (static<->
+	// dynamic flip): PhysX deletes a constraint when either of its actors
+	// dies, so drop the PxJoint here, while the old actor is still alive and
+	// the release is a plain constraint release. Unlike body_removed the
+	// wrapper keeps both body links; the rebuild triggered from
+	// PhysXBody3D::_add_to_scene re-creates the constraint against the fresh
+	// actor and _apply_params restores the cached configuration.
+	_destroy_px_joint();
+}
+
 void PhysXJoint3D::_reset_param_caches() {
 	pin_params = PinJointParams();
 	hinge_params = HingeJointParams();
@@ -492,7 +506,7 @@ void PhysXJoint3D::_apply_params() {
 			}
 			revolute->setRevoluteJointFlag(physx::PxRevoluteJointFlag::eDRIVE_ENABLED, hinge_params.enable_motor);
 			if (hinge_params.enable_motor) {
-				revolute->setDriveVelocity(hinge_params.motor_target_velocity);
+				revolute->setDriveVelocity(-hinge_params.motor_target_velocity); // the other way round too (see the limits)
 				revolute->setDriveForceLimit(hinge_params.motor_max_impulse);
 			}
 		} break;
@@ -695,7 +709,11 @@ void PhysXJoint3D::_apply_hinge_limit() {
 		return;
 	}
 	physx::PxRevoluteJoint *revolute = static_cast<physx::PxRevoluteJoint *>(px_joint);
-	physx::PxJointAngularLimitPair limit(hinge_params.limit_lower, hinge_params.limit_upper);
+	// Godot's hinge angle runs the other way round to PhysX's (body B's
+	// counter-clockwise turn about the axis relative to A): [lower, upper] is
+	// [-upper, -lower] here, as Jolt maps it. Passed straight through, a
+	// ragdoll's knees bent backwards.
+	physx::PxJointAngularLimitPair limit(-hinge_params.limit_upper, -hinge_params.limit_lower);
 	limit.stiffness = hinge_params.limit_softness;
 	limit.damping = hinge_params.limit_relaxation;
 	limit.bounceThreshold = hinge_params.limit_bias;
@@ -719,7 +737,9 @@ void PhysXJoint3D::_apply_g6dof_drive_position() {
 			g6dof_params[Vector3::AXIS_X].angular_spring_equilibrium_point,
 			g6dof_params[Vector3::AXIS_Y].angular_spring_equilibrium_point,
 			g6dof_params[Vector3::AXIS_Z].angular_spring_equilibrium_point);
-	const Quaternion q = Quaternion::from_euler(ang);
+	// The other way round too (see _apply_g6dof_angular_limit): Godot's
+	// angular measures run opposite to the D6's.
+	const Quaternion q = Quaternion::from_euler(-ang);
 	physx::PxD6Joint *d6 = static_cast<physx::PxD6Joint *>(px_joint);
 	d6->setDrivePosition(physx::PxTransform(physx_to_px(lin), physx_to_px(q)));
 }
@@ -759,7 +779,7 @@ void PhysXJoint3D::set_hinge_param(PhysicsServer3D::HingeJointParam p_param, rea
 		case PhysicsServer3D::HINGE_JOINT_MOTOR_TARGET_VELOCITY: {
 			hinge_params.motor_target_velocity = (float)p_value;
 			if (px_joint && hinge_params.enable_motor) {
-				static_cast<physx::PxRevoluteJoint *>(px_joint)->setDriveVelocity(hinge_params.motor_target_velocity);
+				static_cast<physx::PxRevoluteJoint *>(px_joint)->setDriveVelocity(-hinge_params.motor_target_velocity); // the other way round too (see the limits)
 			}
 			break;
 		}
@@ -817,7 +837,7 @@ void PhysXJoint3D::set_hinge_flag(PhysicsServer3D::HingeJointFlag p_flag, bool p
 			if (revolute) {
 				revolute->setRevoluteJointFlag(physx::PxRevoluteJointFlag::eDRIVE_ENABLED, p_enabled);
 				if (p_enabled) {
-					revolute->setDriveVelocity(hinge_params.motor_target_velocity);
+					revolute->setDriveVelocity(-hinge_params.motor_target_velocity); // the other way round too (see the limits)
 					revolute->setDriveForceLimit(hinge_params.motor_max_impulse);
 				}
 			}
@@ -1171,7 +1191,15 @@ void PhysXJoint3D::_apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::A
 		if (hi <= lo) {
 			hi = lo + 1.0e-4f;
 		}
-		physx::PxJointAngularLimitPair limit(lo, hi);
+		// Godot's 6DOF angles run the other way round to PhysX's D6 (as for the
+		// hinge, and as Jolt maps them): [lower, upper] is [-upper, -lower].
+		// Passed straight through, a ragdoll's asymmetric limits (knees, elbows)
+		// bent the wrong way. The twist sits inside (-2pi, 2pi): a limit at
+		// +-180 deg was silently dropped.
+		const float twist_max = (float)(Math::TAU - 0.001);
+		physx::PxJointAngularLimitPair limit(
+				CLAMP(-hi, -twist_max, twist_max),
+				CLAMP(-lo, -twist_max, twist_max));
 		limit.stiffness = params.angular_limit_softness;
 		limit.damping = params.angular_damping;
 		limit.restitution = params.angular_restitution;
@@ -1190,8 +1218,10 @@ void PhysXJoint3D::_apply_g6dof_angular_limit(physx::PxD6Joint *p_d6, Vector3::A
 				return physx::PxVec2(-physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
 			}
 			const G6DOFJointAxisParams &ap = g6dof_params[axis];
-			float lo = CLAMP((float)ap.angular_lower_limit, -physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
-			float hi = CLAMP((float)ap.angular_upper_limit, -physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
+			// The other way round too (see the twist): Godot's [lower, upper]
+			// is [-upper, -lower] on the D6, clamped inside (-PI, PI).
+			float lo = CLAMP(-(float)ap.angular_upper_limit, -physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
+			float hi = CLAMP(-(float)ap.angular_lower_limit, -physx::PxPi + 1.0e-4f, physx::PxPi - 1.0e-4f);
 			if (hi < lo) {
 				hi = lo;
 			}
@@ -1346,7 +1376,9 @@ void PhysXJoint3D::set_g6dof_param(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJ
 		}
 		// Angular motor target velocity — accumulate into cached drive velocity
 		case PhysicsServer3D::G6DOF_JOINT_ANGULAR_MOTOR_TARGET_VELOCITY: {
-			cached_g6dof_ang_drive_vel[p_axis] = params.angular_motor_target_velocity;
+			// The other way round too (see _apply_g6dof_angular_limit): the D6
+			// measures the axis opposite to Godot.
+			cached_g6dof_ang_drive_vel[p_axis] = -params.angular_motor_target_velocity;
 			d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);
 			// Velocity servo (see G6DOF_MOTOR_DAMPING).
 			g6dof_ang_drives[p_axis] = { true, 0.0f, G6DOF_MOTOR_DAMPING, params.angular_motor_force_limit };
@@ -1507,7 +1539,9 @@ void PhysXJoint3D::set_g6dof_flag(Vector3::Axis p_axis, PhysicsServer3D::G6DOFJo
 		case PhysicsServer3D::G6DOF_JOINT_FLAG_ENABLE_MOTOR: {
 			flags.angular_motor = p_enable;
 			// Update cached angular drive velocity for this axis
-			cached_g6dof_ang_drive_vel[p_axis] = params.angular_motor_target_velocity;
+			// (negated: the D6 measures the axis opposite to Godot, see
+			// _apply_g6dof_angular_limit).
+			cached_g6dof_ang_drive_vel[p_axis] = -params.angular_motor_target_velocity;
 			g6dof_ang_drives[p_axis] = { p_enable, 0.0f, G6DOF_MOTOR_DAMPING, params.angular_motor_force_limit };
 			if (d6) {
 				d6->setDriveVelocity(cached_g6dof_lin_drive_vel, cached_g6dof_ang_drive_vel);

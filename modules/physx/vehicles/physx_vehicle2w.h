@@ -33,6 +33,7 @@
 #pragma once
 
 #include "../physx_conversions.h"
+#include "physx_wheel_query_filter.h"
 
 #include "core/error/error_macros.h"
 #include "core/math/basis.h"
@@ -121,6 +122,9 @@ public:
 
 	// --- PhysX integration (PhysXIntegrationParams/State) ------------------
 	PxVehiclePhysXRoadGeometryQueryParams physxRoadGeometryQueryParams;
+	// The road-geometry query params' filterCallback points here, so it must
+	// live as long as the vehicle composition.
+	PhysXWheelQueryFilter wheel_query_filter;
 	PxVehiclePhysXMaterialFrictionParams physxMaterialFrictionParams[2];
 	PxVehiclePhysXSuspensionLimitConstraintParams physxSuspensionLimitConstraintParams[2];
 	PxTransform physxActorCMassLocalPose;
@@ -516,6 +520,14 @@ struct Vehicle2WConfig {
 
 	uint32_t collision_layer = 1;
 	uint32_t collision_mask = 1;
+
+	// Chassis contact material from the node's physics_material_override:
+	// SIGNED Godot-style values (negative = rough / absorbent). The
+	// contact-modify combiner reads the chassis actor's userData; the
+	// chassis PxMaterial created from these is the GPU-path fallback.
+	// Defaults match the combiner's no-userData behavior (1.0 / 0.0).
+	float chassis_friction = 1.0f;
+	float chassis_bounce = 0.0f;
 };
 
 // Same role as configure_vehicle4w() (see that function's own doc comment) --
@@ -635,8 +647,11 @@ inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhys
 	}
 
 	v.physxRoadGeometryQueryParams.roadGeometryQueryType = PxVehiclePhysXRoadGeometryQueryType::eRAYCAST;
-	v.physxRoadGeometryQueryParams.defaultFilterData = PxQueryFilterData(PxFilterData(0, 0, 0, 0), PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC);
-	v.physxRoadGeometryQueryParams.filterCallback = nullptr;
+	// Wheels hit only non-area shapes on a layer in the vehicle's
+	// collision_mask, like a Godot raycast — never an Area3D.
+	v.physxRoadGeometryQueryParams.defaultFilterData = PxQueryFilterData(PxFilterData(0, 0, 0, 0), PxQueryFlag::eSTATIC | PxQueryFlag::eDYNAMIC | PxQueryFlag::ePREFILTER);
+	v.physxRoadGeometryQueryParams.filterCallback = &v.wheel_query_filter;
+	v.wheel_query_filter.collision_mask = (PxU32)cfg.collision_mask;
 	v.physxRoadGeometryQueryParams.filterDataEntries = nullptr;
 
 	v.physxActorCMassLocalPose = PxTransform(physx_to_px(cfg.chassis_com_local));
@@ -645,10 +660,14 @@ inline bool configure_vehicle2w(Vehicle2W &v, const Vehicle2WConfig &cfg, PxPhys
 
 	PxMaterial *wheel_material = physics.createMaterial((PxReal)cfg.front_wheel.tire_friction, (PxReal)cfg.front_wheel.tire_friction, 0.1f);
 	// Same rationale as configure_vehicle4w(): the chassis box is a real
-	// simulation shape (so other bodies can hit it), but deliberately
-	// low-friction so it never fights the drivetrain if suspension settling
-	// lets it graze the ground.
-	PxMaterial *chassis_material = physics.createMaterial(0.0f, 0.0f, 0.1f);
+	// simulation shape (so other bodies can hit it) with its own material,
+	// not the wheels' tire-friction one. The contact-modify combiner
+	// overrides it on the CPU path (chassis actor userData, from
+	// cfg.chassis_friction/bounce); the GPU path solves straight from it.
+	PxMaterial *chassis_material = physics.createMaterial(
+			(PxReal)(cfg.chassis_friction < 0.0f ? -cfg.chassis_friction : cfg.chassis_friction),
+			(PxReal)(cfg.chassis_friction < 0.0f ? -cfg.chassis_friction : cfg.chassis_friction),
+			(PxReal)CLAMP(cfg.chassis_bounce, 0.0f, 1.0f));
 	if (!wheel_material || !chassis_material) {
 		if (wheel_material) {
 			wheel_material->release();

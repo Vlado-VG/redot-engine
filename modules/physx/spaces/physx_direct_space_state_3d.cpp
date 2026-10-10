@@ -73,6 +73,35 @@ static void _ensure_space_synced(const PhysXSpace3D *p_space) {
 	}
 }
 
+// Resolves a (actor, shape) query hit to the body-local shape index, or -1
+// when the hit cannot be mapped (soft-body/articulation actors without
+// userData, or a shape the object does not carry). -1 is the "invalid"
+// sentinel: 0 is a legitimate shape index and must not double as the failure
+// value.
+// Both PhysXBody3D and PhysXArea3D are shaped objects; areas/bodies both
+// support find_shape_index, so we check the type and cast accordingly.
+// (Lives here rather than in physx_user_data.h so that header stays a leaf:
+// the vehicle nodes attach a PhysXActorUserData from TUs that must not see
+// physx_shape_3d.h's global forward declarations.)
+static inline int physx_resolve_shape_index(const physx::PxRigidActor *p_actor,
+		const physx::PxShape *p_shape) {
+	if (!p_actor || !p_actor->userData || !p_shape) {
+		return -1;
+	}
+	const auto *ad = static_cast<const PhysXActorUserData *>(p_actor->userData);
+	if (!ad->object) {
+		return -1;
+	}
+	// Bodies and areas are both shaped objects; areas/bodies both support this.
+	if (ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_BODY &&
+			ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_AREA) {
+		return -1;
+	}
+	const PhysXShapedObject3D *shaped = static_cast<const PhysXShapedObject3D *>(ad->object);
+	const int idx = shaped->find_shape_index(p_shape);
+	return idx;
+}
+
 // Translates a raw PhysX ray face index into the author-facing index: a
 // backface-cooked concave mesh doubles every triangle, and its blueprint
 // (PxShape::userData) knows how to map back. Identity for every other shape.

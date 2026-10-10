@@ -86,7 +86,10 @@
 			Same meaning as [member CollisionObject3D.collision_layer]. Applies to the hull only -- the wheels do not have their own collision shapes (their ground contact is handled entirely by the suspension, not by a physical wheel shape touching the road).
 		</member>
 		<member name="collision_mask" type="int" setter="set_collision_mask" getter="get_collision_mask" default="1">
-			Same meaning as [member CollisionObject3D.collision_mask]. Applies to the hull only, see [member collision_layer].
+			Same meaning as [member CollisionObject3D.collision_mask]. Applies to the hull box and to what the wheels' own ground raycasts can rest on: a wheel only hits non-area shapes on a layer in this mask (like a [RayCast3D]), so it never rests on an [Area3D]. See [member collision_layer].
+		</member>
+		<member name="physics_material_override" type="PhysicsMaterial" setter="set_physics_material_override" getter="get_physics_material_override">
+			Contact material of the hull box (the property [RigidBody3D] and [VehicleBody3D] use): its friction, [i]rough[/i], bounce and [i]absorbent[/i] combine with whatever the vehicle touches by the same rule as every PhysX body. Applies to the hull box only -- tire grip is the wheels' own. Unset, the chassis behaves as it always has (friction [code]1.0[/code], bounce [code]0.0[/code]). Changes -- here or to the assigned material -- apply in place without a rebuild and wake the vehicle.
 		</member>
 		<member name="left_ratio" type="float" setter="set_left_ratio" getter="get_left_ratio" default="0.0">
 			Drive input for the left track, [code]-1[/code] to [code]1[/code]. Scales up to [member max_engine_torque] of drive torque, split evenly across the left track's own wheels; sign is direction, not a separate reverse gear. Set every physics tick from script.

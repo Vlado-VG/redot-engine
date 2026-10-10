@@ -795,7 +795,7 @@ void PhysXDestructible3D::_spawn_intact() {
 	// could ever own this piece's transform, so it's the last clean read of
 	// the node's real intended scale.
 	spawn_scale = get_global_transform().basis.get_scale();
-	_spawn_piece(0, get_global_transform(), Vector3(), physics);
+	_spawn_piece(0, get_global_transform(), Vector3(), physics, live_actors.is_empty() ? nullptr : live_actors[0]);
 	if (physics) {
 		PhysicsServer3D *ps = PhysicsServer3D::get_singleton();
 		if (dynamic) {
@@ -809,7 +809,7 @@ void PhysXDestructible3D::_spawn_intact() {
 	}
 }
 
-void PhysXDestructible3D::_spawn_piece(uint32_t p_chunk_index, const Transform3D &p_transform, const Vector3 &p_linear_velocity, bool p_physics) {
+void PhysXDestructible3D::_spawn_piece(uint32_t p_chunk_index, const Transform3D &p_transform, const Vector3 &p_linear_velocity, bool p_physics, NvBlastActor *p_actor) {
 	ERR_FAIL_INDEX((int)p_chunk_index, (int)chunk_points.size());
 	const PackedVector3Array &points = chunk_points[p_chunk_index];
 	const uint32_t tri_count = points.size() / 3;
@@ -887,6 +887,7 @@ void PhysXDestructible3D::_spawn_piece(uint32_t p_chunk_index, const Transform3D
 	piece.mesh = mesh;
 	piece.instance = instance;
 	piece.chunk_index = p_chunk_index;
+	piece.actor = p_actor;
 	pieces.push_back(piece);
 }
 
@@ -921,6 +922,37 @@ void PhysXDestructible3D::_free_all_pieces() {
 	}
 	pieces.clear();
 	actor_pieces.clear();
+}
+
+bool PhysXDestructible3D::_actor_has_live_piece(NvBlastActor *p_actor) const {
+	HashMap<NvBlastActor *, LocalVector<uint32_t>>::ConstIterator it = actor_pieces.find(p_actor);
+	if (!it) {
+		return false;
+	}
+	for (const uint32_t chunk_index : it->value) {
+		for (const ChunkVisual &piece : pieces) {
+			if (piece.chunk_index == chunk_index) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void PhysXDestructible3D::_retire_actor(NvBlastActor *p_actor) {
+	if (!p_actor) {
+		return;
+	}
+	// Deactivate frees the actor's slot in the family (its memory becomes
+	// reusable) — the SDK-sanctioned "this actor no longer exists" call. A
+	// mere live_actors erase would leak the slot and keep the actor
+	// damageable-by-SDK-state forever.
+	NvBlastActorDeactivate(p_actor, blast_log);
+	const int64_t idx = live_actors.find(p_actor);
+	if (idx >= 0) {
+		live_actors.remove_at_unordered((uint32_t)idx);
+	}
+	actor_pieces.erase(p_actor);
 }
 
 void PhysXDestructible3D::_free_pieces_of_actor(NvBlastActor *p_actor) {
@@ -960,7 +992,7 @@ void PhysXDestructible3D::_sync_transforms() {
 	// Backwards so remove_at_unordered() (swaps in the last element) doesn't
 	// skip the piece it just moved into the current slot.
 	for (int64_t i = (int64_t)pieces.size() - 1; i >= 0; i--) {
-		const ChunkVisual &piece = pieces[i];
+		ChunkVisual &piece = pieces[i];
 		PhysicsDirectBodyState3D *state = ps->body_get_direct_state(piece.body);
 		if (!state) {
 			continue;
@@ -972,11 +1004,22 @@ void PhysXDestructible3D::_sync_transforms() {
 			// Area3D could catch it with -- these are raw PhysicsServer3D
 			// RIDs) -- without this, debris that misses the level keeps
 			// simulating and consuming memory forever.
+			// Copy the owning actor out before remove_at_unordered() swaps
+			// another piece into this slot (the reference would then read
+			// that piece's fields instead).
+			NvBlastActor *removed_actor = piece.actor;
 			ps->free(piece.body);
 			ps->free(piece.shape);
 			rs->free(piece.instance);
 			rs->free(piece.mesh);
 			pieces.remove_at_unordered((uint32_t)i);
+			// Once none of the actor's chunks has a live piece left, retire
+			// the actor: it stays in live_actors otherwise, so a later hit
+			// would still damage it, split it, and re-spawn its (already
+			// vanished) chunks as ghosts at a stale pose.
+			if (removed_actor && !_actor_has_live_piece(removed_actor)) {
+				_retire_actor(removed_actor);
+			}
 			continue;
 		}
 		// t.basis is a pure rotation (see spawn_scale's own note) -- every
@@ -1060,6 +1103,18 @@ int PhysXDestructible3D::apply_radial_damage(const Vector3 &p_world_position, fl
 	live_actors.clear();
 
 	for (NvBlastActor *actor : actors_to_process) {
+		// A fractured actor whose pieces were all freed (kill_y) is dead:
+		// its visible chunks are gone from the world. Damaging it would split
+		// it and re-spawn those chunks as ghosts at a stale pose (the node's
+		// own transform no longer tracks anything once fractured) -- retire
+		// it instead. Never true for the intact root while !fractured (its
+		// placeholder piece isn't recorded in actor_pieces, and the guard is
+		// gated on fractured anyway).
+		if (fractured && !_actor_has_live_piece(actor)) {
+			_retire_actor(actor);
+			continue;
+		}
+
 		NvBlastFractureBuffers commands;
 		commands.bondFractureCount = bond_buf.size();
 		commands.chunkFractureCount = chunk_buf.size();
@@ -1121,7 +1176,7 @@ int PhysXDestructible3D::apply_radial_damage(const Vector3 &p_world_position, fl
 				const real_t falloff = CLAMP(1.0 - dist / (real_t)p_max_radius, 0.0, 1.0);
 				const Vector3 piece_velocity = (dir + Vector3(0, 0.3, 0)).normalized() * shatter_speed * falloff;
 				const uint32_t before = (uint32_t)pieces.size();
-				_spawn_piece(visible[v], get_global_transform(), piece_velocity);
+				_spawn_piece(visible[v], get_global_transform(), piece_velocity, true, new_actor);
 				if ((uint32_t)pieces.size() > before) {
 					new_actor_pieces.push_back(visible[v]);
 				}

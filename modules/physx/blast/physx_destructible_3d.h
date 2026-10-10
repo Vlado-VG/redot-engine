@@ -385,6 +385,11 @@ private:
 		RID mesh;
 		RID instance;
 		uint32_t chunk_index = 0; // which authored chunk this piece renders/simulates
+		// The live NvBlast actor this piece stands for (the intact placeholder
+		// records live_actors[0]; see _spawn_intact). Lets the kill_y cleanup
+		// retire an actor once none of its chunks has a live piece left (see
+		// _actor_has_live_piece).
+		NvBlastActor *actor = nullptr;
 	};
 	LocalVector<ChunkVisual> pieces;
 	// Pieces currently spawned per live NvBlast actor (by chunk index). When
@@ -426,6 +431,14 @@ private:
 	void _unload_native_state();
 	// Retires every piece recorded for p_actor (see actor_pieces).
 	void _free_pieces_of_actor(NvBlastActor *p_actor);
+	// True if at least one of p_actor's recorded chunks still has a live
+	// piece. A fractured actor whose pieces were all freed (kill_y) is dead:
+	// damaging it again would split it and re-spawn its chunks as ghosts at a
+	// stale pose, so it gets deactivated instead.
+	bool _actor_has_live_piece(NvBlastActor *p_actor) const;
+	// Removes p_actor from the live set and deactivates it in the family
+	// (freeing its family slot); also drops its actor_pieces record.
+	void _retire_actor(NvBlastActor *p_actor);
 	void _compute_chunk_volumes();
 	// mass distributed proportional to p_chunk_index's share of
 	// total_leaf_volume (floored so a sliver never gets a near-zero mass),
@@ -443,7 +456,9 @@ private:
 	// just its RenderingServer mesh instance. False in the editor (no physics
 	// simulation runs there anyway) so the node still shows *something* in
 	// the viewport -- ChunkVisual::body/shape stay RID() in that case.
-	void _spawn_piece(uint32_t p_chunk_index, const Transform3D &p_transform, const Vector3 &p_linear_velocity, bool p_physics = true);
+	// p_actor: the live NvBlast actor this piece stands for, recorded for
+	// kill_y retirement (see _actor_has_live_piece).
+	void _spawn_piece(uint32_t p_chunk_index, const Transform3D &p_transform, const Vector3 &p_linear_velocity, bool p_physics = true, NvBlastActor *p_actor = nullptr);
 	// See set_gi_mode()'s own note on why this is needed at all.
 	void _apply_gi_mode(RenderingServer *p_rs, RID p_instance) const;
 	// Same idea as _apply_gi_mode(), covering the rest of the

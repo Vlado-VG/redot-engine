@@ -108,21 +108,7 @@ PhysXBody3D::~PhysXBody3D() {
 	// free(body) normally detaches via set_space(nullptr) first, so this only
 	// runs as a defensive fallback for destruction without prior detachment.
 	if (space) {
-		for (unsigned int i = 0; i < overlapping_areas.size(); i++) {
-			PhysXArea3D *area = overlapping_areas[i];
-			area->remove_overlapping_body(this);
-			PhysXSpace3D::TriggerEvent ev;
-			ev.area = area;
-			ev.body = this;
-			ev.body_rid = get_rid();
-			ev.body_id = get_instance_id();
-			ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
-			ev.other_shape = 0;
-			ev.area_shape = 0;
-			ev.is_area_vs_area = false;
-			space->queue_trigger(ev);
-		}
-		overlapping_areas.clear();
+		_emit_all_area_exits();
 		space->unregister_body(this);
 	}
 	_destroy_actor(previous_space);
@@ -216,24 +202,7 @@ void PhysXBody3D::set_space(PhysXSpace3D *p_space) {
 		// overlapping an area). We must emit these events so Godot does not
 		// leak state and so the area's overlap lists do not retain dangling
 		// pointers to this body.
-		for (unsigned int i = 0; i < overlapping_areas.size(); i++) {
-			PhysXArea3D *area = overlapping_areas[i];
-			// Remove the body from the area's overlap list.
-			area->remove_overlapping_body(this);
-			// Queue the body_monitor dispatch for flush_queries(). Identity is
-			// cached because the dispatch must not dereference this body.
-			PhysXSpace3D::TriggerEvent ev;
-			ev.area = area;
-			ev.body = this;
-			ev.body_rid = get_rid();
-			ev.body_id = get_instance_id();
-			ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
-			ev.other_shape = 0;
-			ev.area_shape = 0;
-			ev.is_area_vs_area = false;
-			space->queue_trigger(ev);
-		}
-		overlapping_areas.clear();
+		_emit_all_area_exits();
 		space->unregister_body(this);
 
 		if (px_actor && body_added_to_scene) {
@@ -324,6 +293,20 @@ void PhysXBody3D::set_mode(PhysicsServer3D::BodyMode p_mode) {
 
 		// Preserve space membership across recreation.
 		PhysXSpace3D *cached_space = space;
+		// The old actor dies here: an area the body overlaps would never see
+		// it leave (its trigger pairs come back as REMOVED, skipped by the
+		// event callback). Queue explicit exits — the rebuilt actor re-enters
+		// on the next touch, cancelling out in Godot's refcounted monitors.
+		if (space) {
+			_emit_all_area_exits();
+		}
+		// Joints attached to this body hold a PxJoint bound to the old actor;
+		// PhysX deletes a constraint when either of its actors dies. Release
+		// them here, before the actor dies, so they rebuild against the fresh
+		// one from _add_to_scene below instead of keeping dangling pointers.
+		for (PhysXJoint3D *joint : joints) {
+			joint->actor_invalidated(this);
+		}
 		_destroy_actor();
 
 		// Re-create with the new mode. The new actor starts with no shapes;
@@ -880,6 +863,13 @@ void PhysXBody3D::_apply_surface_params_to_actor() {
 		dyn->setLinearDamping((float)linear_damp);
 		dyn->setAngularDamping((float)angular_damp);
 		dyn->setRigidBodyFlag(physx::PxRigidBodyFlag::eENABLE_CCD, ccd_enabled);
+		// Cap how fast a depenetrating body may pop out of an overlap
+		// (physics/physx_3d/simulation/max_depenetration_velocity; 0 = off).
+		// Applied here so creation, param changes and mode flips all pick it
+		// up — they all funnel through this function.
+		if (PhysXProjectSettings::max_depenetration_velocity > 0.0f) {
+			dyn->setMaxDepenetrationVelocity((physx::PxReal)PhysXProjectSettings::max_depenetration_velocity);
+		}
 		dyn->setRigidDynamicLockFlags(_effective_lock_flags());
 		_apply_sleep_policy(dyn);
 	}
@@ -1556,6 +1546,29 @@ void PhysXBody3D::_add_to_scene() {
 	for (PhysXJoint3D *joint : joints) {
 		joint->rebuild();
 	}
+}
+
+void PhysXBody3D::_emit_all_area_exits() {
+	// The caller is about to tear the actor down (free, space change, or the
+	// static<->dynamic mode flip): the trigger pairs return as REMOVED, which
+	// the simulation event callback skips, so overlaps would leak. Queue the
+	// body_monitor dispatch for flush_queries(). Identity is cached because
+	// the dispatch must not dereference this body.
+	for (unsigned int i = 0; i < overlapping_areas.size(); i++) {
+		PhysXArea3D *area = overlapping_areas[i];
+		area->remove_overlapping_body(this);
+		PhysXSpace3D::TriggerEvent ev;
+		ev.area = area;
+		ev.body = this;
+		ev.body_rid = get_rid();
+		ev.body_id = get_instance_id();
+		ev.status = PhysicsServer3D::AREA_BODY_REMOVED;
+		ev.other_shape = 0;
+		ev.area_shape = 0;
+		ev.is_area_vs_area = false;
+		space->queue_trigger(ev);
+	}
+	overlapping_areas.clear();
 }
 
 void PhysXBody3D::_on_shape_removed() {

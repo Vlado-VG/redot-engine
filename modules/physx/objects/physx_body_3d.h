@@ -226,6 +226,13 @@ public:
 	// --- Scene management (deferred until shapes are attached) ---
 	void _add_to_scene();
 
+	/// Queues AREA_BODY_REMOVED for every overlapping area and clears the
+	/// overlap list. Used when the body's actor is torn down — destruction,
+	/// leaving a space, or the static<->dynamic mode flip — since the trigger
+	/// pairs then return as REMOVED, which the simulation event callback
+	/// skips, and Godot would never see the body leave.
+	void _emit_all_area_exits();
+
 	// --- Callbacks ---
 	void set_state_sync_callback(const Callable &p_callable) { state_sync_callback = p_callable; }
 	void set_force_integration_callback(const Callable &p_callable, const Variant &p_userdata) {

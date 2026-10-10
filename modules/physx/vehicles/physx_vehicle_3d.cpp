@@ -35,11 +35,13 @@
 #include "../physx_conversions.h"
 #include "../physx_project_settings.h"
 #include "../physx_server.h"
+#include "../shapes/physx_user_data.h"
 #include "../spaces/physx_space_3d.h"
 #include "physx_vehicle4w.h"
 #include "physx_vehicle_wheel_3d.h"
 
 #include "core/config/engine.h"
+#include "core/object/callable_method_pointer.h"
 #include "core/object/class_db.h"
 #include "scene/3d/physics/collision_shape_3d.h"
 #include "scene/resources/3d/box_shape_3d.h"
@@ -52,6 +54,10 @@ struct PhysXVehicle3D::Impl {
 	PxReal sleep_threshold = 0.0f;
 	PxReal time_before_sleep = 0.0f;
 	bool built = false;
+	// Attached to the chassis actor's userData (the contact-modify combiner
+	// reads its signed friction/bounce during the solve). object stays
+	// nullptr — the chassis is not a PhysicsServer3D object.
+	PhysXActorUserData chassis_user_data;
 	// wheel_order[Vehicle4W::WHEEL_FL/FR/RL/RR] = index into the parent's own
 	// `wheels` vector (child-registration order) for that canonical slot --
 	// see configure_vehicle4w()'s own doc comment.
@@ -141,6 +147,12 @@ bool PhysXVehicle3D::_build() {
 	cfg.rear_anti_roll_stiffness = rear_anti_roll_stiffness;
 	cfg.collision_layer = collision_layer;
 	cfg.collision_mask = collision_mask;
+	{
+		real_t friction, bounce;
+		_chassis_material(friction, bounce);
+		cfg.chassis_friction = (float)friction;
+		cfg.chassis_bounce = (float)bounce;
+	}
 	cfg.engineDrive = use_gearbox;
 	if (use_gearbox) {
 		cfg.engine_peak_torque = engine_peak_torque;
@@ -204,6 +216,13 @@ bool PhysXVehicle3D::_build() {
 	dynamic_body->setWakeCounter(impl->time_before_sleep);
 	scene->addActor(*v.physxActor.rigidBody);
 	v.physxActor.rigidBody->setName("PhysXVehicle3D");
+	// Chassis contact material: the contact-modify combiner reads the signed
+	// friction/bounce from this userData during the solve (the chassis
+	// PxMaterial authored in configure_vehicle4w is the GPU-path fallback).
+	impl->chassis_user_data = PhysXActorUserData();
+	impl->chassis_user_data.friction = cfg.chassis_friction;
+	impl->chassis_user_data.bounce = cfg.chassis_bounce;
+	v.physxActor.rigidBody->userData = &impl->chassis_user_data;
 
 	impl->scene = scene;
 	impl->built = true;
@@ -711,6 +730,61 @@ void PhysXVehicle3D::set_collision_mask(uint32_t p_mask) {
 	_rebuild_if_live();
 }
 
+void PhysXVehicle3D::set_physics_material_override(const Ref<PhysicsMaterial> &p_material) {
+	if (physics_material_override == p_material) {
+		return;
+	}
+	if (physics_material_override.is_valid()) {
+		physics_material_override->disconnect_changed(callable_mp(this, &PhysXVehicle3D::_chassis_material_changed));
+	}
+	physics_material_override = p_material;
+	if (physics_material_override.is_valid()) {
+		physics_material_override->connect_changed(callable_mp(this, &PhysXVehicle3D::_chassis_material_changed));
+	}
+	_chassis_material_changed();
+}
+
+void PhysXVehicle3D::_chassis_material(real_t &r_friction, real_t &r_bounce) const {
+	if (physics_material_override.is_valid()) {
+		r_friction = physics_material_override->computed_friction();
+		r_bounce = physics_material_override->computed_bounce();
+	} else {
+		// No override: the contact-modify combiner's defaults for an actor
+		// without material userData — the behavior the chassis had before
+		// this property existed (NOT the PxMaterial's 0.0/0.1, which the
+		// combiner always overrode on the CPU path).
+		r_friction = 1.0;
+		r_bounce = 0.0;
+	}
+}
+
+// The chassis material is the vehicle's own, so a change — or an edit to the
+// assigned material — is applied in place, no rebuild.
+void PhysXVehicle3D::_chassis_material_changed() {
+	if (!impl->built) {
+		return; // the next build reads it
+	}
+	real_t friction, bounce;
+	_chassis_material(friction, bounce);
+	// The userData floats are read by the worker-thread contact-modify
+	// callback DURING the solve — fetch an in-flight solve first (same
+	// pattern as PhysXBody3D::_apply_surface_params_to_actor).
+	if (PhysXServer3D *server = PhysXServer3D::get_singleton()) {
+		if (PhysXSpace3D *space = server->get_space(get_world_3d()->get_space())) {
+			space->ensure_synced();
+		}
+	}
+	impl->chassis_user_data.friction = (float)friction;
+	impl->chassis_user_data.bounce = (float)bounce;
+	// A material change doesn't wake the actor: one resting on its roof would
+	// keep sleeping on the old grip.
+	if (PxRigidDynamic *body = impl->vehicle.physxActor.rigidBody->is<PxRigidDynamic>()) {
+		if (body->getScene()) {
+			body->wakeUp();
+		}
+	}
+}
+
 void PhysXVehicle3D::_validate_property(PropertyInfo &p_property) const {
 	if (center_of_mass_mode != CENTER_OF_MASS_MODE_CUSTOM && p_property.name == "center_of_mass") {
 		p_property.usage = PROPERTY_USAGE_NO_EDITOR;
@@ -827,6 +901,9 @@ void PhysXVehicle3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_collision_mask"), &PhysXVehicle3D::get_collision_mask);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_layer", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_layer", "get_collision_layer");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "collision_mask", PROPERTY_HINT_LAYERS_3D_PHYSICS), "set_collision_mask", "get_collision_mask");
+	ClassDB::bind_method(D_METHOD("set_physics_material_override", "physics_material_override"), &PhysXVehicle3D::set_physics_material_override);
+	ClassDB::bind_method(D_METHOD("get_physics_material_override"), &PhysXVehicle3D::get_physics_material_override);
+	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "physics_material_override", PROPERTY_HINT_RESOURCE_TYPE, PhysicsMaterial::get_class_static()), "set_physics_material_override", "get_physics_material_override");
 
 	ClassDB::bind_method(D_METHOD("get_linear_velocity"), &PhysXVehicle3D::get_linear_velocity);
 	ClassDB::bind_method(D_METHOD("get_forward_speed"), &PhysXVehicle3D::get_forward_speed);

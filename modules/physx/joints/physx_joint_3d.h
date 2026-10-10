@@ -353,6 +353,12 @@ public:
 	/// keep the wrapper (RID + cached params) fully valid. The joint stays
 	/// dormant until a future make() call reconfigures it.
 	void body_removed(PhysXBody3D *p_body);
+	/// The given body's PxActor is about to be destroyed and re-created (the
+	/// static<->dynamic flip in set_mode): the PxJoint references the old
+	/// actor, so the constraint must go with it. Unlike body_removed the body
+	/// links stay, and the joint rebuilds against the fresh actor when the
+	/// body re-enters its scene (PhysXBody3D::_add_to_scene).
+	void actor_invalidated(PhysXBody3D *p_body);
 	// --- Release ---
 	/// Full teardown: PxJoint, body links and kind. Cached parameters are
 	/// reset by reconfiguration (make), matching Godot's joint_clear semantics.

@@ -57,13 +57,13 @@
 #include "core/object/object.h"
 #include "core/templates/rid.h"
 
-// physx_user_data.h is pulled into the simulation-event and direct-space-state
-// translation units, both of which already include the full PhysX and shaped-
-// object definitions transitively. Include them here so physx_resolve_shape_index
-// (which calls PhysXShapedObject3D::find_shape_index) compiles regardless of
-// preceding include order.
-#include "../objects/physx_shaped_object_3d.h"
-#include <PxPhysicsAPI.h>
+// Intentionally a LEAF header: only RID/ObjectID/Px-POD definitions, so TUs
+// that must not see the shapes/ headers (e.g. the vehicle nodes, which use
+// unqualified Px names relying on PxPhysicsAPI.h's `using namespace physx`
+// and would collide with physx_shape_3d.h's global forward declarations) can
+// attach a PhysXActorUserData without the rest of the module. Consumers that
+// need physx_resolve_shape_index() define it where PhysXShapedObject3D is
+// available (physx_direct_space_state_3d.cpp).
 
 class PhysXObject3D;
 
@@ -88,31 +88,5 @@ struct PhysXActorUserData {
 	float bounce = 0.0f; ///< Signed bounce (negative = absorbent). Read by contact-modify.
 	float friction = 1.0f; ///< Signed friction (negative = rough). Read by contact-modify.
 };
-
-// Resolves a (actor, shape) query hit to the body-local shape index, or -1
-// when the hit cannot be mapped (soft-body/articulation actors without
-// userData, or a shape the object does not carry). -1 is the "invalid"
-// sentinel: 0 is a legitimate shape index and must not double as the failure
-// value.
-// Both PhysXBody3D and PhysXArea3D are shaped objects; areas/bodies both
-// support find_shape_index, so we check the type and cast accordingly.
-static inline int physx_resolve_shape_index(const physx::PxRigidActor *p_actor,
-		const physx::PxShape *p_shape) {
-	if (!p_actor || !p_actor->userData || !p_shape) {
-		return -1;
-	}
-	const auto *ad = static_cast<const PhysXActorUserData *>(p_actor->userData);
-	if (!ad->object) {
-		return -1;
-	}
-	// Bodies and areas are both shaped objects; areas/bodies both support this.
-	if (ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_BODY &&
-			ad->object->get_type() != PhysXObject3D::OBJECT_TYPE_AREA) {
-		return -1;
-	}
-	const PhysXShapedObject3D *shaped = static_cast<const PhysXShapedObject3D *>(ad->object);
-	const int idx = shaped->find_shape_index(p_shape);
-	return idx;
-}
 
 #endif // PHYSX_USER_DATA_H

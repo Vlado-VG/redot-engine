@@ -4,7 +4,7 @@
 		Scripted/offline mesh fracturing for NVIDIA Blast.
 	</brief_description>
 	<description>
-		Cuts a [Mesh] into fracture chunks and returns the result as a ready-to-assign [PhysXBlastAsset]. The in-editor [b]Mesh → Fracture with Blast[/b] dialog uses the same code path; prefer it for interactive work. Assign the returned asset to a [PhysXDestructible3D] to instance and simulate it.
+		Cuts a [Mesh] into fracture chunks and returns the result as a ready-to-assign [PhysXBlastAsset]. The editor's right-click [b]Fracture with Blast...[/b] context-menu items (Scene tree and FileSystem docks) use the same code path; prefer them for interactive work. Assign the returned asset to a [PhysXDestructible3D] to instance and simulate it.
 	</description>
 	<tutorials>
 	</tutorials>

@@ -40,6 +40,10 @@
 
 #include "core/math/math_funcs.h"
 
+// physx_user_data.h is a leaf header (no Px includes); the PxRigidActor API
+// (the userData access below) comes from here.
+#include <PxPhysicsAPI.h>
+
 // Reads the signed bounce/friction from each actor's userData and applies
 // Godot's combine contract to every contact point in the pair:
 //   combined_bounce   = CLAMP(bounceA + bounceB, 0, 1)

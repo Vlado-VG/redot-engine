@@ -2,6 +2,12 @@ name: Build Redot Project
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. RD_26.3-RC4_Px5.11_B002). Empty = timestamp tag (YYYYMMDDHH) as before.'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build-linux:
@@ -478,8 +484,8 @@ jobs:
       - name: Upload dev build artifacts to GitHub dev
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.CURRENT_DATE }}
-          name: Build ${{ env.CURRENT_DATE }}
+          tag_name: ${{ inputs.tag_name || env.CURRENT_DATE }}
+          name: ${{ inputs.tag_name || env.CURRENT_DATE }}
           draft: false
           make_latest: true
           files: |
