@@ -158,9 +158,6 @@
 		<member name="collision_mask" type="int" setter="set_collision_mask" getter="get_collision_mask" default="1">
 			Same meaning as [member CollisionObject3D.collision_mask]. Applies to the chassis box and to what the wheels' own ground raycasts can rest on: a wheel only hits non-area shapes on a layer in this mask (like a [RayCast3D]), so it never rests on an [Area3D]. See [member collision_layer].
 		</member>
-		<member name="physics_material_override" type="PhysicsMaterial" setter="set_physics_material_override" getter="get_physics_material_override">
-			Contact material of the chassis box (the property [RigidBody3D] and [VehicleBody3D] use): its friction, [i]rough[/i], bounce and [i]absorbent[/i] combine with whatever the vehicle touches by the same rule as every PhysX body. Applies to the chassis box only -- tire grip is the wheels' own. Unset, the chassis behaves as it always has (friction [code]1.0[/code], bounce [code]0.0[/code]). Changes -- here or to the assigned material -- apply in place without a rebuild and wake the vehicle.
-		</member>
 		<member name="mass" type="float" setter="set_mass" getter="get_mass" default="220.0">
 			Total mass of the motorcycle, in kg.
 		</member>
@@ -175,6 +172,9 @@
 		</member>
 		<member name="moment_of_inertia" type="Vector3" setter="set_moment_of_inertia" getter="get_moment_of_inertia" default="Vector3(40, 55, 20)">
 			The vehicle's own rotational inertia around its X/Y/Z axes. Higher values resist rotation (pitch/yaw/roll) more -- a real motorcycle's roll inertia is much lower than a car's, so this defaults far smaller than [member PhysXVehicle3D.moment_of_inertia].
+		</member>
+		<member name="physics_material_override" type="PhysicsMaterial" setter="set_physics_material_override" getter="get_physics_material_override">
+			Contact material of the chassis box (the property [RigidBody3D] and [VehicleBody3D] use): its friction, [i]rough[/i], bounce and [i]absorbent[/i] combine with whatever the vehicle touches by the same rule as every PhysX body. Applies to the chassis box only -- tire grip is the wheels' own. Unset, the chassis behaves as it always has (friction [code]1.0[/code], bounce [code]0.0[/code]). Changes -- here or to the assigned material -- apply in place without a rebuild and wake the vehicle.
 		</member>
 		<member name="reverse" type="bool" setter="set_reverse" getter="is_reverse" default="false">
 			Switches the drivetrain's gear between forward and reverse -- a real gear change (PxVehicle2 has no neutral-coast/instant-reverse shortcut), so [member throttle] in reverse gear still needs to first bring the bike to a stop if it was moving forward, same as a real vehicle. Check [method get_forward_speed] before engaging this from a driving script.
