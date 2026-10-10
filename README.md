@@ -62,7 +62,7 @@ Vanilla Redot binaries (without the PhysX module) can be found
 
 ### Compiling from source
 
-[See the official docs](https://docs.redotengine.org/contributing/development/compiling/)
+[See the official docs](https://docs.redotengine.org/en/Contributing/Development/compiling/getting_source)
 for compilation instructions for every supported platform.
 
 #### Using Nix (recommended)
